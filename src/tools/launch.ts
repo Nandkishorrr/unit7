@@ -3,6 +3,7 @@
 // (provider_purchase, hard to undo). domain.launch does everything after, for a new domain or one you already own:
 // wait until it's ready, DNS (kept, or moved to Cloudflare), point it at the app, HTTPS, email protection, www, and a
 // check that it's live. Each step is its own gated tool call, shown live; it stops at the first one that fails.
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { defineTool, execute, getTool, type Ctx, type ToolResult } from './runtime.ts';
 import { all, get, json, run } from '../db.ts';
@@ -174,6 +175,13 @@ async function pointedAlready(ctx: Ctx, hostname: string, t: Record<string, any>
   return (st.verified && !st.misconfigured) || (wentIn && st.records.every((r) => wrote.some((w) => w.type === r.type && w.content === r.content)));
 }
 
+// A person said yes to this very step and it ran, within the hours a setup takes: an AI's next run carries on instead of filing the
+// same approval. For the steps with nothing to read back: a move that hasn't shown in public DNS yet, email protection that hasn't
+// spread, and a redirect on a host with no setting for one, which writes nothing down.
+const YES_HOURS = 6;
+const yesRan = (ctx: Ctx, tool: string, input: Record<string, unknown>) => all<{ input: string }>(ctx.db, `SELECT input FROM approvals WHERE org_id = ? AND tool = ? AND status = 'done' AND result = 'success' AND decided_at > ?`, ctx.orgId, tool, new Date(Date.now() - YES_HOURS * 3600_000).toISOString())
+  .some((r) => isDeepStrictEqual(json(r.input, {}), input));
+
 export async function launch(ctx: Ctx, i: { domain: string; target: Record<string, unknown>; dns: 'keep' | 'cloudflare'; prefer?: 'apex' | 'www' },
   call: Call = (tool, input) => execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: `launch ${i.domain}`, signal: ctx.signal })) {
   const domain = domainOf(i.domain);
@@ -224,7 +232,7 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
   // 2. DNS
   if (i.dns === 'cloudflare') {
     set('dns', 'running');
-    const r = said(await call('domain.move_dns', { domain }));
+    const r = yesRan(ctx, 'domain.move_dns', { domain }) ? { ok: true as const, output: { next: 'Moved after your OK.' } } : said(await call('domain.move_dns', { domain }));
     if (!r.ok && r.code !== 'already') return stop('dns', r);
     set('dns', 'ok', r.ok ? r.output?.next : 'Already on Cloudflare.');
   } else set('dns', 'ok', hostingerAccs.length ? 'Kept at Hostinger.' : 'Kept where it is.');
@@ -251,7 +259,7 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
 
   // 5. nobody can send email pretending to be this domain
   set('email', 'running');
-  const e = said(await call('domain.protect_email', { domain }));
+  const e = yesRan(ctx, 'domain.protect_email', { domain }) ? { ok: true as const, output: { dmarc: 'already set' } } : said(await call('domain.protect_email', { domain }));
   if (!e.ok) return stop('email', e);
   const emailWait = needsYou(e.output);
   set('email', emailWait ? 'waiting' : 'ok', emailWait ?? (e.output?.dmarc === 'already set' ? 'Already protected.' : 'Nobody can send email pretending to be you.'));
@@ -267,7 +275,8 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
     // domain.canonical writes this down once it's set, so a run after a person's OK doesn't file it again
     const [main, other] = i.prefer === 'www' ? [`www.${domain}`, domain] : [domain, `www.${domain}`];
     const redirect = json<{ redirectTo?: string }>(get<{ target: string | null }>(ctx.db, 'SELECT target FROM domains WHERE hostname = ? AND org_id = ?', other, ctx.orgId)?.target, {}).redirectTo;
-    const c = redirect === main ? { ok: true as const, output: { note: 'Already set.' } } : said(await call('domain.canonical', { domain, prefer: i.prefer ?? 'apex' }));
+    const pick = { domain, prefer: i.prefer ?? 'apex' };
+    const c = redirect === main || yesRan(ctx, 'domain.canonical', pick) ? { ok: true as const, output: { note: 'Already set.' } } : said(await call('domain.canonical', pick));
     if (!c.ok) return stop('www', c);
     set('www', wwwWait || c.output?.state === 'waiting' ? 'waiting' : 'ok', wwwWait ?? c.output?.note);
   }

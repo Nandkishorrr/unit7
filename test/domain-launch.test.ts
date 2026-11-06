@@ -299,6 +299,22 @@ test('an AI runs a launch again after each OK: what’s done isn’t asked again
   }
 });
 
+test('a step a person OKed that ran isn’t asked again, and an old yes or a failed run still is', async () => {
+  const o = await withHostinger('Ida'), svc = 'svc_aaaaaaaaaaaa', input = { domain: 'idashop.co', target: { serviceId: svc }, dns: 'cloudflare' as const };
+  run(app.db, `INSERT INTO domains (id, org_id, hostname, status, tls) VALUES (?, ?, 'idashop.co', 'pending', 'issuing')`, id('dom'), o.orgId);
+  const yes = (tool: string, what: object, at: string, result = 'success') => run(app.db, `INSERT INTO approvals (id, org_id, tool, input, why, actor, status, result, decided_at, expires_at) VALUES (?, ?, ?, ?, 'asked', 'ai', 'done', ?, ?, ?)`, id('apr'), o.orgId, tool, JSON.stringify(what), result, at, at);
+  const steps = async () => { const f = fakeCalls(); const r = await launch(ctxFor(o), input, f.call); return { asked: f.tools().filter((t) => /move_dns|protect_email|canonical/.test(t)), r }; };
+  yes('domain.protect_email', { domain: 'idashop.co' }, new Date(Date.now() - 7 * 3600_000).toISOString());
+  yes('domain.move_dns', { domain: 'idashop.co' }, new Date().toISOString(), 'error: Cloudflare refused');
+  yes('domain.canonical', { domain: 'other.co', prefer: 'apex' }, new Date().toISOString());
+  assert.deepEqual((await steps()).asked, ['domain.move_dns', 'domain.protect_email', 'domain.canonical'], 'too old, failed, another domain');
+  for (const [tool, what] of [['domain.move_dns', { domain: 'idashop.co' }], ['domain.protect_email', { domain: 'idashop.co' }], ['domain.canonical', { domain: 'idashop.co', prefer: 'apex' }]] as const) yes(tool, what, new Date().toISOString());
+  const { asked, r } = await steps();
+  assert.deepEqual(asked, []);
+  assert.equal(r.live, true);
+  assert.equal(r.steps[1]!.note, 'Moved after your OK.');
+});
+
 test('a name already at this app here isn’t pointed again; one at another app is', async () => {
   const o = await testOrg(app, 'Bea');
   run(app.db, `INSERT INTO domains (id, org_id, hostname, status, tls, target) VALUES (?, ?, 'already.example', 'pending', 'issuing', ?)`, id('dom'), o.orgId, JSON.stringify({ kind: 'unit7', serviceId: 'svc_aaaaaaaaaaaa' }));
