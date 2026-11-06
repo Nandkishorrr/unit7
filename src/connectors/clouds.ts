@@ -23,15 +23,19 @@ export async function mcpJson<T = any>(ctx: Ctx, accountId: string, tool: string
 
 // Supabase: its MCP server for one-click sign-ins; its Management API for a personal access token (which
 // also covers what the sign-in can't: custom domains, server keys)
-const SUPABASE_API = 'https://api.supabase.com/v1';
+export const SUPABASE_API = () => process.env.UNIT7_SUPABASE_API ?? 'https://api.supabase.com/v1'; // overridable for offline tests
 const viaToken = (ctx: Ctx, acc: string) => !isOAuthAccount(ctx.credentialFor('supabase', acc).account.meta);
-async function sb<T = any>(ctx: Ctx, acc: string, path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function sb<T = any>(ctx: Ctx, acc: string, path: string, init: { method?: string; body?: unknown; form?: FormData; timeoutMs?: number } = {}): Promise<T> {
   const token = await bearerFor(ctx, 'supabase', acc);
-  await assertReachable('api.supabase.com');
-  const res = await fetch(`${SUPABASE_API}${path}`, { method: init.method ?? (init.body !== undefined ? 'POST' : 'GET'), headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: init.body === undefined ? undefined : JSON.stringify(init.body), signal: AbortSignal.timeout(30_000) });
+  await assertReachable(new URL(SUPABASE_API()).hostname);
+  const res = await fetch(`${SUPABASE_API()}${path}`, { method: init.method ?? (init.body !== undefined || init.form ? 'POST' : 'GET'), headers: { authorization: `Bearer ${token}`, ...(!init.form && { 'content-type': 'application/json' }) }, body: init.form ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: AbortSignal.timeout(init.timeoutMs ?? 30_000) })
+    .catch((e: Error) => { throw new Unit7Error('supabase_unreachable', `Unit7 couldn\u2019t reach Supabase (${e.name === 'TimeoutError' ? 'it took too long' : 'no answer'}). Check the internet connection and try again.`, 502); });
   const data = await res.json().catch(() => ({})) as { message?: string };
-  if (res.status === 401 || res.status === 403) throw new Unit7Error('supabase_auth', `Supabase refused (${data.message ?? res.status}). Custom domains and server keys need a Supabase access token: Connections → Supabase → Use a key instead.`, 403);
-  if (!res.ok) throw new Unit7Error('supabase_error', `Supabase: ${data.message ?? res.statusText}`, 502);
+  // a sign-in the API won't take for this job still works for the rest (the map reads it through MCP), so it's not a dead credential
+  if ((res.status === 401 || res.status === 403) && !viaToken(ctx, acc)) throw new Unit7Error('supabase_signin', 'Supabase doesn\u2019t let the one-click sign-in do this. It needs a Supabase access token: Connections → Supabase → Use a key instead.', 403);
+  if (res.status === 401 || res.status === 403) throw new Unit7Error('supabase_auth', `Supabase refused (${data.message ?? res.status}). Check the access token in Connections → Supabase.`, res.status);
+  if (res.status === 429) throw new Unit7Error('rate_limited', 'Supabase asked Unit7 to slow down (429). Try again in a minute.', 429);
+  if (!res.ok) throw new Unit7Error(res.status === 404 ? 'not_found_there' : 'supabase_error', `Supabase: ${data.message ?? res.statusText}`, res.status === 404 ? 404 : 502);
   return data as T;
 }
 
@@ -67,11 +71,7 @@ export const supabase = {
   },
   // server-side keys aren't in Supabase's MCP; its sign-in token is issued for the Management API too
   async secretKeys(ctx: Ctx, acc: string, ref: string) {
-    const token = await bearerFor(ctx, 'supabase', acc);
-    await assertReachable('api.supabase.com');
-    const res = await fetch(`https://api.supabase.com/v1/projects/${encodeURIComponent(ref)}/api-keys?reveal=true`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) throw new Unit7Error('supabase_error', `Supabase said ${res.status}`, 502);
-    const keys = await res.json() as { name: string; type: string; api_key: string }[];
+    const keys = await sb<{ name: string; type: string; api_key: string }[]>(ctx, acc, `/projects/${encodeURIComponent(ref)}/api-keys?reveal=true`, { timeoutMs: 20_000 });
     const serviceRole = keys.find((k) => k.type === 'legacy' && k.name === 'service_role')?.api_key;
     const secret = keys.find((k) => k.type === 'secret')?.api_key;
     if (!serviceRole && !secret) throw new Unit7Error('no_key', 'That project has no server key.', 409);
@@ -82,16 +82,72 @@ export const supabase = {
 
 // --- Neon --------------------------------------------------------------------------------------------
 
+// Neon: its REST API for an API key, and for what its one-click sign-in reaches (new projects, branches, logs); the map
+// reads a sign-in through its MCP server, as it always has
+export const NEON_API = () => process.env.UNIT7_NEON_API ?? 'https://console.neon.tech/api/v2'; // overridable for offline tests
+const neonKey = (ctx: Ctx, acc: string) => !isOAuthAccount(ctx.credentialFor('neon', acc).account.meta);
+export async function nn<T = any>(ctx: Ctx, acc: string, path: string, o: { method?: string; body?: unknown; query?: Record<string, string> } = {}): Promise<T> {
+  const token = await bearerFor(ctx, 'neon', acc);
+  await assertReachable(new URL(NEON_API()).hostname);
+  const q = new URLSearchParams(o.query);
+  const res = await fetch(`${NEON_API()}${path}${q.size ? `?${q}` : ''}`, { method: o.method ?? (o.body !== undefined ? 'POST' : 'GET'), headers: { authorization: `Bearer ${token}`, accept: 'application/json', 'content-type': 'application/json' }, body: o.body === undefined ? undefined : JSON.stringify(o.body), signal: AbortSignal.timeout(30_000) })
+    .catch((e: Error) => { throw new Unit7Error('neon_unreachable', `Unit7 couldn\u2019t reach Neon (${e.name === 'TimeoutError' ? 'it took too long' : 'no answer'}). Check the internet connection and try again.`, 502); });
+  const data = await res.json().catch(() => ({})) as { message?: string };
+  // as with Supabase: the sign-in may still be fine for the map
+  if ((res.status === 401 || res.status === 403) && !neonKey(ctx, acc)) throw new Unit7Error('neon_signin', 'Neon doesn\u2019t let the one-click sign-in do this. It needs a Neon API key: Connections → Neon → Use a key instead.', 403);
+  if (res.status === 401 || res.status === 403) throw new Unit7Error('neon_auth', `Neon refused (${data.message ?? res.status}). Check the API key in Connections → Neon.`, res.status);
+  if (res.status === 429) throw new Unit7Error('rate_limited', 'Neon asked Unit7 to slow down (429). Try again in a minute.', 429);
+  if (!res.ok) throw new Unit7Error(res.status === 404 ? 'not_found_there' : 'neon_error', `Neon: ${data.message ?? res.statusText}`, res.status === 404 ? 404 : 502);
+  return data as T;
+}
+// every project a key reaches: its own and each organisation's (a key made inside an organisation may not list the first)
+async function neonProjects(ctx: Ctx, acc: string) {
+  const { organizations = [] } = await nn<{ organizations?: { id: string }[] }>(ctx, acc, '/users/me/organizations');
+  const out = new Map<string, { id: string; name: string; region_id?: string; org_id?: string }>();
+  for (const org of [undefined, ...organizations.map((o) => o.id)]) {
+    for (let cursor: string | undefined; ;) {
+      const r = await nn<{ projects?: { id: string; name: string; region_id?: string; org_id?: string }[]; pagination?: { cursor?: string } }>(ctx, acc, '/projects', { query: { limit: '400', ...(org && { org_id: org }), ...(cursor && { cursor }) } })
+        .catch((e) => { if (org) throw e; return {} as { projects?: undefined; pagination?: undefined }; });
+      for (const p of r.projects ?? []) out.set(p.id, p);
+      cursor = r.pagination?.cursor;
+      if (!cursor || (r.projects?.length ?? 0) < 400) break;
+    }
+  }
+  return [...out.values()];
+}
+export async function neonMainBranch(ctx: Ctx, acc: string, project: string) {
+  const main = (await nn<{ branches?: { id: string; default?: boolean; primary?: boolean }[] }>(ctx, acc, `/projects/${encodeURIComponent(project)}/branches`)).branches?.find((b) => b.default ?? b.primary)?.id;
+  if (!main) throw new Unit7Error('no_branch', 'Neon didn\u2019t say which branch is the main one. Name the branch.', 409);
+  return main;
+}
+// a branch's connection string (the project's main branch and first database unless told): it reaches the caller only
+export async function neonUri(ctx: Ctx, acc: string, project: string, o: { branch?: string; database?: string; role?: string; pooled?: boolean } = {}) {
+  const p = encodeURIComponent(project), branch = o.branch ?? await neonMainBranch(ctx, acc, project);
+  let { database, role } = o;
+  if (!database || !role) {
+    const d = (await nn<{ databases?: { name: string; owner_name: string }[] }>(ctx, acc, `/projects/${p}/branches/${encodeURIComponent(branch)}/databases`)).databases?.[0];
+    if (!d) throw new Unit7Error('no_database', 'That branch has no database yet.', 409);
+    database ??= d.name; role ??= d.owner_name;
+  }
+  const { uri } = await nn<{ uri?: string }>(ctx, acc, `/projects/${p}/connection_uri`, { query: { branch_id: branch, database_name: database, role_name: role, pooled: String(o.pooled ?? true) } });
+  if (!uri) throw new Unit7Error('provider_error', 'Neon did not return a connection string.', 502);
+  ctx.redactor.add(uri, 'a Neon connection string');
+  return { uri, branch, database, role };
+}
+
 export const neon = {
-  projects: (ctx: Ctx, acc: string) => mcpJson<{ projects?: { id: string; name: string }[] } | { id: string; name: string }[]>(ctx, acc, 'list_projects')
-    .then((r) => (Array.isArray(r) ? r : r.projects ?? [])),
+  projects: async (ctx: Ctx, acc: string): Promise<{ id: string; name: string; region_id?: string; org_id?: string }[]> => neonKey(ctx, acc) ? neonProjects(ctx, acc)
+    : mcpJson<{ projects?: { id: string; name: string }[] } | { id: string; name: string }[]>(ctx, acc, 'list_projects').then((r) => (Array.isArray(r) ? r : r.projects ?? [])),
+  // what the map sizes a project from: its branches, each with its logical_size
+  branches: (ctx: Ctx, acc: string, projectId: string) => (neonKey(ctx, acc) ? nn<unknown>(ctx, acc, `/projects/${encodeURIComponent(projectId)}/branches`) : mcpJson<unknown>(ctx, acc, 'describe_project', { projectId })),
   // its compute endpoints' hosts (and their pooled twins), to recognise its connection strings
   async hosts(ctx: Ctx, acc: string, projectId: string) {
-    const r = await mcpJson<unknown>(ctx, acc, 'list_postgres_endpoints', { project_id: projectId });
+    const r = neonKey(ctx, acc) ? await nn<unknown>(ctx, acc, `/projects/${encodeURIComponent(projectId)}/endpoints`) : await mcpJson<unknown>(ctx, acc, 'list_postgres_endpoints', { project_id: projectId });
     const hs = [...new Set([...(typeof r === 'string' ? r : JSON.stringify(r)).matchAll(/ep-[a-z0-9-]+\.[a-z0-9.-]+\.neon\.tech/g)].map((m) => m[0].toLowerCase()))];
     return hs.flatMap((h) => [h, h.replace(/^(ep-[^.]+?)(-pooler)?\./, '$1-pooler.')]);
   },
   async connectionString(ctx: Ctx, acc: string, projectId: string) {
+    if (neonKey(ctx, acc)) return (await neonUri(ctx, acc, projectId)).uri;
     const r = await mcpJson<unknown>(ctx, acc, 'get_connection_string', { projectId });
     const s = typeof r === 'string' ? r : JSON.stringify(r);
     const url = /postgres(?:ql)?:\/\/[^\s"'`]+/.exec(s)?.[0];
@@ -245,7 +301,6 @@ export const vercel = {
 
 // --- removing (asset.delete, people only after typing the name; asset.pause) -----------------------------
 // Each is the provider's own call, checked against its API reference (2026-10). Nothing else here changes.
-const NEON_API = () => process.env.UNIT7_NEON_API ?? 'https://console.neon.tech/api/v2';
 export const cloudRemoval = {
   // DELETE /v9/projects/{id} (204): its deployments, domains on it, settings. Storage stores are separate and stay.
   vercelProject: (ctx: Ctx, acc: string, project: string, team?: string) => vc(ctx, acc, `/v9/projects/${encodeURIComponent(project)}`, { method: 'DELETE', team }),

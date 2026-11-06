@@ -8,7 +8,7 @@ import { merged, resolveValues, parseDotenv } from '../tools/env.ts';
 import { internalHost, type ServiceConfig } from '../deploy/deployer.ts';
 import { cloudflare } from '../connectors/cloudflare.ts';
 import { hostinger } from '../connectors/hostinger.ts';
-import { vercel, supabase, neon } from '../connectors/clouds.ts';
+import { vercel, supabase, neon, SUPABASE_API } from '../connectors/clouds.ts';
 import { fileText, githubToken, parseRepo } from '../connectors/github.ts';
 import { rest, gd, GODADDY, pb, PORKBUN, nc, NAMECOM } from '../connectors/dnswrite.ts';
 import { netlify, render, railway, digitalocean, heroku, fly, hostOf } from '../connectors/hosts.ts';
@@ -489,7 +489,6 @@ SCANNERS.hetzner = async (ctx, acc) => {
 //   PlanetScale and Turso connect through their MCP only (no scanner yet).
 import { cached } from '../connectors/cloudcli.ts';
 import { bearerFor } from '../connectors/mcp-oauth.ts';
-import { mcpJson } from '../connectors/clouds.ts';
 import { railwayQuery, RENDER_API, renderAuth } from '../connectors/hosts.ts';
 export function dbSize(key: string, read: () => Promise<string>): Promise<string> {
   return cached(`dbsize:${key}`, async () => ({ value: await read().catch(() => ''), until: Date.now() + 3600_000 }), 3600_000);
@@ -498,14 +497,14 @@ const num = (v: string) => (v ? Number(v) : undefined);
 const sizing: Record<string, (ctx: Ctx, acc: string, dbs: Found[]) => Promise<void>> = {
   async supabase(ctx, acc, dbs) {
     await pool(dbs.filter((d) => !/inactive|paused/i.test(d.status ?? '')), 3, async (d) => {
-      const v = num(await dbSize(`supabase:${d.extId}`, async () => String((await rest<{ metrics?: { fs_used_bytes?: number } }>('Supabase', `https://api.supabase.com/v1/projects/${d.extId}/config/disk/util`, { headers: { authorization: `Bearer ${await bearerFor(ctx, 'supabase', acc)}` } })).metrics?.fs_used_bytes ?? '')));
+      const v = num(await dbSize(`supabase:${d.extId}`, async () => String((await rest<{ metrics?: { fs_used_bytes?: number } }>('Supabase', `${SUPABASE_API()}/projects/${d.extId}/config/disk/util`, { headers: { authorization: `Bearer ${await bearerFor(ctx, 'supabase', acc)}` } })).metrics?.fs_used_bytes ?? '')));
       if (v !== undefined) d.size = v;
     });
   },
   async neon(ctx, acc, dbs) {
     await pool(dbs, 3, async (d) => {
       const v = num(await dbSize(`neon:${d.extId}`, async () => {
-        const text = JSON.stringify(await mcpJson(ctx, acc, 'describe_project', { projectId: d.extId }));
+        const text = JSON.stringify(await neon.branches(ctx, acc, d.extId));
         const sizes = [...text.matchAll(/"logical_size"\s*:\s*(\d+)/g)].map((m) => Number(m[1]));
         return sizes.length ? String(Math.max(...sizes)) : ''; // ponytail: the biggest branch, usually the default one
       }));

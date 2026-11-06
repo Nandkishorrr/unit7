@@ -86,4 +86,5 @@ import './dr.ts';
 import './coolify-fleet.ts';
 import './coolify-dashboard.ts';
 import './promote.ts';
+import './supabase.ts';
 import '../seven/index.ts';
