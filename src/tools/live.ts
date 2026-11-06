@@ -128,7 +128,8 @@ defineTool({
       const size = i.size ? chosen.host.sizes?.find((s) => s.id === i.size) : undefined;
       if (i.size && !size) throw new Unit7Error('invalid_input', `${chosen.host.name} has no size ${i.size}. It has: ${chosen.host.sizes?.map((s) => s.id).join(', ') || 'none to pick'}.`, 400);
       if (commands(i) && !chosen.host.tunes) throw new Unit7Error('invalid_input', `${chosen.host.name} works out its own build here, so Unit7 can’t change it. Set it on ${chosen.host.name}, or pick a place where live.options says tunes.`, 400);
-      if ((i.update || chosen.host.id === 'github-pages') && pushesWorkflow(ctx, site)) await askPerson(ctx, 'live.put', i, WORKFLOW_ASK);
+      // code already in a repo isn't pushed anywhere, except Pages, which pushes to a branch of its own
+      if (((i.update && !site.repo) || chosen.host.id === 'github-pages') && pushesWorkflow(ctx, site)) await askPerson(ctx, 'live.put', i, WORKFLOW_ASK);
       if (chosen.host.costs && !i.to) throw new Unit7Error('costs_money', `The place for this is ${chosen.host.name}, and it can cost money. ${chosen.host.costs} A person has to choose it, with to: "${chosen.host.id}".`, 400);
       // the first time, Coolify's own step asks. An update brings a new compose file, so its yes covers the whole of it
       if (i.update && chosen.host.id === 'coolify' && runsCompose(site.detection) && isAgent(ctx) && !ctx.approvalId) await askPerson(ctx, 'live.put', i, COMPOSE_ASK);

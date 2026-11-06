@@ -521,15 +521,13 @@ const GCLOUD = JSON.stringify({ cli: 'gcloud', account: 'sam@example.com' });
 const cliLog = () => { const f = join(mkdtempSync(join(tmpdir(), 'cli-')), 'log'); writeFileSync(f, ''); process.env.FAKE_CLOUD_LOG = f; return f; };
 
 test('Cloud Run: gcloud builds a clean copy, settings stay off the command line, and Google’s APIs are switched on first', async () => {
-  const log = cliLog(), st: any = {}, w = await world({ google: (r) => { const out = cloudrun(st)(r); return out; } }), acc = w.acc('gcp', GCLOUD);
+  // gcloud is the one who makes it, so the fake answers once the command ran
+  const log = cliLog(), st: any = { get after() { return readFileSync(log, 'utf8').includes('env {'); } }, w = await world({ google: (r) => { const out = cloudrun(st)(r); return out; } }), acc = w.acc('gcp', GCLOUD);
   try {
     const dir = folder({ ...SERVER, ...SECRETS });
     const r = await w.org.h('live.put', { folder: dir, to: 'cloudrun', name: 'shop', env: { API_KEY: 'value-demo' } });
     assert.equal(r.status, 'approval_required');
-    // gcloud is the one who makes it, so the fake answers once the command ran
-    const check = setInterval(() => { if (readFileSync(log, 'utf8').includes('env {')) st.after = true; }, 5);
-    let out;
-    try { out = ok<any>(await w.yes(r)); } finally { clearInterval(check); }
+    const out = ok<any>(await w.yes(r));
     assert.equal(out.url, 'https://shop-abc-uc.a.run.example');
     assert.equal(out.project, 'shop-prod/us-central1/shop');
     assert.deepEqual(st.ops, ['run.googleapis.com', 'cloudbuild.googleapis.com', 'artifactregistry.googleapis.com']);

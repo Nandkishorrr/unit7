@@ -51,7 +51,7 @@ test('your CRM → a Render service; a Railway database → a Railway app; a dom
 
     // Railway: inside the same project, Railway's own reference (no password copied), one redeploy
     f.calls.length = 0;
-    const r = ok(await o.a('link.create', { from: { kind: 'railway', accountId: railwayAcc, project: 'p1', environment: 'e1', service: 'svc-db' }, to: { kind: 'railway', accountId: railwayAcc, project: 'p1', environment: 'e1', service: 'svc-api' } }));
+    const r = ok(await o.h('link.create', { from: { kind: 'railway', accountId: railwayAcc, project: 'p1', environment: 'e1', service: 'svc-db' }, to: { kind: 'railway', accountId: railwayAcc, project: 'p1', environment: 'e1', service: 'svc-api' } }));
     assert.deepEqual(r.set, ['DATABASE_URL']);
     const upsert = f.calls.find((c) => c.body?.query?.includes('variableCollectionUpsert'))!;
     assert.deepEqual(upsert.body.variables.i, { projectId: 'p1', environmentId: 'e1', serviceId: 'svc-api', variables: { DATABASE_URL: '${{Postgres.DATABASE_URL}}' }, skipDeploys: true });
