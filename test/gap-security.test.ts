@@ -3,7 +3,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { testApp, testOrg, ok } from './helpers.ts';
@@ -13,6 +13,13 @@ import { decideApproval, type Actor } from '../src/tools/runtime.ts';
 import { coolifyTiming } from '../src/connectors/coolify.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { moveTiming } from '../src/tools/moves.ts';
+import { dropsDatabase, statement, tokenize } from '../src/tools/datamask.ts';
+import { buildInventory, type Part } from '../src/discovery/xray.ts';
+import { saveXray } from '../src/tools/xray.ts';
+import { ROLE, vaultAccount } from '../src/serverapps/adapters.ts';
+import { makeRef } from '../src/vault.ts';
+import { COOLIFY_HOST } from './xray-fixtures.ts';
+import { havePostgres, realShell, startPostgres, type Pg } from './data-real-pg.ts';
 import type { App } from '../src/app.ts';
 
 const SRV = 'srv_sec000000001';
@@ -145,4 +152,71 @@ test('1. deploying a compose app an AI could have pushed to, or turning on deplo
   const on = await o.a('coolify.auto_deploy', { serverId: SRV, uuid: 'comp1x', on: true }) as any;
   assert.equal(on.status, 'approval_required');
   assert.match(on.why, /compose file/);
+});
+
+// --- a real Postgres and a real psql, behind a real shell --------------------------------------------------------------------
+const PG = 'c:pg-db', pgUp = havePostgres() ? startPostgres() : undefined, real = { skip: pgUp ? false : 'no Postgres can start here' };
+after(() => pgUp?.stop());
+const part = (x: Partial<Part>) => ({ kind: 'database', owner: 'compose', trust: 'understood', project: 'c:shop', ...x } as Part);
+function foundDb(app: App, orgId: string, extra: Part[] = []) {
+  const inv = buildInventory(COOLIFY_HOST, { serverHost: '203.0.113.9' });
+  inv.parts.push(part({ id: PG, name: 'pg-db', engine: 'postgres', image: 'postgres:16-alpine', containers: ['pg-db-1'], networks: ['shop_default'] }), ...extra);
+  saveXray(app.db, orgId, SRV, 'fast', inv);
+  for (const p of [PG, ...extra.map((x) => x.id)]) app.vault.put(orgId, makeRef('serverapp', vaultAccount(SRV, p), 'x.db-read-password'), 'readonly-Passw0rd-value', { kind: 'serverapp', by: 'test', meta: { name: 'db-read-password', user: ROLE, label: 'Read-only', appName: 'x', part: p, serverId: SRV } });
+}
+async function withPg() {
+  const w = await world(), pg = pgUp as Pg;
+  foundDb(w.app, w.o.orgId);
+  pg.sql(`DROP DATABASE IF EXISTS shop WITH (FORCE); CREATE DATABASE shop;`);
+  pg.sql(`DROP ROLE IF EXISTS ${ROLE}; CREATE ROLE ${ROLE} LOGIN BYPASSRLS PASSWORD 'pw';`);
+  pg.sql(`CREATE TABLE users (id serial PRIMARY KEY, email text, password_hash text, plan text);
+    INSERT INTO users (email, password_hash, plan) VALUES ('ann@shop.example', '$2b$12$annshashannshash', 'pro'), ('bob@shop.example', '$2b$12$bobshashbobshash', 'free');
+    GRANT USAGE ON SCHEMA public TO ${ROLE}; GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${ROLE}; ALTER ROLE ${ROLE} SET default_transaction_read_only = on;`, 'shop');
+  return { ...w, pg, seen: realShell(w.app, pg) };
+}
+
+test('2. a query can’t step out of itself into psql: not at a carriage return, not through a string read two ways, not past a long word', real, async () => {
+  const { o, pg, seen } = await withPg(), mark = join(pg.dir, 'shell-ran'), shell = `\\! touch ${mark}`, B = 'b'.repeat(100);
+  for (const sql of [
+    `select 1 --x\r${shell}\n`,
+    `select 1 --x\r; commit; set default_transaction_read_only = off; select 2 --\n`,
+    `select 1e'\\' ${shell} #'`,
+    `select 1.e'\\' ${shell} #'`,
+    `select E'a'\n'\\'' ${shell} --'`,
+    `select ${'a'.repeat(200)}$$ ${shell} $$`,
+    `select $${B}$ ' $${B}$ ${shell} --'`,
+    `select 1 -- ${shell}`,
+    `select 1 /* ${shell} */`,
+    `select 1\f${shell}`,
+    `select 1 ${shell}`,
+  ]) {
+    assert.equal(code(await o.a('part.query', { serverId: SRV, part: PG, sql })), 'bad_statement', JSON.stringify(sql));
+    assert.equal(code(await o.h('part.query', { serverId: SRV, part: PG, sql })), 'bad_statement', `a person’s too: ${JSON.stringify(sql)}`);
+  }
+  assert.equal(seen.length, 0, 'none of it reached the server');
+  assert.ok(!existsSync(mark));
+  // strings that really are strings still go through
+  assert.deepEqual(ok<any>(await o.h('part.query', { serverId: SRV, part: PG, sql: String.raw`select E'a\'b', 'c\d', '\\', $$\!$$` })).rows, [[`a'b`, 'c\\d', '\\\\', '\\!']]);
+});
+
+test('2. the gate reads a write the way it runs: a hidden drop is refused before anyone is asked, and a plain one is a drop', real, async () => {
+  const { app, o } = await withPg();
+  const hidden = await o.a('part.query', { serverId: SRV, part: PG, sql: 'select 1 --x\r; drop schema public cascade', write: true, confirm: 'pg-db' });
+  assert.equal(code(hidden), 'bad_statement');
+  assert.equal(get(app.db, 'SELECT 1 FROM approvals'), undefined, 'nobody was asked');
+  assert.equal(dropsDatabase('select 1 --x\r; drop schema public cascade'), false, 'it never runs, so it’s no drop');
+  for (const sql of ['drop schema public cascade', 'DROP DATABASE shop', '/* x */ drop database shop', "DROP DATABASE shop # it's gone"]) assert.ok(dropsDatabase(sql), sql);
+  assert.equal(dropsDatabase('select 1'), false);
+  assert.equal((await o.h('part.query', { serverId: SRV, part: PG, sql: 'drop schema public cascade', write: true, confirm: 'pg-db' })).status, 'denied', 'production forbids it, whoever asks');
+  assert.throws(() => statement('select 1\u0000', 'pg'), { code: 'bad_statement' });
+  assert.throws(() => statement('select 1\u007f', 'my'), { code: 'bad_statement' });
+  assert.deepEqual(tokenize('a --b\nc', 'pg').map((t) => t.v), ['a', 'c']);
+  assert.deepEqual(tokenize('a --b\rc', 'pg').map((t) => t.v), ['a', 'c'], 'psql’s line ends');
+});
+
+test('2. what comes back as a column’s name is masked like a row', real, async () => {
+  const { o } = await withPg();
+  const r = ok<any>(await o.a('part.query', { serverId: SRV, part: PG, sql: `select 1 as "sam@shop.example", 2 as "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"` }));
+  assert.ok(!JSON.stringify(r).includes('sam@shop.example'), JSON.stringify(r));
+  assert.ok(!JSON.stringify(r).includes('sk-ant'), JSON.stringify(r));
 });

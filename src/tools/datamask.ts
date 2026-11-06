@@ -9,13 +9,21 @@
 import { Unit7Error } from '../errors.ts';
 
 export type Dialect = 'pg' | 'my';
-export interface Tok { k: 'word' | 'name' | 'str' | 'op'; v: string; at: number }
+export interface Tok { k: 'word' | 'name' | 'str' | 'op' | 'cmd' | 'note'; v: string; at: number } // cmd: a backslash outside everything. note: a comment
 const refuse = (why: string) => new Unit7Error('bad_statement', why, 400);
+const SPACE = new Set([' ', '\t', '\n', '\r', '\f', '\v']);
+// the whole of a word or a tag, however long: cut one short and what follows it reads as something else
+const WORD = /[A-Za-z_\u0080-￿][\w$\u0080-￿]*/y, TAG = /\$(?:[A-Za-z_\u0080-￿][\w\u0080-￿]*)?\$/y;
+const matched = (re: RegExp, sql: string, at: number) => { re.lastIndex = at; return re.exec(sql)?.[0]; };
+// psql ends a line at a carriage return too, and the server with it; MySQL only at a newline
+const lineEnd = (sql: string, from: number, d: Dialect) => { for (let j = from; j < sql.length; j++) if (sql[j] === '\n' || (d === 'pg' && sql[j] === '\r')) return j; return sql.length; };
+// what an E'' string reads differently: a quote after an odd run of backslashes
+const ODD_SLASH = /(?:^|[^\\])(?:\\\\)*\\'/;
 
-// Strings, comments and dollar quotes the way the database reads them, so a ; or a backslash inside one isn't mistaken for
-// anything. A backslash outside one is a client command (psql's \!, mysql's \!), never SQL, and nothing else starts it.
-export function tokenize(sql: string, d: Dialect): Tok[] {
-  const out: Tok[] = [];
+// Strings, comments and dollar quotes the way psql and the database read them, so a ; or a backslash inside one isn't mistaken for
+// anything. A backslash outside one is a client command (psql's \!, mysql's \!), never SQL, and nothing else starts it. One token at
+// a time: a dump can be big, and whoever reads it moves pos.i past its rows.
+export function* lex(sql: string, d: Dialect, pos = { i: 0 }): Generator<Tok> {
   const quoted = (from: number, q: string, escapes: boolean) => {
     for (let j = from + 1; j < sql.length; j++) {
       if (escapes && sql[j] === '\\') { j++; continue; }
@@ -23,39 +31,50 @@ export function tokenize(sql: string, d: Dialect): Tok[] {
     }
     throw refuse('A quote isn’t closed.');
   };
-  let i = 0;
-  while (i < sql.length) {
-    const c = sql[i]!;
-    if (/\s/.test(c)) { i++; continue; }
-    if ((sql.startsWith('--', i) && (d === 'pg' || /[\s]/.test(sql[i + 2] ?? ' '))) || (d === 'my' && c === '#')) { const e = sql.indexOf('\n', i); i = e < 0 ? sql.length : e + 1; continue; }
+  let word: Tok | undefined;
+  while (pos.i < sql.length) {
+    const i = pos.i, c = sql[i]!;
+    if (SPACE.has(c)) { pos.i++; continue; }
+    if ((sql.startsWith('--', i) && (d === 'pg' || SPACE.has(sql[i + 2] ?? ' '))) || (d === 'my' && c === '#')) { pos.i = lineEnd(sql, i, d); yield { k: 'note', v: sql.slice(i, pos.i), at: i }; continue; }
     if (sql.startsWith('/*', i)) {
       // MySQL runs what's in these, so they're code, not comments
       if (d === 'my' && /^\/\*M?!/.test(sql.slice(i, i + 4))) throw refuse('Comments that run code aren’t allowed here.');
       let depth = 1, j = i + 2;
       while (j < sql.length && depth) { if (sql.startsWith('*/', j)) { depth--; j += 2; } else if (d === 'pg' && sql.startsWith('/*', j)) { depth++; j += 2; } else j++; }
       if (depth) throw refuse('A comment isn’t closed.');
-      i = j; continue;
+      pos.i = j; yield { k: 'note', v: sql.slice(i, j), at: i }; continue;
     }
     if (c === "'" || (d === 'my' && c === '"')) {
-      const last = out.at(-1), e = d === 'pg' && last?.k === 'word' && /^e$/i.test(last.v) && last.at + 1 === i;
-      const j = quoted(i, c, d === 'my' || !!e);
-      out.push({ k: 'str', v: sql.slice(i + 1, j - 1), at: i }); i = j; continue;
+      // 1e'…' is an escape string to an old psql and not to a new one, and a string on the next line is whatever the last one was
+      const e = d === 'pg' && word?.at === i - 1 && /^e$/i.test(word.v) && !/[\w$.\u0080-￿]/.test(sql[i - 2] ?? ' ');
+      const j = quoted(i, c, d === 'my' || e);
+      if (d === 'pg' && !e && ODD_SLASH.test(sql.slice(i + 1, j))) throw refuse('A backslash right before a quote can be read two ways. Double it, or write the string as E\'…\'.');
+      pos.i = j; yield { k: 'str', v: sql.slice(i + 1, j - 1), at: i }; continue;
     }
-    if (c === '"' || (d === 'my' && c === '`')) { const j = quoted(i, c, false); out.push({ k: 'name', v: sql.slice(i + 1, j - 1).split(c + c).join(c), at: i }); i = j; continue; }
+    if (c === '"' || (d === 'my' && c === '`')) { const j = quoted(i, c, false); pos.i = j; yield { k: 'name', v: sql.slice(i + 1, j - 1).split(c + c).join(c), at: i }; continue; }
     if (d === 'pg' && c === '$') {
-      const tag = /^\$(?:[A-Za-z_\u0080-￿][\w\u0080-￿]*)?\$/.exec(sql.slice(i, i + 80))?.[0];
-      if (tag) { const e = sql.indexOf(tag, i + tag.length); if (e < 0) throw refuse('A quote isn’t closed.'); out.push({ k: 'str', v: sql.slice(i + tag.length, e), at: i }); i = e + tag.length; continue; }
+      const tag = matched(TAG, sql, i);
+      if (tag) { const e = sql.indexOf(tag, i + tag.length); if (e < 0) throw refuse('A quote isn’t closed.'); pos.i = e + tag.length; yield { k: 'str', v: sql.slice(i + tag.length, e), at: i }; continue; }
     }
-    if (c === '\\') throw refuse('Client commands (a backslash) aren’t allowed in a query.');
-    const w = /^[A-Za-z_\u0080-￿][\w$\u0080-￿]*/.exec(sql.slice(i, i + 200))?.[0];
-    if (w) { out.push({ k: 'word', v: w, at: i }); i += w.length; continue; }
-    out.push({ k: 'op', v: c, at: i }); i++;
+    pos.i = i + 1;
+    if (c === '\\') { yield { k: 'cmd', v: c, at: i }; continue; }
+    const w = matched(WORD, sql, i);
+    if (w) { pos.i = i + w.length; yield word = { k: 'word', v: w, at: i }; continue; }
+    yield { k: 'op', v: c, at: i };
+  }
+}
+export function tokenize(sql: string, d: Dialect) {
+  const out: Tok[] = [];
+  for (const t of lex(sql, d)) {
+    if (t.k === 'cmd' || (t.k === 'note' && t.v.includes('\\'))) throw refuse('Client commands (a backslash) aren’t allowed in a query.');
+    if (t.k !== 'note') out.push(t);
   }
   return out;
 }
 
 // One statement, or a refusal. text is what the database gets: no trailing ; and nothing after it.
 export function statement(sql: string, d: Dialect) {
+  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(sql)) throw refuse('A query can’t hold control characters, such as a carriage return. Take them out and try again.');
   const toks = tokenize(sql, d), semi = toks.findIndex((t) => t.k === 'op' && t.v === ';');
   if (semi >= 0 && semi < toks.length - 1) throw refuse('Only one statement at a time. Run them one by one.');
   const body = semi >= 0 ? toks.slice(0, semi) : toks;
@@ -83,10 +102,11 @@ export function writeStatement(sql: string, d: Dialect) {
   if (st.first === 'copy' && has(st.toks, 'program')) throw refuse('COPY … PROGRAM runs a command on the server, so it isn’t allowed here.');
   return st;
 }
-// what can't be undone from a copy of one database, for the gate: never a plain data change
-export function dropsDatabase(sql: string, d: Dialect) {
+// what can't be undone from a copy of one database, for the gate: never a plain data change. The gate doesn't know which database
+// it is, so it's read both ways, and never differently from what runs: what statement refuses never runs
+export const dropsDatabase = (sql: string) => (['pg', 'my'] as const).some((d) => {
   try { const { first, toks } = statement(sql, d); return first === 'drop' && has(toks.slice(1, 2), 'database', 'schema'); } catch { return false; }
-}
+});
 
 // --- what looks personal ---------------------------------------------------------------------------------------------------
 const PERSONAL = /(^|_)(e?mails?|phones?|mobile|telephone|tel|fax|passwords?|passwd|pwd|pass|tokens?|secrets?|api_?keys?|private_?keys?|credentials?|otp|jwt|cookies?|salt|ssn|passport|tax_?id|national_?id|iban|cvv|card(_?number)?|birth(_?(day|date))?|dob|first_?names?|last_?names?|full_?names?|sur_?names?|given_?names?|family_?names?|middle_?names?|maiden_?name|display_?names?|nick_?names?|nicename|user_?names?|login|addr|address|address_?\d|street|post_?codes?|zip(_?codes?)?|ip|ip_?addr(ess)?|lat(itude)?|lng|longitude)($|_)/;
