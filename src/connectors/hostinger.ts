@@ -31,7 +31,7 @@ export function hostingerRisk(operation: string): 'read' | 'write' | 'destructiv
   const op = operation.toLowerCase();
   const verb = op.slice(op.lastIndexOf('_') + 1);
   if (/^(list|get|check|search|status|show|view)(-|$)/.test(verb)) return 'read';
-  if (/(purchase|recreate|delete|reset|destroy|cancel|remove|restore|password|payment|disable|wipe|replace|whois|move|transfer|nameserver|forwarding|lock|privacy|contact|owner|stop|dns|public-key|ssh-key|firewall|remote-connection|ftp|user|token|api-key|member|access)/.test(op)) return 'destructive';
+  if (/(purchase|recreate|snapshots_create|delete|reset|destroy|cancel|remove|restore|password|payment|disable|wipe|replace|whois|move|transfer|nameserver|forwarding|lock|privacy|contact|owner|stop|dns|public-key|ssh-key|firewall|remote-connection|ftp|user|token|api-key|member|access)/.test(op)) return 'destructive';
   if (/^(create|update|setup|set|add|attach|enable|start|restart|reboot|install|activate|upload|deploy|import|sync|generate|verify|validate|run|build|clear|flush|refresh|change)(-|$)/.test(verb)) return 'write';
   return 'destructive';
 }

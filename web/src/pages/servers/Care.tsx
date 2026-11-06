@@ -32,8 +32,8 @@ function SignIn({ serverId, name }: { serverId: string; name: string }) {
   };
   return (
     <Card className="min-w-0 self-start p-5 md:p-6 lg:col-span-7">
-      <CardHeader icon={<KeyRound size={19} />} title="Who can sign in" sub="Unit7’s own key and the last working key always stay"
-        actions={<div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" icon={<KeyRound size={13} />} onClick={() => setAdd('key')}>Add a key</Button><Button size="sm" variant="ghost" icon={<UserPlus size={13} />} onClick={() => setAdd('user')}>Add a person</Button></div>} />
+      <CardHeader icon={<KeyRound size={19} />} title="Who can sign in" sub="The last working key always stays" />
+      <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" icon={<KeyRound size={13} />} onClick={() => setAdd('key')}>Add a key</Button><Button size="sm" icon={<UserPlus size={13} />} onClick={() => setAdd('user')}>Add a person</Button></div>
       {error ? <div className="mt-4"><Note>{tidy(error)}</Note></div> : !data ? <Skeleton className="mt-4 h-20" /> : (
         <ul className="mt-3 divide-y divide-line">
           {data.accounts.map((a) => (
@@ -83,10 +83,10 @@ function OpenPort({ serverId }: { serverId: string }) {
   };
   return (
     <Card className="min-w-0 self-start p-5 md:p-6 lg:col-span-5">
-      <CardHeader icon={<DoorOpen size={19} />} title="Open a port" sub="Say why: it stays on record. It survives a restart" />
+      <CardHeader icon={<DoorOpen size={19} />} title="Open a port" sub="It survives a restart" />
       <form onSubmit={submit} className="mt-4 space-y-3">
         <Field label="Port"><Input required inputMode="numeric" pattern="[0-9]{1,5}" value={port} onChange={(e) => setPort(e.target.value)} /></Field>
-        <Field label="Why it needs to be open"><Input required minLength={5} maxLength={200} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
+        <Field label="Why it needs to be open" hint="It stays on record."><Input required minLength={5} maxLength={200} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
         <div className="flex justify-end"><Button variant="primary">Open it</Button></div>
       </form>
     </Card>
@@ -108,7 +108,8 @@ function Snapshots({ serverId, name }: { serverId: string; name: string }) {
   };
   return (
     <Card className="min-w-0 self-start p-5 md:p-6 lg:col-span-6">
-      <CardHeader icon={<Camera size={19} />} title="Snapshots" sub={data ? data.billed ?? data.note ?? `Kept at ${data.provider}` : 'A copy of the whole server, kept at your provider'} actions={data && <Button size="sm" variant="ghost" onClick={() => void take()}>Take one</Button>} />
+      <CardHeader icon={<Camera size={19} />} title="Snapshots" sub={data ? `Kept at ${data.provider}` : 'The whole server'} actions={data && <Button size="sm" variant="ghost" onClick={() => void take()}>Take one</Button>} />
+      {(data?.billed ?? data?.note) && <p className="mt-2 text-[12.5px] text-muted">{data?.billed ?? data?.note}</p>}
       {error ? <div className="mt-4"><Note>{tidy(error)}</Note></div> : !data ? <Skeleton className="mt-4 h-12" /> : !data.snapshots.length ? <p className="mt-4 text-[13px] text-muted">None yet.</p> : (
         <ul className="mt-3 divide-y divide-line">
           {data.snapshots.map((s) => (
@@ -140,7 +141,7 @@ function Size({ serverId }: { serverId: string }) {
   };
   return (
     <Card className="min-w-0 self-start p-5 md:p-6 lg:col-span-6">
-      <CardHeader icon={<Scaling size={19} />} title="Size and plan" sub="What it really uses, and what fits" actions={<Button size="sm" variant="ghost" loading={busy} onClick={() => void look()}>{fit ? 'Look again' : 'See what fits'}</Button>} />
+      <CardHeader icon={<Scaling size={19} />} title="Size and plan" sub="Does it still fit?" actions={<Button size="sm" variant="ghost" loading={busy} onClick={() => void look()}>{fit ? 'Look again' : 'See what fits'}</Button>} />
       {err && <div className="mt-4"><Note>{err}</Note></div>}
       {fit && (
         <>
@@ -199,7 +200,8 @@ function Move({ serverId, others }: { serverId: string; others: { id: string; na
   const copy = async () => { setBusy(true); const r = await act('server.move', { serverId, toServerId: to }, { success: 'The copy is done', undo: false }); setBusy(false); if (r) setMoved(r.output as Moved); };
   return (
     <Card className="min-w-0 self-start p-5 md:p-6 lg:col-span-12">
-      <CardHeader icon={<Truck size={19} />} title="Move to a new server" sub="Copies Coolify’s data, volumes and databases. This server keeps running, untouched" />
+      <CardHeader icon={<Truck size={19} />} title="Move to a new server" sub="Copy first, switch later" />
+      <p className="mt-2 text-[13px] text-muted">Copies Coolify’s data, volumes and databases to an empty server. This one keeps running, untouched. The switch is yours, one step at a time.</p>
       {!others.length ? <p className="mt-4 text-[13px] text-muted">Add the new server first. It has to be empty.</p> : (
         <div className="mt-4 flex flex-wrap items-end gap-2">
           <div className="min-w-[200px] flex-1"><Field label="The new server"><Select className="w-full" value={to} onChange={(v) => { setTo(v); setPlan(null); setMoved(null); }} options={others.map((o) => ({ value: o.id, label: o.name }))} /></Field></div>

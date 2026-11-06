@@ -15,7 +15,7 @@ import { COOLIFY_HOST } from './xray-fixtures.ts';
 import { get, id, json, run } from '../src/db.ts';
 import { Unit7Error } from '../src/errors.ts';
 import { ssh, type ServerRow } from '../src/connectors/ssh.ts';
-import { hostinger } from '../src/connectors/hostinger.ts';
+import { hostinger, hostingerRisk } from '../src/connectors/hostinger.ts';
 import { decideApproval, execute, getTool } from '../src/tools/runtime.ts';
 import { colourOf } from '../src/policy.ts';
 import { accessLeft, parseKeyLine, publicKeyLine, keyRemovalProblem, userRemovalProblem, parseAccess, userFromEmail, inviteMail } from '../src/tools/access.ts';
@@ -400,6 +400,14 @@ test('create is green and restore red; Hostinger’s one snapshot is never overw
   assert.equal(calls.filter((c) => c.op === 'vps_snapshots_create').length, 2, 'after a person’s yes');
 });
 
+test('the raw route can’t overwrite Hostinger’s snapshot unasked either', async () => {
+  assert.equal(hostingerRisk('vps_snapshots_create'), 'destructive');
+  assert.equal(hostingerRisk('vps_snapshots_get'), 'read');
+  const { o, sid, calls } = await hostingerWorld({ snapshot: { id: 7 } });
+  assert.notEqual((await o.a('hostinger.do', { operation: 'vps_snapshots_create', params: { virtualMachineId: 42 } })).status, 'ok');
+  assert.ok(!calls.some((c) => c.op === 'vps_snapshots_create') && sid);
+});
+
 test('a look that failed never overwrites: a create stops when Hostinger can’t say what’s there', async () => {
   const { o, sid, calls } = await hostingerWorld({ failGet: 'Hostinger said: 500 upstream' });
   assert.equal((await o.a('server.snapshot', { serverId: sid, op: 'create' })).status, 'error');
@@ -777,6 +785,12 @@ test('the plan says what moves, how long, and what stays behind, and a busy new 
   assert.ok(m.domains.includes('shop.example.com'));
   assert.ok(m.leftBehind.some((l) => /built images/.test(l)) && m.leftBehind.some((l) => /saved after the copy/.test(l)));
   assert.ok(m.minutes >= 2);
+  // what a server says never decides what gets emptied over there
+  const walk = parseSource(`size=1\n@@mounts relaydb01\n${JSON.stringify([{ Type: 'bind', Source: '/data/coolify/../../etc', Destination: '/var/lib/postgresql/data' }])}\n@@end\n`);
+  assert.equal(movesOf(i, walk).databases.find((d) => d.container === 'relaydb01')!.spec, undefined, 'a path that walks out of Coolify’s folder isn’t a place');
+  const named = parseSource(`size=1\n@@mounts relaydb01\n${JSON.stringify([{ Type: 'volume', Name: '../x', Source: 'x', Destination: '/var/lib/postgresql/data' }])}\n@@end\n`);
+  assert.equal(movesOf(i, named).databases.find((d) => d.container === 'relaydb01')!.spec, undefined);
+  assert.equal(movesOf(i, parseSource(`size=1\n@@mounts relaydb01\n${JSON.stringify([{ Type: 'bind', Source: '/data/coolify/databases/relaydb01/data', Destination: '/var/lib/postgresql/data' }])}\n@@end\n`)).skip.includes('databases/relaydb01/data'), true, 'a data folder inside Coolify’s own goes as a dump, not as files');
   const from = { id: 'srv_a', name: 'old', facts: '{"arch":"x86_64"}' } as ServerRow, to = { id: 'srv_b', name: 'new', facts: '{}' } as ServerRow;
   const t = parseTarget('arch=aarch64\ndocker=\nmark=\nfree=1000\n@@containers\nsome-app\nunit7-caddy\n@@volumes\ncoolify-db|\n@@end\n');
   const why = targetProblems(t, from, to, { ...m, volumes: [...m.volumes, { name: 'coolify-db', bytes: 5e9 }] }).join(' ');
@@ -820,7 +834,9 @@ test('server.move copies Coolify’s data, volumes and databases, proves it, and
   assert.ok(existsSync(join(oldRoot, 'var/backups/unit7')), 'the one new thing there: a fresh backup');
   assert.equal(factsOf(app, from).move.proven, true);
   assert.equal(factsOf(app, from).move.to, to);
-  assert.ok(out.then.some((s: any) => s.tool === 'domain.point' && s.input.hostname === 'shop.example.com' && s.input.server === to));
+  assert.ok(out.then.some((s: any) => s.tool === 'domain.point' && s.input.hostname === 'shop.example.com' && s.input.server.serverId === to));
+  // every step names a tool that exists, with an input it takes, so a person can run them one at a time
+  for (const s of out.then) { assert.ok(getTool(s.tool), s.tool); if (s.input) assert.equal(getTool(s.tool)!.input.safeParse(s.input).success, true, s.tool); }
   assert.doesNotMatch(JSON.stringify(out), /secretsecret/);
 });
 

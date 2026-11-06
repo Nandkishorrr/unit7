@@ -53,7 +53,8 @@ const bindsOutside = (inv: Inventory) => [...new Set(inv.parts.filter((p) => p.o
 // (pure) the whole plan from what was read
 export function movesOf(inv: Inventory, source: ReturnType<typeof parseSource>, sizes?: Sizes): Moves {
   const databases: Db[] = dbsOf(inv).map((part) => {
-    const container = liveContainer(part)!, m = source.mounts.get(container)?.find((x) => DATA_DIR[part.engine!]!.test(x.Destination) && (x.Type === 'volume' || (x.Type === 'bind' && x.Source.startsWith(`${COOLIFY}/`))));
+    // what a server says decides what gets emptied on the new one, so the place has to be plainly a volume or inside Coolify's folder
+    const container = liveContainer(part)!, m = source.mounts.get(container)?.find((x) => DATA_DIR[part.engine!]!.test(x.Destination) && (x.Type === 'volume' ? SAFE.test(x.Name ?? '') : x.Type === 'bind' && x.Source.startsWith(`${COOLIFY}/`) && !/(^|\/)\.\.(\/|$)/.test(x.Source)));
     const bytes = sizes?.databases.filter((d) => d.part === part.id).reduce((n, d) => n + d.bytes, 0) || (m?.Name && sizes?.volumes[m.Name]) || 0;
     return { part, container, image: imageOf(part)!, bytes, ...(m && { spec: `${m.Type === 'volume' ? m.Name : m.Source}:${m.Destination}`, ...(m.Type === 'volume' ? { volume: m.Name } : { bind: m.Source }) }) };
   });
@@ -125,7 +126,7 @@ function switchSteps(from: ServerRow, to: ServerRow, m: Moves) {
     { step: `Start Coolify on ${to.name}.`, tool: 'server.move_start', input: { serverId: from.id, toServerId: to.id } },
     { step: `Connect Unit7 to the Coolify on ${to.name}.`, tool: 'coolify.connect', input: { serverId: to.id, auto: true } },
     { step: `Deploy each app and start each database on ${to.name}, and check them.`, tool: 'coolify.control' },
-    ...m.domains.map((d) => ({ step: `Point ${d} at ${to.name}.`, tool: 'domain.point', input: { hostname: d, server: to.id } })),
+    ...m.domains.map((d) => ({ step: `Point ${d} at ${to.name}.`, tool: 'domain.point', input: { hostname: d, server: { serverId: to.id } } })),
     { step: `When the new server has run well for a while, turn ${from.name} off or cancel it at your provider.`, tool: 'coolify.control' },
   ];
 }
