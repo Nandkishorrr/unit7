@@ -72,7 +72,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 52. In Unit7’s ask box, to put something live: ui_folder or a repo, then live_options, then live_put. You never choose a path.
 53. For databases server_xray found, use part_tables and part_query. Ask for counts: an AI’s personal columns come back hidden. part_import and restoring over live go through a person. part_upgrade_plan, part_upgrade_run and part_upgrade_switch move a Postgres to a new major version side by side.
 54. For anything in addon_catalog use addon_install, never coolify_create_service: only it claims the admin login before a first visitor can.
-55. When no typed tool fits, connection_tools lists what an account’s hosted server offers and connection_call runs it. A failed GitHub Action: github_runs, then github_run_logs. Stripe webhooks failing: stripe_webhooks.`;
+55. When no typed tool fits, connection_tools lists what an account’s hosted server offers and connection_call runs it. A failed GitHub Action: github_runs, then github_run_logs. Stripe webhooks failing: stripe_webhooks.
+56. To move a site off a host or builder: move_plan, show it, move_run, then move_switch, which always waits for approval. move_finish only suggests removing the old site.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).

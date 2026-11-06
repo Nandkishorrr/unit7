@@ -63,6 +63,7 @@ Unit7 can use an AI you connect: an API key, a local model, or your own signed-i
 - An AI reads found databases only through a read-only login in a throwaway container. That login can see every row, so people-only limits still apply, and exports are people-only.
 - Unit7 claims an add-on’s admin at install, or keeps it behind an extra password. Templates outside the catalogue are unprotected, so an AI asks first.
 - connection.call masks secret fields for an AI, treats unlisted tools as destructive, and leaves buying to people. stripe.webhooks shares only setting names and modes.
+- move.switch always needs a person. Copying readable settings needs a person’s yes, and values are never shown.
 
 ## Licence promise
 

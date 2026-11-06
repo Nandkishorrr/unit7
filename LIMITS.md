@@ -75,6 +75,8 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Stripe shows a signing secret once, so stripe.webhooks infers mismatches, and comparing test and live needs both connected. Setting GitHub secrets needs gh installed. With no AI connected, the ask box answers four fixed asks.
 
+- A move doesn’t copy data, cron or host redirects, and never removes the old site.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.
