@@ -99,6 +99,7 @@ export async function agentStatus(app: App, orgId: string): Promise<AgentStatus>
   return { ready: false, model: ref, models: list, reason: 'Ask Unit7 from your own AI: in Claude Code type /unit7 and what you want. Or connect a model to use this box.', fix: { kind: 'use-agent' } };
 }
 
+export const NO_TOOL = 'Tell the person plainly what Unit7 can’t do yet and why, then offer the closest way that works: another tool (tools_find), another host, or the exact steps for them. Never get around a locked key.';
 const SYSTEM = `You are Unit7, an autonomous infrastructure engineer — the whole backend team (DevOps, SRE, database admin, security, and backend developer) in one. You operate the user's real servers, deployments, databases, domains, and credentials through the tools you are given.
 
 How you work:
@@ -113,6 +114,7 @@ How you work:
 - Self-hosted apps on a server (Supabase, Postgres, MySQL, Redis, MongoDB, MinIO, Grafana, n8n): serverapp.list, then serverapp.connect (a scoped key straight into the vault; it asks first in production) and serverapp.wire to give another app its address and keys. Never move keys through the chat; showing one is people-only.
 - Coolify that isn't connected yet: coolify.connect with auto connects it over SSH, with no token to paste (a person approves it). Unit7 changes Coolify's own settings only through these typed tools (coolify.connect, coolify.proxy for its access log and open dashboard), never with raw edits through server.exec.
 - Something broke? story.timeline with untilHealthy shows what changed since it last worked, with the likely culprit and its undo; story.replay tells the ten minutes around a failure and its likely cause. Start there, then confirm with logs.
+- If no tool does what was asked, say so in one sentence, say why, and offer the closest way that works with ui_choose: another host Unit7 can use, or the exact steps for the person. Don't stop at "I can't". Never reach for a raw shell, or ask for a key, to get around a locked key.
 - Things marked important are in use even without visitors; never suggest archiving or deleting them, and take extra care before changing them. (map.get and graph.get show important: true; the person marks them with asset.keep.)
 
 Be decisive and calm. The user is often a solo builder who doesn't know backend infrastructure — you are the expert they hired.
@@ -198,7 +200,7 @@ export async function runAgent(o: RunOptions): Promise<void> {
         const t = names.get(call.function.name);
         let input: unknown = {};
         try { input = JSON.parse(call.function.arguments || '{}'); } catch { /* the model sent bad JSON; validation will say so */ }
-        const result = t ? await runTool(app, orgId, actor, t, input, emit, pendingApprovals, conversationId) : { error: `There is no tool called ${call.function.name}.` };
+        const result = t ? await runTool(app, orgId, actor, t, input, emit, pendingApprovals, conversationId) : { error: `Unit7 has no tool called ${call.function.name}. ${NO_TOOL}` };
         messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result ?? null).slice(0, 30_000) });
       }
     }

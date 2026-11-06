@@ -5,6 +5,10 @@
 // New commits are found with `git ls-remote` (works for public and private repos, no API rate
 // limit). The API is used only for pull requests, commit statuses and the preview comment.
 import { execFile } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import type { Ctx } from '../tools/runtime.ts';
 import { get, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
@@ -140,4 +144,38 @@ export async function commitFiles(repo: Repo, o: { base: string; branch: string;
   const commit = await api<{ sha: string }>(token, `${r}/git/commits`, { method: 'POST', body: { message: o.message, tree: tree.sha, parents: [head.object.sha] } });
   await api(token, `${r}/git/refs`, { method: 'POST', body: { ref: `refs/heads/${o.branch}`, sha: commit.sha } });
   return commit.sha;
+}
+
+// A repo for a person's site: new and private unless they say otherwise. A name the account already has is an answer, not a failure.
+export async function createRepo(token: string, name: string, o: { private: boolean; org?: string; description?: string }): Promise<Repo> {
+  const r = await api<{ owner: { login: string }; name: string }>(token, o.org ? `/orgs/${encodeURIComponent(o.org)}/repos` : '/user/repos', { method: 'POST', body: { name, private: o.private, ...(o.description && { description: o.description }) } })
+    .catch((e: Unit7Error) => { throw /422/.test(e.message) ? new Unit7Error('already_exists', `You already have a repo called ${name}. Choose another name, or say you want to update it.`, 409) : e; });
+  return { owner: r.owner.login, name: r.name };
+}
+export async function repoExists(token: string, name: string): Promise<Repo | undefined> {
+  const me = await api<{ login: string }>(token, '/user');
+  return api<{ owner: { login: string }; name: string }>(token, `/repos/${encodeURIComponent(me.login)}/${encodeURIComponent(name)}`).then((r) => ({ owner: r.owner.login, name: r.name }), () => undefined);
+}
+// These files as one commit, from a throwaway folder so a person's own .git is never touched. Never a force push: on an
+// existing repo it's a normal commit on top, so every earlier version stays and can be gone back to.
+export async function pushFolder(files: { path: string; abs: string }[], repo: Repo, token: string | undefined, o: { branch: string; message: string; existing: boolean }): Promise<string> {
+  const exec = promisify(execFile), tmp = mkdtempSync(join(tmpdir(), 'unit7-push-'));
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(token && GH().startsWith('https://') ? githubAuthEnv(token) : {}) };
+  const git = (...args: string[]) => exec(sysBin('git'), ['-c', 'user.name=Unit7', '-c', 'user.email=unit7@users.noreply.github.com', ...args], { cwd: tmp, env, timeout: 300_000, maxBuffer: 1 << 24 })
+    .catch((e: Error) => { throw new Unit7Error('git_failed', `git ${args[0]} failed for ${repo.owner}/${repo.name}: ${e.message.replaceAll(token ?? '\u0000', '***').slice(-240)}`, 502); });
+  try {
+    if (o.existing) {
+      await git('clone', '--depth', '1', '--branch', o.branch, '--', cloneUrl(repo), '.');
+      for (const name of readdirSync(tmp)) if (name !== '.git') rmSync(join(tmp, name), { recursive: true, force: true });
+    } else {
+      await git('init', '-q', '-b', o.branch);
+      await git('remote', 'add', 'origin', cloneUrl(repo));
+    }
+    for (const f of files) { mkdirSync(dirname(join(tmp, f.path)), { recursive: true }); cpSync(f.abs, join(tmp, f.path)); }
+    await git('add', '-A');
+    const changed = (await git('status', '--porcelain')).stdout.trim();
+    if (changed) await git('commit', '-q', '-m', o.message);
+    if (changed || !o.existing) await git('push', '-q', 'origin', `HEAD:refs/heads/${o.branch}`);
+    return (await git('rev-parse', 'HEAD')).stdout.trim();
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
 }

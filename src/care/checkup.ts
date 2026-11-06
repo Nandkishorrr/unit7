@@ -58,7 +58,9 @@ export function verdictsOf(c: Pick<Checkup, 'room' | 'protection' | 'items' | 'c
     : worst ? { word: worst.word, line: `${worst.name}: RAM ${worst.ram.pct}%, disk ${worst.disk.pct}%`, tone: worst.word === 'Tight' ? 'act' : 'look' }
     : { word: 'Plenty', line: c.room.length === 1 ? `RAM ${c.room[0]!.ram.pct}%, disk ${c.room[0]!.disk.pct}%` : `${c.room.length} servers with room to spare`, tone: 'good' };
   const important = c.protection.filter((g) => g.important), proven = important.filter((g) => g.level === 'proven').length, naked = important.filter((g) => g.level === 'unprotected').length, weak = important.filter((g) => g.level === 'weak').length;
+  const failed = important.filter((g) => g.failed).length; // a copy that wouldn't come back isn't protection, so it's never "nothing urgent"
   const protection: Verdict = !important.length ? { word: 'Nothing to protect', line: 'No important database found.', tone: 'good' }
+    : failed ? { word: 'Not proven', line: `${failed} of ${important.length} failed a test restore`, tone: 'act' }
     : naked ? { word: 'At risk', line: `${naked} of ${important.length} have no copy anywhere`, tone: 'act' }
     : weak ? { word: 'Weak', line: `${weak} of ${important.length} only have copies on this server`, tone: 'look' }
     : proven === important.length ? { word: 'Proven', line: `All ${important.length} restored in a test this week`, tone: 'good' } : { word: 'Protected', line: `${proven} of ${important.length} proven, the rest copied off the server`, tone: 'look' };

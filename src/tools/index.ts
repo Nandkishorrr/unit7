@@ -35,6 +35,7 @@ import './upkeep.ts';
 import './lifecycle.ts';
 import './home.ts';
 import './care.ts';
+import './live.ts';
 import './safety.ts';
 import './checkup.ts';
 import './handoff.ts';

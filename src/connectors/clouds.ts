@@ -103,7 +103,8 @@ export const neon = {
 // --- Vercel ------------------------------------------------------------------------------------------
 
 const VERCEL = () => process.env.UNIT7_VERCEL_API ?? 'https://api.vercel.com'; // overridable for offline tests
-async function vc<T = any>(ctx: Ctx, acc: string, path: string, o: { method?: string; body?: unknown; team?: string; query?: Record<string, string> } = {}): Promise<T> {
+export const vercelBase = VERCEL;
+export async function vc<T = any>(ctx: Ctx, acc: string, path: string, o: { method?: string; body?: unknown; team?: string; query?: Record<string, string> } = {}): Promise<T> {
   const token = await bearerFor(ctx, 'vercel', acc);
   await assertReachable(new URL(VERCEL()).hostname);
   const q = new URLSearchParams({ ...(o.team && { teamId: o.team }), ...o.query });

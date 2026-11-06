@@ -56,22 +56,24 @@ function list(root: string, sub = '', depth = 0, out: string[] = []): string[] {
 }
 
 // What the folder is: its name, and the stack a deploy would build it as (the same detection, read locally)
-export function inspectFolder(path: string, unit7Home: string) {
-  const dir = checkFolder(path, unit7Home);
+export function factsOf(dir: string) {
   const files = list(dir);
   const manifests: Record<string, string> = {};
   for (const f of files.filter((x) => MANIFEST.test(x)).sort((a, b) => a.split('/').length - b.split('/').length).slice(0, 20)) {
     try { manifests[f] = readFileSync(join(dir, f), 'utf8').slice(0, 32_768); } catch { /* unreadable: skip */ }
   }
-  const d = detect({ files, manifests });
+  return { files, manifests };
+}
+export function inspectFolder(path: string, unit7Home: string) {
+  const dir = checkFolder(path, unit7Home), d = detect(factsOf(dir));
   return { path: dir, name: basename(dir), stack: d.stack, runtime: d.runtime ?? null };
 }
 
 // The folder as a .tgz, leaving out the usual heavy and secret files (the server rebuilds from source anyway)
 export const MAX_PACK = 90 * 1024 * 1024;
-export async function packFolder(dir: string, max = MAX_PACK): Promise<Buffer> {
+export async function packFolder(dir: string, max = MAX_PACK, o: { keepBuild?: boolean } = {}): Promise<Buffer> {
   // COPYFILE_DISABLE: macOS tar otherwise adds hidden ._ "AppleDouble" files next to every file
-  const tar = spawn('tar', ['-cf', '-', '--exclude=.git', '--exclude=node_modules', '--exclude=.next', '--exclude=dist', '--exclude=.env', '--exclude=.env.*', '--exclude=._*', '--exclude=.DS_Store', '-C', dir, '.'],
+  const tar = spawn('tar', ['-cf', '-', '--exclude=.git', '--exclude=node_modules', '--exclude=.next', ...(o.keepBuild ? [] : ['--exclude=dist']), '--exclude=.env', '--exclude=.env.*', '--exclude=._*', '--exclude=.DS_Store', '-C', dir, '.'],
     { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, COPYFILE_DISABLE: '1' } });
   const gz = tar.stdout.pipe(createGzip());
   tar.once('error', (e) => gz.destroy(e)); // no tar at all: fail this deploy, not the whole server

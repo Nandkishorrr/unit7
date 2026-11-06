@@ -65,6 +65,10 @@ program.command('deploy')
   .option('--dir <dir>', 'folder to deploy', '.')
   .action(async (o) => { const { deployFolder } = await import('./cli/deploy.ts'); await deployFolder(o.service, o.dir); });
 
+program.command('live [dir]').description('Put this folder on the internet: it picks the best connected host')
+  .option('--to <host>', 'where: vercel, coolify…').option('--name <name>', 'the project name').option('--domain <domain>', 'your domain').option('--update', 'replace what is live')
+  .action(async (dir, o) => { const { live } = await import('./cli/live.ts'); await live(dir ?? '.', o); });
+
 program.command('autosync [every]').description('How often the map syncs by itself: 15m, 1h, 6h, 1d or off (no value: show it)').action((every) => t('sync.schedule', every ? { every } : {}));
 program.command('blocked').description('What Unit7 blocked lately (denied, rejected, expired)').option('-d, --days <n>', 'days', '7').action((o) => t('audit.blocked', { days: Number(o.days) }));
 program.command('logs <serviceId>').description('Tail a service’s logs').option('-n, --lines <n>', 'lines', '200').action((id, o) => t('deployment.logs', { serviceId: id, lines: Number(o.lines) }));
