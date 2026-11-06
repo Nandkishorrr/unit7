@@ -510,11 +510,14 @@ test('a stray character in a pasted key says so in plain words', async () => {
 
 test('a one-click sign-in reads through the hosted read tools, whatever shape they answer in', async () => {
   const app = testApp(), o = await testOrg(app);
-  const api = await fakeMcp([
-    { name: 'planetscale_list_organizations', annotations: READS }, { name: 'planetscale_list_databases', annotations: READS, inputSchema: { type: 'object', properties: { organization: { type: 'string' } } } },
-    { name: 'list_databases', annotations: READS }, { name: 'redis_database_list_databases', annotations: READS }, { name: 'list-domains', annotations: READS },
-    { name: 'find_organizations', annotations: READS }, { name: 'find_projects', annotations: READS }, { name: 'list_available_accounts_or_orgs', annotations: READS }, { name: 'stripe_api_read', annotations: READS },
-  ], (name, args) => {
+  const reads = (...names: string[]): Tool[] => names.map((name) => ({ name, annotations: READS }));
+  // each server holds only its own tools, as a real one does: Turso's has no planetscale_list_databases to pick up
+  const servers: Record<string, Tool[]> = {
+    planetscale: [...reads('planetscale_list_organizations'), { name: 'planetscale_list_databases', annotations: READS, inputSchema: { type: 'object', properties: { organization: { type: 'string' } } } }],
+    turso: reads('list_databases'), upstash: reads('redis_database_list_databases'), resend: reads('list-domains'),
+    sentry: reads('find_organizations', 'find_projects'), stripe: reads('list_available_accounts_or_orgs', 'stripe_api_read'),
+  };
+  const reply = (name: string, args: any) => {
     if (name === 'planetscale_list_organizations') return { data: [{ name: 'acme' }] };
     if (name === 'planetscale_list_databases') { assert.deepEqual(args, { organization: 'acme' }, 'only the arguments it takes'); return { data: [{ name: 'shop', state: 'ready', kind: 'postgresql', html_url: 'https://app.planetscale.com/acme/shop' }] }; }
     if (name === 'list_databases') return { databases: [{ name: 'orders', id: 'db-2', hostname: 'orders.turso.io' }] };
@@ -525,9 +528,10 @@ test('a one-click sign-in reads through the hosted read tools, whatever shape th
     if (name === 'list_available_accounts_or_orgs') return { accounts: [{ stripe_context: 'acct_live', livemode: true, display_name: 'Shop' }, { stripe_context: 'acct_sand', livemode: false, display_name: 'Sandbox' }] };
     if (name === 'stripe_api_read') return { data: args.stripe_api_operation_id === 'GetWebhookEndpoints' ? [{ id: `we_${args.stripe_context}`, url: 'https://shop.example.com/hook', status: 'enabled' }] : [] };
     return {};
-  });
+  };
+  const apis = await Promise.all(Object.entries(servers).map(async ([p, tools]) => [p, await fakeMcp(tools, reply)] as const));
   try {
-    for (const p of ['planetscale', 'turso', 'upstash', 'resend', 'sentry', 'stripe']) signedIn(app, o.orgId, p, api.base, p);
+    for (const [p, api] of apis) signedIn(app, o.orgId, p, api.base, p);
     ok(await o.h('sync.run'));
     const by = (p: string) => assetsOf(app).filter((a) => a.provider === p);
     assert.equal(JSON.parse(by('planetscale')[0]!.meta).engine, 'postgres');
@@ -538,7 +542,7 @@ test('a one-click sign-in reads through the hosted read tools, whatever shape th
     assert.deepEqual(by('sentry').map((a) => a.ext_id).sort(), ['acme/api', 'acme/shop-web']);
     assert.deepEqual(by('stripe').map((a) => a.name), ['Stripe live · Shop', 'Stripe test · Sandbox']);
     assert.equal(JSON.parse(by('stripe')[0]!.meta).status, '0 products, 1 webhook');
-  } finally { api.close(); }
+  } finally { for (const [, api] of apis) api.close(); }
 });
 
 test('blocks and issuesFrom read the prose hosted servers answer in', () => {
