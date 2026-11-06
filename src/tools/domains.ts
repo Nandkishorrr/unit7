@@ -12,7 +12,7 @@ import { writeRecords, LISTERS, NAMESERVERS, putBack, rest, NAMECOM, nc, type Re
 import { hostinger } from '../connectors/hostinger.ts';
 import { vercel, supabase } from '../connectors/clouds.ts';
 import { netlify, render, railway, heroku, fly } from '../connectors/hosts.ts';
-import { resolvesTo, dnsHost, publicResolver } from '../connectors/dnsinfo.ts';
+import { resolvesTo, dnsHost, publicResolver, spfAdvice } from '../connectors/dnsinfo.ts';
 import { hostsOf } from '../connectors/coolify.ts';
 import { act, need, setDomains } from './coolify.ts';
 import { CHANGE_UNDO, keepChange } from './manage.ts';
@@ -350,9 +350,10 @@ defineTool({
   },
 });
 
+const spfWords = (root: string[], mx: string[]) => { const a = spfAdvice(root, mx); return a && (a.record ? `Also set the SPF record at the bare domain to "${a.record}". ${a.why} dns.set writes it and keeps an undo.` : `Also add an SPF record at the bare domain. ${a.why}`); };
+
 // Stop others sending email as your domain. DMARC lives at its own name (_dmarc), so writing it can't
-// touch any other record; SPF shares the bare domain's TXT records with verifications, so Unit7 only says
-// what to add there.
+// touch any other record; SPF is one line at the bare domain, so Unit7 says the whole line, what's there kept in it.
 defineTool({
   name: 'domain.protect_email', title: 'Protect a domain\u2019s email', risk: 'write', action: 'dns_write', timeoutMs: 2 * 60_000,
   description: 'Add a DMARC record so nobody can send email pretending to be this domain (p=reject if the domain sends no email, else p=none to start by watching). Written where the domain\u2019s DNS lives; never touches other records.',
@@ -361,11 +362,11 @@ defineTool({
     const domain = i.domain.toLowerCase();
     const { Resolver } = await import('node:dns/promises');
     const r = new Resolver({ timeout: 4000, tries: 2 }); r.setServers(['1.1.1.1', '8.8.8.8']);
-    const [mx, existing, root] = await Promise.all([r.resolveMx(domain).then((v) => v.length > 0, () => false), r.resolveTxt(`_dmarc.${domain}`).then((v) => v.map((p) => p.join('')), () => [] as string[]), r.resolveTxt(domain).then((v) => v.map((p) => p.join('')), () => [] as string[])]);
+    const [mx, existing, root] = await Promise.all([r.resolveMx(domain).then((v) => v.map((m) => `${m.priority} ${m.exchange}`), () => [] as string[]), r.resolveTxt(`_dmarc.${domain}`).then((v) => v.map((p) => p.join('')), () => [] as string[]), r.resolveTxt(domain).then((v) => v.map((p) => p.join('')), () => [] as string[])]);
     if (existing.some((t) => /^v=DMARC1/i.test(t))) return { domain, dmarc: 'already set', record: existing.find((t) => /^v=DMARC1/i.test(t)) };
-    const value = mx ? 'v=DMARC1; p=none' : 'v=DMARC1; p=reject';
+    const value = mx.length ? 'v=DMARC1; p=none' : 'v=DMARC1; p=reject';
     const w = await writeRecords(ctx, `_dmarc.${domain}`, [{ type: 'TXT', name: `_dmarc.${domain}`, content: value }]);
-    const spf = root.some((t) => /^v=spf1/i.test(t)) ? undefined : mx ? 'Also add an SPF record at the bare domain listing who sends your email (your email provider gives you the line, e.g. "v=spf1 include:_spf.google.com ~all").' : 'Also add "v=spf1 -all" at the bare domain (it says the domain sends no email).';
+    const spf = spfWords(root, mx);
     return w.written ? { domain, dmarc: value, at: w.provider, spf } : { domain, ...needsYou(w, [{ type: 'TXT', name: `_dmarc.${domain}`, content: value }]), spf };
   },
 });

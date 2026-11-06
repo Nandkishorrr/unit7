@@ -270,10 +270,15 @@ export function emailStatus(hasMx: boolean, root: string[], dmarc: string[]) {
   return { status: missing.length ? (hasMx ? 'unprotected' : 'spoofable') : 'ok',
     detail: missing.length ? `${missing.join(' and ')} missing${hasMx ? ': your email may land in spam, and others can send as you' : ': this domain sends no email, but anyone can pretend it does'}` : spf ? 'SPF and DMARC set' : 'DMARC rejects anything sent in this name' };
 }
-// (SPF and DMARC, asked of public resolvers)
+// DNS can't list a domain's DKIM keys, so the names senders usually use are asked
+export const DKIM_SELECTORS = ['resend', 'google', 'default', 'selector1', 'selector2', 'k1', 's1', 's2', 'dkim', 'mail', 'smtp', 'zoho', 'hostingermail-a', 'fm1', 'protonmail', 'pm', 'cf2024-1'];
+export const isDkimKey = (t: string) => /(^|;)\s*p=[A-Za-z0-9+/]/.test(t);
+// (pure) signed, unsigned, or silent: a domain with no mail has nothing to sign
+export const dkimWord = (signed: boolean, hasMx: boolean, root: string[]) => (signed ? 'signed' : hasMx || root.some((t) => /^v=spf1\s+\S/i.test(t) && !/^v=spf1\s+-all\s*$/i.test(t)) ? 'unsigned' : 'silent');
+// (SPF, DMARC and DKIM, asked of public resolvers)
 export async function checkEmail(app: App, orgId: string, apex: string) {
-  const [hasMx, root, dmarc] = await Promise.all([mx(apex), txt(apex), txt(`_dmarc.${apex}`)]);
-  save(app, orgId, apex, 'email', emailStatus(hasMx, root, dmarc));
+  const [hasMx, root, dmarc, keys] = await Promise.all([mx(apex), txt(apex), txt(`_dmarc.${apex}`), Promise.all(DKIM_SELECTORS.map((s) => txt(`${s}._domainkey.${apex}`)))]);
+  save(app, orgId, apex, 'email', { ...emailStatus(hasMx, root, dmarc), value: dkimWord(keys.flat().some(isDkimKey), hasMx, root) });
 }
 
 export const watchRows = (app: Pick<App, 'db'>, orgId: string) => all<WatchRow>(app.db, 'SELECT host, kind, status, detail, streak, ms, last_ok, checked_at, value, asset FROM watch WHERE org_id = ? ORDER BY kind, host', orgId);

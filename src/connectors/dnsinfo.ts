@@ -75,3 +75,42 @@ export async function resolvesTo(hostname: string, want: { a?: string[]; cname?:
   const got = await dns.a(hostname).catch(() => [] as string[]);
   return { ok: !!want.a?.length && want.a.some((ip) => got.includes(ip)), got };
 }
+
+// --- SPF: a name has one record, so a new sender joins what's there ---------------------------------------------------
+export const isSpf = (t: string) => /^v=spf1(\s|$)/i.test(t.trim());
+const spfTerms = (t: string) => (isSpf(t) ? t.trim().split(/\s+/).slice(1) : t.trim().split(/\s+/));
+const closing = (t: string) => /^[-~?+]?all$/i.test(t) || /^redirect=/i.test(t);
+// every sender in the old record(s) stays, new ones go before the closing term, and that term is never loosened
+export function mergeSpf(existing: string[], add = '') {
+  const had = existing.filter(isSpf).flatMap(spfTerms), want = add ? spfTerms(add) : [];
+  const seen = new Set<string>(), terms = [...had, ...want].filter((t) => { const k = t.toLowerCase(); if (closing(t) || seen.has(k)) return false; seen.add(k); return true; });
+  return ['v=spf1', ...terms, had.find(closing) ?? want.find(closing) ?? '~all'].join(' ');
+}
+// nothing the old record allowed is lost, and it ends the same way
+export const spfKeeps = (old: string, next: string) => { const is = new Set(spfTerms(next).map((t) => t.toLowerCase())); return spfTerms(old).every((t) => is.has(t.toLowerCase())); };
+// DNS lookups a receiver spends on this record alone (what it includes costs more): over 10 and SPF fails
+export const spfLookups = (t: string) => spfTerms(t).filter((x) => /^[-~?+]?(include:|exists:|ptr(:|$)|a([:/]|$)|mx([:/]|$))|^redirect=/i.test(x)).length;
+
+// who answers a domain's mail, from its MX, and the term that lets them send too
+const MAIL_HOSTS: [RegExp, string, string][] = [
+  [/\.google(mail)?\.com$/i, 'Google', 'include:_spf.google.com'],
+  [/\.outlook\.com$/i, 'Microsoft 365', 'include:spf.protection.outlook.com'],
+  [/\.mx\.cloudflare\.net$/i, 'Cloudflare Email Routing', 'include:_spf.mx.cloudflare.net'],
+  [/\.hostinger\.com$/i, 'Hostinger Email', 'include:_spf.mail.hostinger.com'],
+  [/\.zoho\.(com|eu|in)$/i, 'Zoho Mail', 'include:zoho.com'],
+  [/\.protonmail\.ch$/i, 'Proton Mail', 'include:_spf.protonmail.ch'],
+  [/\.messagingengine\.com$/i, 'Fastmail', 'include:spf.messagingengine.com'],
+];
+export const mailHost = (mx: string[]) => { for (const m of mx) for (const [re, name, spf] of MAIL_HOSTS) if (re.test(m.trim().split(/\s+/).pop()!.replace(/\.$/, ''))) return { name, spf }; return undefined; };
+
+// What a name's SPF should say, as one whole line to write, or nothing when it's right. A sender adds to what's there;
+// with no record, the mail host's term goes in, and a domain with no mail says it sends none.
+export function spfAdvice(txt: string[], mx: string[], add?: string): { record?: string; why: string } | undefined {
+  const spf = txt.filter(isSpf), host = mailHost(mx), need = [add, host?.spf].filter(Boolean).join(' ');
+  if (spf.length) {
+    const record = mergeSpf(spf, need);
+    return spf.length === 1 && record === mergeSpf(spf) ? undefined : { record, why: spf.length > 1 ? 'A name can only have one SPF record: two break both. This joins them and keeps every sender.' : 'This keeps every sender already there and adds the new one.' };
+  }
+  if (need) return { record: mergeSpf([], need), why: `It lets ${[host?.name, add && 'your sender'].filter(Boolean).join(' and ')} send as this domain.` };
+  return mx.length ? { why: 'Your email host gives you the term for its senders (like include:_spf.example.net). email.setup with spfInclude joins it to the record.' } : { record: 'v=spf1 -all', why: 'It says this domain sends no email.' };
+}

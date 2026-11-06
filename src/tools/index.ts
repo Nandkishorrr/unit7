@@ -74,6 +74,7 @@ import './firstkey.ts';
 import './autofix.ts';
 import './reboot.ts';
 import './clouds-dns.ts';
+import './email.ts';
 import './clouds-deploy.ts';
 import './clouds-money.ts';
 import './alerts.ts';

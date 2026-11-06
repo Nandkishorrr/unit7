@@ -11,7 +11,7 @@ import { all, get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid } from './helpers.ts';
 import { EDITORS, DNS_ACCOUNT, LISTERS, SAME_SIGNIN, caaOf, fqName, matches, normValue, srvOf, swapRecords, type FullRec } from '../connectors/dnswrite.ts';
-import { dnsHost } from '../connectors/dnsinfo.ts';
+import { dnsHost, spfKeeps } from '../connectors/dnsinfo.ts';
 import { CHANGE_UNDO, keepChange } from './manage.ts';
 
 // what public DNS answers for a name (asked of public resolvers, like dnsinfo); tests swap these
@@ -227,7 +227,9 @@ async function setPlan(ctx: Ctx, i: SetIn) {
   const next: FullRec = { type: i.type, name: p.name, content: r.content, ...(r.priority !== undefined && { priority: r.priority }), ...(i.ttl && { ttl: i.ttl }), ...((i.proxied ?? going[0]?.proxied ?? same?.proxied) !== undefined && { proxied: i.proxied ?? going[0]?.proxied ?? same?.proxied }) };
   const retime = !!same && ((i.ttl !== undefined && same.ttl !== i.ttl) || (i.proxied !== undefined && same.proxied !== i.proxied));
   const nothing = !!same && !going.length && !retime;
-  const cons = going.length ? consequences(ctx, p.name, p.zone, i.type, going) : { stops: [] as string[], email: false };
+  // an SPF that keeps every sender of the old one, like email.check's merged line, loses nothing
+  const widened = kind === 'spf' && going.every((x) => spfKeeps(x.content, r.content));
+  const cons = going.length && !widened ? consequences(ctx, p.name, p.zone, i.type, going) : { stops: [] as string[], email: false };
   const stops = i.type === 'MX' && going.length ? [`Email to addresses @${p.name} stops going to ${going.map((x) => x.content).join(', ')} and goes to ${r.content}`] : cons.stops;
   let email = cons.email;
   // another MX next to the ones there splits the email between them, by priority
