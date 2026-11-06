@@ -325,7 +325,7 @@ test('system paths wait for a person at any autonomy, people included; other fil
   const w = await world();
   const seen = cannedServer(w.app);
   const write = (path: string) => ({ serverId: w.srv, path, content: 'x = 1\n' });
-  const SYSTEM = ['/etc/nginx/nginx.conf', '/etc/cron.d/backup', '/boot/grub/grub.cfg', '/root/.ssh/authorized_keys', '/home/sam/.ssh/known_hosts', '/usr/local/bin/tool', '/lib/systemd/system/x.service', '/var/lib/docker/image/x', '/var/spool/cron/root'];
+  const SYSTEM = ['/etc/nginx/nginx.conf', '/etc/cron.d/backup', '/home/sam/.ssh/known_hosts', '/usr/local/bin/tool', '/lib/systemd/system/x.service', '/var/lib/docker/image/x', '/var/spool/cron/root'];
   for (const n of [1, 2, 3, 4]) {
     autonomy(w.app, w.o.orgId, n);
     for (const path of SYSTEM) {
@@ -381,12 +381,9 @@ test('an approval shows what an AI wants to write, and a yes runs exactly that',
   const mine = await w.o.h('file.write', { serverId: w.srv, path: '/etc/app/db.conf', content: 'pw = plain words' });
   const mineRow = get<{ input: string }>(w.app.db, 'SELECT input FROM approvals WHERE id = ?', (mine as { approvalId: string }).approvalId)!;
   assert.match((viewInput(mineRow.input) as { content: string }).content, /^\[\d+ bytes, hidden\]$/);
-  // the files that decide who signs in: approved by name
+  // the files that decide who signs in: an AI is refused, whatever the approval
   const keys = await w.o.a('file.write', { serverId: w.srv, path: '/root/.ssh/authorized_keys', content: 'ssh-ed25519 AAAA demo\n' });
-  assert.equal(keys.status, 'approval_required');
-  const kid = (keys as { approvalId: string }).approvalId;
-  await assert.rejects(decideApproval(w.app, w.o.orgId, w.o.human, kid, true), /Type the name \(box\)/);
-  assert.equal(approved(await decideApproval(w.app, w.o.orgId, w.o.human, kid, true, 'box')).created, true);
+  assert.equal(keys.status, 'denied');
 });
 
 test('an AI’s remove always waits for a person; it goes to the trash, and undo brings it back', async () => {

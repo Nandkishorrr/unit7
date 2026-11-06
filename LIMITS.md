@@ -43,6 +43,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - No multisite import. Uploads are capped at 100 MB. It needs the official image with a reachable MySQL or MariaDB container, and Coolify with Traefik for new sites. Premium plugin updates may not show.
 
+## Files
+
+- Text up to 1 MB, 64 KB for an AI, and 100 MB for transfers. Containers need a shell. Undo fails once a container is recreated.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

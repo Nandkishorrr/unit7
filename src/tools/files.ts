@@ -48,6 +48,8 @@ const systemPath = (p: string) => SYSTEM_PATH.test(p) || PROTECTED.test(p);
 const isSecret = (p: string) => SECRET_FILE.test(p) || /^\/(var\/lib\/docker\/containers|data\/coolify)(\/|$)/.test(p);
 const secretWords = (p: string) => `The path ${p} holds secrets. Only a person can open or change it, on Unit7’s Files page. An AI can’t, even with approval.`;
 const secretOf = (...paths: string[]) => { const p = paths.find(isSecret); return p ? secretWords(p) : false; };
+// who can sign in stays a person's choice, like server.exec: an approval could be talked into a new key
+const noAi = (...paths: string[]) => secretOf(...paths) || (paths.some((p) => PROTECTED.test(p)) ? 'Who can sign in to a server is a person’s choice. Use the Files page, or server.ssh_keys.' : false);
 const writeAction = (...paths: string[]) => (paths.some(systemPath) ? 'system_file_write' : undefined);
 
 // --- on the server: each script exits with a number from EXIT, and every value is an argument --------------------------------
@@ -238,7 +240,7 @@ defineTool({
 });
 
 defineTool({
-  name: 'file.write', title: 'Save a file on a server', risk: 'write', action: (i) => writeAction(i.path) ?? 'file_write', peopleOnly: (i) => secretOf(i.path), sensitive: ['content', 'sha256', 'expectSha256'], timeoutMs: 16 * 60_000,
+  name: 'file.write', title: 'Save a file on a server', risk: 'write', action: (i) => writeAction(i.path) ?? 'file_write', peopleOnly: (i) => noAi(i.path), sensitive: ['content', 'sha256', 'expectSha256'], timeoutMs: 16 * 60_000,
   description: 'Create a file, or replace one with new text, up to 1 MB, on a server or inside an app’s container. Its folder is made if needed. The old copy is kept and change.undo puts it back. Pass expectSha256 from file.read so a file that changed since is left alone. System paths (/etc, /boot, any .ssh folder) wait for a person at any autonomy. Secret files are people only: to change one setting use part.env or env.set.',
   input: z.object({ ...AT, path: PATH, content: z.string().max(FILE_CAPS.read), expectSha256: z.string().regex(/^[0-9a-f]{64}$/).optional() }),
   assess: (c, i) => {
@@ -299,7 +301,7 @@ export async function downloadFile(app: App, orgId: string, actor: Actor, query:
 }
 
 defineTool({
-  name: 'file.move', title: 'Move or rename a file on a server', risk: 'write', action: (i) => writeAction(i.path, i.to) ?? 'file_write', peopleOnly: (i) => secretOf(i.path, i.to), timeoutMs: 11 * 60_000,
+  name: 'file.move', title: 'Move or rename a file on a server', risk: 'write', action: (i) => writeAction(i.path, i.to) ?? 'file_write', peopleOnly: (i) => noAi(i.path, i.to), timeoutMs: 11 * 60_000,
   description: 'Move or rename a file or folder, on a server or inside one container. Never overwrites: when something is already there it says so. change.undo moves it back. System paths wait for a person at any autonomy; secret files are people only.',
   input: z.object({ ...AT, path: PATH, to: PATH }),
   assess: (c, i) => assessFile(c, i, [i.path, i.to], 2, `Moves ${i.path} to ${i.to}. change.undo moves it back.`),
@@ -314,7 +316,7 @@ defineTool({
 });
 
 defineTool({
-  name: 'file.remove', title: 'Move a file on a server to the trash', risk: 'destructive', action: (i) => writeAction(i.path) ?? 'file_remove', peopleOnly: (i) => secretOf(i.path), timeoutMs: 11 * 60_000,
+  name: 'file.remove', title: 'Move a file on a server to the trash', risk: 'destructive', action: (i) => writeAction(i.path) ?? 'file_remove', peopleOnly: (i) => noAi(i.path), timeoutMs: 11 * 60_000,
   description: 'Move a file or folder to a 7-day trash on the server (or inside the container). Nothing is deleted straight away, and change.undo brings it back. Hard to undo, so it always waits for a person when an AI asks, at any autonomy. Secret files are people only.',
   input: z.object({ ...AT, path: PATH }),
   assess: (c, i) => {
