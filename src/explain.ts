@@ -158,6 +158,7 @@ export const EVENT_WORDS: Record<string, [what: string, why: string, next: strin
   'deployment.failed': ['An update to one of your apps didn’t go live.', 'Visitors still see the old version; your new changes aren’t out yet.', 'Unit7 kept the old version running; its AI can read why it failed.'],
   'backup.failed': ['A scheduled copy of a database didn’t work.', 'If something went wrong now, the newest data couldn’t be brought back.', 'Unit7 tries again every 15 minutes and tells you if it keeps failing.'],
   'backup.offsite_failed': ['A database copy stayed only on its server.', 'If that server breaks, the copy goes with it.', 'Unit7 tries again with the next copy; you can retry it from Backups.'],
+  'backup.restore_failed': ['Bringing a database back failed, and so did putting it back as it was.', 'Your apps can’t reach it until someone looks. Nothing was deleted: the copies are safe.', 'Open Activity to see what happened. Undo there lets your apps back in once you’re sure.'],
   'backup.verify_failed': ['A database copy didn’t open when Unit7 tested it.', 'It wouldn’t bring your data back if you needed it today.', 'Unit7 suggests taking a fresh copy now and testing it again.'],
   'seven.did': ['Seven, the agent on shift, did this by itself.', 'It only does what’s safe and can be taken back.', 'Nothing for you to do. See it on the Seven page.'],
   'seven.note': ['Seven found something that needs a look.', 'It couldn’t settle this by itself.', 'Open the Seven page to see what it found.'],

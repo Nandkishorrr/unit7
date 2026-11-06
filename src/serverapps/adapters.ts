@@ -405,4 +405,5 @@ const NONPROD = /^(dev|develop|development|staging|stage|preview|previews|test|t
 export const environmentOf = (inv: Inventory, p: Part) => p.coolify?.environment ?? inv.projects.find((x) => x.id === p.project)?.environments?.[0];
 export const isProduction = (inv: Inventory, p: Part) => !NONPROD.test(environmentOf(inv, p) ?? '');
 // the vault account a part's credentials live under: credential://serverapp/<this>/<app>.<name>
-export const vaultAccount = (serverId: string, part: string) => `${serverId.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${createHash('sha256').update(part).digest('hex').slice(0, 10)}`;
+// (whole, as makeRef reads it: an id ending in - or _ would otherwise look under a name the vault never stored)
+export const vaultAccount = (serverId: string, part: string) => `${serverId}-${createHash('sha256').update(part).digest('hex').slice(0, 10)}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');

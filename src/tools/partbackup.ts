@@ -407,7 +407,7 @@ async function overPostgres(ctx: Ctx, s: ServerRow, p: Part, c: string, image: s
     ctx.progress(`That didn’t come back whole, so ${p.name} goes back to how it was…`);
     const back = await replayPg(ctx, s, c, image, safety).catch((e: Error) => ({ ok: false, note: e.message.slice(0, 300) }));
     if (!back.ok) {
-      ctx.emit('backup.restore_failed', `Restoring ${p.name} on ${s.name} failed, and so did putting it back. It stays closed to apps so nothing writes into it. It needs a person.`, { severity: 'critical', resource: s.id, data: { part: p.id, changeId } });
+      ctx.emit('backup.restore_failed', `Restoring ${p.name} on ${s.name} failed, and so did putting it back. It stays closed to apps so nothing writes into it. Undo in Activity opens it again.`, { severity: 'critical', resource: s.id, data: { part: p.id, changeId } });
       throw new Unit7Error('restore_failed', `Restoring ${p.name} failed (${done.note}), and so did putting back the backup taken just before (${back.note}). It stays closed to apps. Undo in Activity opens it again.`, 502, { changeId });
     }
   }
@@ -473,10 +473,10 @@ defineTool({
       ctx.progress(`Backing up ${p.name} as it is now, first…`);
       const safety = await takePartBackup(ctx, s, p, 'before a restore');
       ctx.progress(`Restoring ${p.name} from ${when}…`);
-      if (pg) await overPostgres(ctx, s, p, c, image, b.location, safety.location);
-      else await ssh(ctx.app).check(s, asRoot(s) + script(OVER[p.engine]!, b.location, c), { what: `Restoring ${p.name}`, timeoutMs: 60 * 60_000, signal: ctx.signal });
+      const proof = pg ? await overPostgres(ctx, s, p, c, image, b.location, safety.location) : undefined;
+      if (!pg) await ssh(ctx.app).check(s, asRoot(s) + script(OVER[p.engine]!, b.location, c), { what: `Restoring ${p.name}`, timeoutMs: 60 * 60_000, signal: ctx.signal });
       ctx.emit('backup.restored', `${ctx.actor.name} restored ${p.name} on ${s.name} from the backup of ${when}`, { severity: 'warning', resource: s.id, data: { backupId: b.id, part: p.id, safetyBackup: safety.backupId } });
-      return { restored: p.name, into: 'live', from: when, safetyBackup: safety.backupId, undo: `To go back, restore the backup taken just before (${safety.backupId}) the same way.` };
+      return { restored: p.name, into: 'live', from: when, ...(proof && { proof: proof.note }), safetyBackup: safety.backupId, undo: `To go back, restore the backup taken just before (${safety.backupId}) the same way.` };
     }
     const image = imageOf(p);
     if (!image) throw new Unit7Error('not_found', `Unit7 couldn’t tell which image ${p.name} runs, so it can’t make a copy.`, 409);

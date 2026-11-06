@@ -89,7 +89,7 @@ export function dropsDatabase(sql: string, d: Dialect) {
 }
 
 // --- what looks personal ---------------------------------------------------------------------------------------------------
-const PERSONAL = /(^|_)(e?mails?|phones?|mobile|telephone|tel|fax|passwords?|passwd|pwd|pass|tokens?|secrets?|api_?keys?|private_?keys?|credentials?|otp|jwt|cookies?|salt|ssn|passport|tax_?id|national_?id|iban|cvv|card(_?number)?|birth(_?(day|date))?|dob|first_?names?|last_?names?|full_?names?|sur_?names?|given_?names?|family_?names?|middle_?names?|maiden_?name|display_?names?|nick_?names?|nicename|user_?names?|login|addr|address|address_?\d|street|post_?codes?|zip(_?codes?)?|ip|ip_?addr(ess)?|lat(itude)?|lng|long(itude)?)($|_)/;
+const PERSONAL = /(^|_)(e?mails?|phones?|mobile|telephone|tel|fax|passwords?|passwd|pwd|pass|tokens?|secrets?|api_?keys?|private_?keys?|credentials?|otp|jwt|cookies?|salt|ssn|passport|tax_?id|national_?id|iban|cvv|card(_?number)?|birth(_?(day|date))?|dob|first_?names?|last_?names?|full_?names?|sur_?names?|given_?names?|family_?names?|middle_?names?|maiden_?name|display_?names?|nick_?names?|nicename|user_?names?|login|addr|address|address_?\d|street|post_?codes?|zip(_?codes?)?|ip|ip_?addr(ess)?|lat(itude)?|lng|longitude)($|_)/;
 const WHO = 'users?|customers?|clients?|profiles?|people|persons?|members?|contacts?|employees?|staff|authors?|patients?|students?|subscribers?|leads?|guests?|owners?|admins?|buyers?|sellers?|billing|shipping|recipients?|senders?';
 const PEOPLE = new RegExp(`(^|_)(${WHO})($|_)`);
 const WHO_NAME = new RegExp(`(^|_)(${WHO})_name$`);
@@ -109,13 +109,15 @@ export interface Mask { hide: Set<number>; text: Set<number>; all: boolean } // 
 const NONE = (): Mask => ({ hide: new Set(), text: new Set(), all: false });
 
 const noLiterals = (e: string) => e.replace(/'(?:[^']|'')*'/g, "''");
-// count(...), sum(...), avg(...) out of an expression: a number, whatever went in
+// count(...), sum(...), avg(...) out of an expression, with any FILTER (...): a number, whatever went in
+const closing = (e: string, from: number) => { let i = from, depth = 1; for (; i < e.length && depth; i++) { if (e[i] === '(') depth++; if (e[i] === ')') depth--; } return i; };
 function noCounts(e: string) {
   for (;;) {
     const m = /\b(?:count|sum|avg|stddev\w*|variance|var_\w+)\s*\(/i.exec(e);
     if (!m) return e;
-    let i = m.index + m[0].length, depth = 1;
-    for (; i < e.length && depth; i++) { if (e[i] === '(') depth++; if (e[i] === ')') depth--; }
+    let i = closing(e, m.index + m[0].length);
+    const f = /^\s*FILTER\s*\(/i.exec(e.slice(i));
+    if (f) i = closing(e, i + f[0].length);
     e = `${e.slice(0, m.index)}0${e.slice(i)}`;
   }
 }

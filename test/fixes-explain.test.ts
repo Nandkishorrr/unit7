@@ -281,7 +281,7 @@ test('bringing a part backup back: a test copy by default (Undo removes it); ove
   assert.ok(dumpAt >= 0 && restoreAt > dumpAt, 'backed up first, then restored');
   assert.ok(live.safetyBackup);
 
-  // Postgres comes back as a copy only
+  // Postgres over the live one needs its test restore first: this stand-in's file holds no tables, so it stops there (test/gap-data.test.ts has the rest)
   ok(await o.h('part.backup', { serverId: SRV, part: 'coolify:relaydb01' }));
   assert.equal((await yes(await o.h('part.restore', { serverId: SRV, part: 'coolify:relaydb01', into: 'live', confirmName: 'relay-db' }), 'relaydb01')).status, 'error');
 });

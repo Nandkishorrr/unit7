@@ -5,7 +5,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -19,7 +19,7 @@ import { saveXray } from '../src/tools/xray.ts';
 import { manageDirs } from '../src/tools/manage.ts';
 import { decideApproval, type Ctx } from '../src/tools/runtime.ts';
 import { closePg, openPgCommand, replayPg } from '../src/tools/partbackup.ts';
-import { COMPOSE_IMAGE, csvToInserts, dumpProblem, nextImage, restorable } from '../src/tools/data.ts';
+import { ASIDE, BACK_IN_MOUNTS, COMPOSE_IMAGE, IN_MOUNTS, SWAP_BACK, csvToInserts, dumpProblem, nextImage, restorable } from '../src/tools/data.ts';
 import { hideShapes, maskRows, parseCsv, parseTsv, personal, planMask, statement, textMask, toCsv, tokenize } from '../src/tools/datamask.ts';
 import { ROLE, vaultAccount } from '../src/serverapps/adapters.ts';
 import { makeRef } from '../src/vault.ts';
@@ -130,6 +130,7 @@ test('real Postgres: an AI reads through the read-only login, in the box, and ca
   }
   // may always count and aggregate
   assert.deepEqual(ok(await q('SELECT count(*), count(email), count(DISTINCT email) AS emails FROM users')).rows, [['5', '5', '5']]);
+  assert.deepEqual(ok(await q(`SELECT count(*) FILTER (WHERE email LIKE '%.example') AS emails FROM users`)).rows, [['5']]);
   assert.deepEqual(ok(await q('SELECT plan, count(*) FROM users GROUP BY plan ORDER BY plan')).rows, [['free', '3'], ['pro', '2']]);
   assert.deepEqual(ok(await q(`SELECT plan FROM users WHERE email = 'u2@shop.example'`)).rows, [['pro']], 'a filter on a personal column shows only what’s asked for');
   // the role refuses what no parser could
@@ -283,6 +284,36 @@ test('names can’t carry SQL or shell, in any tool', async () => {
   assert.equal(code(await o.h('part.query', { serverId: SRV, part: PG, sql: 'SELECT 1', database: `a'; --` })), 'invalid_input');
 });
 
+test('Postgres on the server itself, and a database that has stopped', async () => {
+  const { app, o, inv } = await setup({ login: false });
+  inv.parts.push(part({ id: 'unit:postgresql.service', name: 'postgresql', owner: 'systemd', engine: 'postgres', unit: 'postgresql.service' }));
+  saveXray(app.db, o.orgId, SRV, 'fast', inv);
+  const seen = fake(app, () => ({ stdout: 'postgres\n[]\n[]\n' }));
+  ok(await o.a('part.tables', { serverId: SRV, part: 'unit:postgresql.service' }));
+  assert.ok(seen[0]!.command.includes('runuser -u postgres'), 'its own client, as its own user');
+  assert.equal(code(await o.h('part.import', { serverId: SRV, part: 'unit:postgresql.service', uploadId: uploaded(app, o.orgId, 'sysd', 'SELECT 1;\n'), into: 'copy' })), 'not_here');
+  fake(app, () => ({ code: 1, stderr: 'Error response from daemon: No such container: pg-db-1' }));
+  const gone = await o.h('part.query', { serverId: SRV, part: PG, sql: 'SELECT 1' });
+  assert.equal(code(gone), 'not_running');
+  assert.match((gone as any).error.message, /server\.xray/);
+});
+
+test('a server id ending in - or _ still finds its keys (1 server in 32 lost them)', async () => {
+  for (const srv of ['srv_abcdefghijk_', 'srv_abcdefghijk-', 'srv_ab_-cd-_efg_']) {
+    const account = vaultAccount(srv, 'c:db');
+    assert.ok(!account.includes('--'), account);
+    assert.ok(makeRef('serverapp', account, 'x.db-read-password').startsWith(`credential://serverapp/${account}/`), srv);
+  }
+  const { app, o, inv } = await setup({ login: false });
+  const srv = 'srv_abcdefghijk_';
+  run(app.db, `INSERT INTO servers (id, org_id, name, host, username, key_ref, status, facts) VALUES (?, ?, 'web-2', '203.0.113.10', 'root', 'credential://ssh/box/k', 'ready', '{}')`, srv, o.orgId);
+  saveXray(app.db, o.orgId, srv, 'fast', inv);
+  app.vault.put(o.orgId, makeRef('serverapp', vaultAccount(srv, PG), 'x.db-read-password'), 'readonly-Passw0rd-value', { kind: 'serverapp', by: 'test', meta: { name: 'db-read-password', user: ROLE, label: 'Read-only', appName: 'x', part: PG, serverId: srv } });
+  const seen = fake(app, (_c, stdin) => ({ stdout: stdin.includes('EXPLAIN') ? '[{"Plan":{"Output":["1"]}}]' : 'one\n1\n' }));
+  assert.deepEqual(ok(await o.a('part.query', { serverId: srv, part: PG, sql: 'SELECT 1 AS one' })).rows, [['1']]);
+  assert.ok(seen[0]!.stdin.startsWith('readonly-Passw0rd-value\n'), 'it found the login');
+});
+
 test('an AI reads only through the read-only login', async () => {
   const { app, o } = await setup({ login: false });
   const seen = fake(app);
@@ -326,7 +357,7 @@ test('MongoDB and Redis: one expression or one command, read-only unless written
   assert.ok(!ok(await o.a('part.query', { serverId: SRV, part: MONGO, sql: `db.users.aggregate([{ $project: { who: '$firstName' } }])` })).rows[0][0].includes('Ann'), 'a personal field under another name');
   reply = '[42]';
   assert.deepEqual(ok(await o.a('part.query', { serverId: SRV, part: MONGO, sql: 'db.users.countDocuments({ email: { $exists: true } })' })).rows, [['42']]);
-  for (const sql of ['db.users.deleteMany({})', `require('child_process')`, 'db.users.find(); db.users.drop()', 'process.env']) assert.ok(['needs_write', 'bad_statement'].includes(code(await o.h('part.query', { serverId: SRV, part: MONGO, sql }))), sql);
+  for (const sql of ['db.users.deleteMany({})', `require('child_process')`, 'db.users.find(); db.users.drop()', 'process.env', `db.users.aggregate([{ $out: 'copy' }])`, `db.users.aggregate([{ $merge: 'copy' }])`]) assert.ok(['needs_write', 'bad_statement'].includes(code(await o.h('part.query', { serverId: SRV, part: MONGO, sql }))), sql);
   reply = 'hello sam@shop.example\n';
   assert.deepEqual(ok(await o.a('part.query', { serverId: SRV, part: REDIS, sql: 'GET greeting' })).rows, [['hello [hidden email]']]);
   assert.deepEqual(ok(await o.a('part.query', { serverId: SRV, part: REDIS, sql: 'GET user:9:email' })).rows, [['[hidden]']]);
@@ -555,6 +586,7 @@ test('if putting it back fails too, it stays closed, a person hears at once, and
   assert.match(r.error.message, /stays closed/);
   assert.ok(!seen.some((x) => x.command.includes(OPENS)), 'nothing opened it');
   assert.equal(get<{ severity: string }>(app.db, `SELECT severity FROM events WHERE type = 'backup.restore_failed'`)!.severity, 'critical');
+  assert.match(readFileSync(new URL('../src/sentinel/notify.ts', import.meta.url), 'utf8'), /'backup\.restore_failed': \{ title:/, 'it reaches a phone');
   const ch = get<{ id: string; status: string }>(app.db, `SELECT id, status FROM changes WHERE verb = 'restore_open'`)!;
   assert.equal(ch.status, 'done');
   seen.length = 0;
@@ -604,6 +636,41 @@ test('files over the live ones: a fresh copy first, what uses them stops and sta
   assert.ok(seen.some((x) => x.command.includes('.unit7-undone-')));
 });
 
+test('the file moves, in a real shell: nothing lost, there and back', () => {
+  const sh = (body: string, ...args: string[]) => { const r = spawnSync('sh', ['-c', body, 'unit7', ...args], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); };
+  // a volume's data: its sibling takes the old files, so Postgres finds an empty folder and starts fresh
+  const dir = mkdtempSync(join(tmpdir(), 'u7mv-')), data = join(dir, '_data');
+  mkdirSync(join(data, 'base'), { recursive: true });
+  writeFileSync(join(data, 'PG_VERSION'), '16\n'); writeFileSync(join(data, 'base', 'a b'), 'old'); writeFileSync(join(data, '.hidden'), 'dot');
+  sh(ASIDE, data, 'x1');
+  assert.deepEqual(readdirSync(data), [], 'initdb refuses anything but an empty folder, dot files included');
+  assert.equal(readFileSync(join(dir, 'unit7-before-upgrade-x1', 'base', 'a b'), 'utf8'), 'old');
+  writeFileSync(join(data, 'PG_VERSION'), '17\n');
+  sh(SWAP_BACK, data, 'x1');
+  assert.equal(readFileSync(join(data, 'PG_VERSION'), 'utf8'), '16\n');
+  assert.equal(readFileSync(join(data, '.hidden'), 'utf8'), 'dot');
+  assert.equal(readFileSync(join(dir, 'unit7-after-upgrade-x1', 'PG_VERSION'), 'utf8'), '17\n', 'what the new version held is kept too');
+  assert.ok(!existsSync(join(dir, 'unit7-before-upgrade-x1')));
+  // files in a project's folder: what was there moves aside inside it, the copy goes in, and Undo swaps them
+  const b = mkdtempSync(join(tmpdir(), 'u7b-')), tar = join(b, 'copy.tgz'), mount = join(b, 'm'), v = join(mount, 'v-a');
+  mkdirSync(join(b, 'src', 'v-a'), { recursive: true }); mkdirSync(v, { recursive: true });
+  writeFileSync(join(b, 'src', 'v-a', 'photo'), 'from the copy');
+  writeFileSync(join(v, 'photo'), 'newer'); writeFileSync(join(v, 'only-here'), 'kept');
+  sh('tar czf "$1" -C "$2" .', tar, join(b, 'src'));
+  const here = (s: string) => s.replaceAll('/b', mount);
+  const r = spawnSync('sh', ['-c', here(IN_MOUNTS), 's1'], { input: readFileSync(tar), encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(join(v, 'photo'), 'utf8'), 'from the copy');
+  assert.ok(!existsSync(join(v, 'only-here')));
+  assert.equal(readFileSync(join(v, '.unit7-before-restore-s1', 'only-here'), 'utf8'), 'kept', 'aside, not gone');
+  const u = spawnSync('sh', ['-c', here(BACK_IN_MOUNTS), 's1'], { encoding: 'utf8' });
+  assert.equal(u.status, 0, u.stderr);
+  assert.equal(readFileSync(join(v, 'photo'), 'utf8'), 'newer');
+  assert.equal(readFileSync(join(v, 'only-here'), 'utf8'), 'kept');
+  assert.equal(readFileSync(join(v, '.unit7-undone-s1', 'photo'), 'utf8'), 'from the copy');
+  assert.ok(!existsSync(join(v, '.unit7-before-restore-s1')));
+});
+
 test('which folders of a copy can go back', () => {
   assert.deepEqual(restorable(['v-a/', 'v-b/', 'f0-up/', 'f1-up/', 'f2-x.yml', 'f3-data/'], ['/s/1/up', '/s/2/up', '/s/x.yml', '/s/data'], ['a']), { back: [{ top: 'v-a', kind: 'volume', src: 'a' }, { top: 'f3-data', kind: 'bind', src: '/s/data' }], skipped: ['v-b', 'f0-up', 'f1-up', 'f2-x.yml'] });
 });
@@ -628,6 +695,24 @@ test('the next major of the same image', () => {
   assert.equal(nextImage('pgvector/pgvector:pg16', 17), 'pgvector/pgvector:pg17');
   assert.equal(nextImage('timescale/timescaledb:2.15.0-pg16', 17), 'timescale/timescaledb:2.15.0-pg17');
   assert.equal(nextImage('postgres:latest', 17), undefined);
+});
+
+test('a side copy needs room: a second database mustn’t take what the live one runs on', async () => {
+  const { app, o } = await setup();
+  run(app.db, `UPDATE orgs SET offsite = 'off'`);
+  const low = upgrading();
+  const seen = fake(app, (cmd, stdin) => (cmd.includes('MemAvailable') ? { stdout: '300000000\n' } : low(cmd, stdin)));
+  const r = await o.h('part.upgrade_run', upgrade);
+  assert.equal(code(r), 'no_room');
+  assert.ok(!seen.some((x) => x.command.includes('docker run -d')), 'nothing started');
+  // the disk: enough for the backup, not for what it unpacks into
+  const full = upgrading();
+  let probes = 0;
+  const disk = fake(app, (cmd, stdin) => (cmd.includes('df -Pk') && ++probes === 2 ? { stdout: '200000000000 500000000\n' } : full(cmd, stdin)));
+  const tight = await o.h('part.upgrade_run', upgrade);
+  assert.equal(code(tight), 'no_room');
+  assert.match((tight as any).error.message, /side copy/);
+  assert.ok(!disk.some((x) => x.command.includes('docker run -d')), 'nothing started');
 });
 
 test('upgrade: the plan changes nothing, the run is side by side and proven, and a bad result takes its copy away', async () => {
@@ -655,7 +740,7 @@ test('upgrade: the plan changes nothing, the run is side by side and proven, and
   run(app.db, `UPDATE changes SET status = 'undone' WHERE verb = 'upgrade_ready'`);
   const bad = await o.h('part.upgrade_run', upgrade);
   assert.equal(code(bad), 'upgrade_failed');
-  assert.match(bad.error.message, /live one wasn’t touched/);
+  assert.match((bad as any).error.message, /live one wasn’t touched/);
   assert.equal(code(await decide(app, o, await o.h('part.upgrade_switch', { ...upgrade, confirmName: 'pg-db' }))), 'not_tested');
 });
 
@@ -776,8 +861,8 @@ test('one statement: strings, comments and dollar quotes read the way the databa
 });
 
 test('what looks personal, and what doesn’t', () => {
-  for (const c of ['email', 'user_email', 'userEmail', 'phone', 'phoneNumber', 'password_hash', 'encrypted_password', 'api_key', 'refresh_token', 'first_name', 'lastName', 'customer_name', 'ssn', 'ip_address', 'date_of_birth'.replace('date_of_', ''), 'birth_date']) assert.ok(personal(c, false), c);
-  for (const c of ['id', 'plan', 'status', 'total', 'created_at', 'product_name', 'company_name', 'title', 'tokens_used'.replace('tokens_used', 'usage')]) assert.ok(!personal(c, false), c);
+  for (const c of ['email', 'user_email', 'userEmail', 'phone', 'phoneNumber', 'password_hash', 'encrypted_password', 'api_key', 'refresh_token', 'first_name', 'lastName', 'customer_name', 'ssn', 'ip_address', 'date_of_birth', 'birth_date']) assert.ok(personal(c, false), c);
+  for (const c of ['id', 'plan', 'status', 'total', 'created_at', 'product_name', 'company_name', 'title', 'usage', 'long_description', 'is_enabled']) assert.ok(!personal(c, false), c);
   assert.ok(personal('name', true) && !personal('name', false), 'a bare name counts only in a table about people');
   assert.equal(hideShapes('2026-11-06 10:00:01'), '2026-11-06 10:00:01');
   assert.equal(hideShapes('1234567890'), '1234567890');

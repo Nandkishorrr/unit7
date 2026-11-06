@@ -30,6 +30,7 @@ const ALERTS: Record<string, { title: string; priority: number; tag: string }> =
   'backup.failed': { title: 'Scheduled backup failed', priority: 4, tag: 'floppy_disk' },
   'backup.offsite_failed': { title: 'Backup not copied off the server', priority: 4, tag: 'floppy_disk' },
   'backup.verify_failed': { title: 'Backup won’t restore', priority: 4, tag: 'floppy_disk' },
+  'backup.restore_failed': { title: 'A database needs you', priority: 5, tag: 'rotating_light' },
   'approval.requested': { title: 'Waiting for your OK', priority: 4, tag: 'hand' },
   'account.refused': { title: 'An account refused Unit7', priority: 3, tag: 'key' },
   'security.vulnerable': { title: 'Vulnerabilities to fix', priority: 3, tag: 'shield' },

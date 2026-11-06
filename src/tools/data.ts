@@ -17,7 +17,7 @@ import { Unit7Error } from '../errors.ts';
 import { fid, requireHuman, requireRole } from './helpers.ts';
 import { serverRow } from './servers.ts';
 import { coolifyFor, lastXray, runXray } from './xray.ts';
-import { CHANGE_UNDO, confirmed, findPart, freshBackup, mongoAs } from './manage.ts';
+import { CHANGE_UNDO, ROOM_PROBE, confirmed, findPart, freshBackup, mongoAs, roomVerdict } from './manage.ts';
 import { COPY, COPY_PW, REMOVE_COPY, SUPABASE, asRoot, closePg, countsSql, extrasOf, imageOf, liveContainer, openPgCommand, parseCounts, provePostgres, replayPg, takePartBackup } from './partbackup.ts';
 import { entries, reconcile } from './serverapps.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
@@ -201,7 +201,7 @@ async function readMysql(ctx: Ctx, t: Target, sql: string, db: string | undefine
 }
 
 // mongosh runs JavaScript, so a read is one db.… expression and the read-only login is what really holds it to reading
-const MONGO_WRITES = /\b(insert\w*|update\w*|replace\w*|delete\w*|remove|drop\w*|rename\w*|create\w*|bulkWrite|findOneAnd\w*|findAndModify|mapReduce|\$out|\$merge|eval|runCommand|adminCommand|require|process|load)\b/i;
+const MONGO_WRITES = /\b(insert\w*|update\w*|replace\w*|delete\w*|remove|drop\w*|rename\w*|create\w*|bulkWrite|findOneAnd\w*|findAndModify|mapReduce|eval|runCommand|adminCommand|require|process|load)\b|\$(out|merge)\b/i;
 const mongoExpr = (text: string) => {
   const e = text.trim().replace(/;\s*$/, '');
   if (!/^db\b/.test(e) || /[;\n]/.test(e.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, "''"))) throw new Unit7Error('bad_statement', 'One db.… expression at a time, like db.users.find({ plan: "pro" }).', 400);
@@ -302,7 +302,12 @@ defineTool({
 });
 
 // --- a side copy, the way part.restore makes one ---------------------------------------------------------------------------------
-async function sideCopy(ctx: Ctx, t: Target, file: string, image: string, summary: string, verb = 'restore_copy', note?: string) {
+async function sideCopy(ctx: Ctx, t: Target, file: string, bytes: number, image: string, summary: string, verb = 'restore_copy', note?: string) {
+  // a second database next to the live one mustn't take the memory or the disk of what's running
+  const free = Number((await ssh(ctx.app).exec(t.s, script(`awk '/^MemAvailable/{print $2*1024}' /proc/meminfo`))).stdout.trim());
+  if (free && free < 700e6) throw new Unit7Error('no_room', `Unit7 didn’t make a side copy of ${t.p.name}: only ${Math.round(free / 1e6)} MB of memory is free.`, 507);
+  const tight = roomVerdict((await ssh(ctx.app).exec(t.s, script(ROOM_PROBE, file), { timeoutMs: 20_000 })).stdout, ctx.actor.kind === 'user', Math.max(1e9, bytes * 8));
+  if (tight) throw new Unit7Error('no_room', `Unit7 didn’t make a side copy of ${t.p.name}: ${tight}.`, 507);
   const e = t.p.engine!, name = `${t.p.name.toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 40) || 'db'}-copy-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${id('x').slice(2, 6).toLowerCase().replace(/[^a-z0-9]/g, '0')}`;
   const password = randomBytes(18).toString('base64url'), sql = e === 'postgres' || e === 'mysql' || e === 'mariadb', network = sql ? t.p.networks?.[0] ?? '' : '';
   ctx.redactor.add(password, 'the side copy’s password');
@@ -325,7 +330,7 @@ function readUpload(ctx: Ctx, uploadId: string) {
   if (!up || !existsSync(up.path)) throw new Unit7Error('not_found', 'That upload is gone. Upload the file again.', 404);
   const file = readFileSync(up.path), gz = file[0] === 0x1f && file[1] === 0x8b;
   let raw: Buffer;
-  try { raw = gz ? gunzipSync(file, { maxOutputLength: 500_000_000 }) : file; } catch { throw new Unit7Error('bad_upload', 'That file is damaged, or more than 500 MB once unpacked.', 400); }
+  try { raw = gz ? gunzipSync(file, { maxOutputLength: 400_000_000 }) : file; } catch { throw new Unit7Error('bad_upload', 'That file is damaged, or more than 400 MB once unpacked.', 400); }
   if (raw.subarray(257, 262).toString() === 'ustar') throw new Unit7Error('bad_upload', 'That’s an archive of a folder, not a SQL dump or a CSV.', 400);
   return { path: up.path, gz, raw, custom: raw.subarray(0, 5).toString() === 'PGDMP' };
 }
@@ -348,7 +353,7 @@ export function csvToInserts(table: string, rows: string[][]) {
   return `${out.join('\n')}\n`;
 }
 function loadPlan(t: Target, up: ReturnType<typeof readUpload>, i: { table?: string; database?: string }) {
-  const e = t.p.engine!, text = up.custom ? '' : up.raw.subarray(0, 400_000_000).toString('utf8');
+  const e = t.p.engine!, text = up.custom ? '' : up.raw.toString('utf8');
   if (e === 'redis') throw new Unit7Error('unsupported', 'Redis has no tables to load a dump or a CSV into. part.restore brings back a Redis backup.', 409);
   if (i.table) {
     const head = parseCsv(text.slice(0, 65_536))[0] ?? [];
@@ -379,12 +384,13 @@ defineTool({
   async run(ctx, i) {
     const t = await target(ctx, i.serverId, i.part), up = readUpload(ctx, i.uploadId), plan = loadPlan(t, up, i);
     if (t.p.engine === 'mongo' && !i.database) throw new Unit7Error('invalid_input', 'Say which database with database: part.tables lists them.', 400);
+    if (i.into === 'copy' && !t.c) throw new Unit7Error('not_here', `${t.p.name} runs on the server itself, not in a container, so Unit7 can’t make a side copy of it.`, 409);
     ctx.progress(`Taking a backup of ${t.p.name} first…`);
     const safety = await takePartBackup(ctx, t.s, t.p, 'before an import');
     // a side copy is born with none of the live one's settings, so it's told which database the live one means by default
-    const database = i.database ?? (i.into === 'copy' && t.c ? (await ssh(ctx.app).exec(t.s, asRoot(t.s) + script(`docker exec "$1" sh -c 'printf %s "\${POSTGRES_DB:-\${POSTGRES_USER:-\${MYSQL_DATABASE:-\${MARIADB_DATABASE:-}}}}"'`, t.c))).stdout.trim() : '');
-    if (database) DB.parse(database);
-    const copy = i.into === 'copy' ? await sideCopy(ctx, t, safety.location, t.image, `Made a side copy of ${t.p.name} to load a file into`) : undefined;
+    const named = i.into === 'copy' ? (await ssh(ctx.app).exec(t.s, asRoot(t.s) + script(`docker exec "$1" sh -c 'printf %s "\${POSTGRES_DB:-\${POSTGRES_USER:-\${MYSQL_DATABASE:-\${MARIADB_DATABASE:-}}}}"'`, t.c))).stdout.trim() : '';
+    const database = i.database ?? (DB.safeParse(named).success ? named : '');
+    const copy = i.into === 'copy' ? await sideCopy(ctx, t, safety.location, safety.size, t.image, `Made a side copy of ${t.p.name} to load a file into`) : undefined;
     const into = copy ? { ...t, c: copy.name } : t, x = ssh(ctx.app), tmp = (await x.check(t.s, script('mktemp -d /tmp/unit7-import-XXXXXX'), { what: 'Making room for the file' })).trim();
     const local = plan.body ? join(ctx.app.home, 'uploads', `${i.uploadId}.sql`) : up.path;
     try {
@@ -469,8 +475,8 @@ defineTool({
 // default into a folder next to the backups, where nothing runs. Over the live ones is a person's call: a fresh copy first, what uses
 // them stops for as long as it takes, and what was there isn't deleted: it moves aside inside the same folder, and Undo swaps it back.
 const AWAY = '.unit7-before-restore-';
-const IN_MOUNTS = `k=${AWAY}$0; for d in /b/*; do [ -d "$d" ] || continue; mkdir "$d/$k"; find "$d" -mindepth 1 -maxdepth 1 ! -name '.unit7-*' -exec mv {} "$d/$k/" \\;; done; tar xzf - -C /b`;
-const BACK_IN_MOUNTS = `k=${AWAY}$0; for d in /b/*; do [ -d "$d/$k" ] || continue; u="$d/.unit7-undone-$0"; mkdir "$u"; find "$d" -mindepth 1 -maxdepth 1 ! -name '.unit7-*' -exec mv {} "$u/" \\;; find "$d/$k" -mindepth 1 -maxdepth 1 -exec mv {} "$d/" \\;; rmdir "$d/$k"; done`;
+export const IN_MOUNTS = `k=${AWAY}$0; for d in /b/*; do [ -d "$d" ] || continue; mkdir "$d/$k"; find "$d" -mindepth 1 -maxdepth 1 ! -name '.unit7-*' -exec mv {} "$d/$k/" \\;; done; tar xzf - -C /b`;
+export const BACK_IN_MOUNTS = `k=${AWAY}$0; for d in /b/*; do [ -d "$d/$k" ] || continue; u="$d/.unit7-undone-$0"; mkdir "$u"; find "$d" -mindepth 1 -maxdepth 1 ! -name '.unit7-*' -exec mv {} "$u/" \\;; find "$d/$k" -mindepth 1 -maxdepth 1 -exec mv {} "$d/" \\;; rmdir "$d/$k"; done`;
 // stops the containers that hold these mounts, runs it, and starts them again whatever happened
 const swapScript = (mounts: string, inner: string, want: string[]) => `ids=''; for c in "$@"; do m=" $(docker inspect -f '{{range .Mounts}}{{.Name}} {{.Source}} {{end}}' "$c" 2>/dev/null) "; for w in ${want.map(shq).join(' ')}; do case "$m" in *" $w "*) ids="$ids $c"; break;; esac; done; done
 [ -z "$ids" ] || docker stop $ids >/dev/null
@@ -598,7 +604,7 @@ defineTool({
     ctx.progress(`Taking a fresh backup of ${t.p.name}…`);
     const safety = await takePartBackup(ctx, t.s, t.p, 'before a major upgrade');
     ctx.progress(`Restoring it into ${f.to}, next to the live one…`);
-    const copy = await sideCopy(ctx, t, safety.location, f.to, `Tested ${t.p.name} on ${f.to} side by side`, 'upgrade_ready', f.to);
+    const copy = await sideCopy(ctx, t, safety.location, safety.size, f.to, `Tested ${t.p.name} on ${f.to} side by side`, 'upgrade_ready', f.to);
     const proof = await provePostgres(ctx, t.s, copy.name, f.to, safety.location, copy.said);
     if (!proof.ok) {
       await removeSide(ctx, t.s, copy.name);
@@ -621,8 +627,8 @@ for f in "$@"; do
   sed -E "s|image: *[\\"']?$e[\\"']? *$|image: $new|" "$f" > "$f.unit7" && cat "$f.unit7" > "$f" && rm -f "$f.unit7"; exit $?
 done
 echo "the image isn't written in its Compose file as $old" >&2; exit 3`;
-const ASIDE = 'set -e; d=$(dirname "$1"); k="$d/unit7-before-upgrade-$2"; mkdir "$k"; find "$1" -mindepth 1 -maxdepth 1 -exec mv {} "$k/" \\;';
-const SWAP_BACK = 'set -e; d=$(dirname "$1"); k="$d/unit7-before-upgrade-$2"; n="$d/unit7-after-upgrade-$2"; mkdir "$n"; find "$1" -mindepth 1 -maxdepth 1 -exec mv {} "$n/" \\;; find "$k" -mindepth 1 -maxdepth 1 -exec mv {} "$1/" \\;; rmdir "$k"';
+export const ASIDE = 'set -e; d=$(dirname "$1"); k="$d/unit7-before-upgrade-$2"; mkdir "$k"; find "$1" -mindepth 1 -maxdepth 1 -exec mv {} "$k/" \\;';
+export const SWAP_BACK = 'set -e; d=$(dirname "$1"); k="$d/unit7-before-upgrade-$2"; n="$d/unit7-after-upgrade-$2"; mkdir "$n"; find "$1" -mindepth 1 -maxdepth 1 -exec mv {} "$n/" \\;; find "$k" -mindepth 1 -maxdepth 1 -exec mv {} "$1/" \\;; rmdir "$k"';
 const READY = 'i=0; until docker exec "$1" pg_isready -q -h 127.0.0.1 >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 180 ] || { echo "it did not start" >&2; exit 3; }; sleep 1; done';
 interface Switched { steps: string[]; serverId: string; part: string; via: 'coolify' | 'compose'; from: string; to: string; src: string; at: string; container: string }
 // what a switch does to who runs it: stop, say which image, start
@@ -703,7 +709,7 @@ defineTool({
           await ssh(ctx.app).check(s, open, { what: `Opening ${p.name} to apps again`, timeoutMs: 60_000 });
         }
       } catch (back) {
-        ctx.emit('change.rollback_failed', `Moving ${p.name} on ${s.name} failed, and so did going back. It needs a person. The old files are next to its volume, in unit7-before-upgrade-${at}.`, { severity: 'critical', resource: s.id, data: { part: p.id } });
+        ctx.emit('backup.restore_failed', `Moving ${p.name} on ${s.name} failed, and so did going back. It needs a person. The old files are next to its volume, in unit7-before-upgrade-${at}.`, { severity: 'critical', resource: s.id, data: { part: p.id } });
         throw new Unit7Error('rollback_failed', `Moving ${p.name} failed (${why}), and so did going back (${(back as Error).message.slice(0, 200)}). The old files are safe next to its volume, in unit7-before-upgrade-${at}.`, 502);
       }
       throw new Unit7Error('switch_undone', `${p.name} didn’t move (${why}), so it went back to ${t.image}, as it was.`, 409);
