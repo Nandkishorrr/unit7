@@ -82,7 +82,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 62. PlanetScale, Turso and Upstash: planetscale_databases, turso_databases, upstash_databases, then create_database on each, and link_create to wire one to an app. Only a person creates on PlanetScale, which has no free plan.
 63. Login on a real domain: auth_urls, supabase_auth with emailsPerHour, auth_sign_in for Google or GitHub sign-in, firebase_auth_domains. A person pastes a client secret into a form, never chat.
 64. New Hostinger website: hostinger_website_create. Database: hostinger_database_create, then hostinger_database_connect. Never buy room: a plan that’s full stays the person’s call.
-65. Cloudflare Workers, D1 and R2: use cloudflare_workers, cloudflare_worker_deploy, cloudflare_d1_list, cloudflare_d1_query, cloudflare_r2_list and the rest. d1_query reads; write true waits for a person. An AI’s Worker that binds data or a stored key asks a person first.`;
+65. Cloudflare Workers, D1 and R2: use cloudflare_workers, cloudflare_worker_deploy, cloudflare_d1_list, cloudflare_d1_query, cloudflare_r2_list and the rest. d1_query reads; write true waits for a person. An AI’s Worker that binds data or a stored key asks a person first.
+66. Roll back on Railway, Fly.io and Heroku: cloud_redeploy. Paid plans, Droplets and resizing them are people-only: give hosted_plans’ prices. Render’s free databases expire: say so before making one.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).

@@ -105,6 +105,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Workers take finished JavaScript: there’s no build, and routes are made on Cloudflare. D1 runs one statement at a time, with no triggers. New Workers get Workers Logs on, which can bill past Cloudflare’s free allowance on a paid plan.
 
+## Hosted platforms after the first deploy
+
+- Render has no free cron, and a database address is copied, so a password changed there isn’t followed. Railway has no cron here. Fly.io’s release list misses deploys made by API. Heroku’s add-ons and data don’t roll back. A DigitalOcean disk can’t shrink. Railway databases use a route its API docs don’t cover, and it hasn’t been tried on a real account.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.
