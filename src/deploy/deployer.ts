@@ -7,7 +7,7 @@ import { all, get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
 import { cmd, script, shq, safeName } from '../connectors/shell.ts';
-import { serverRow } from '../tools/servers.ts';
+import { ensureBase, serverRow } from '../tools/servers.ts';
 import { resolveValues, merged, isPublicKey } from '../tools/env.ts';
 import { detect, destructiveLine, type Detection, type RepoFacts } from '../connectors/detect.ts';
 import { dockerfileFor } from './dockerfiles.ts';
@@ -293,6 +293,7 @@ async function deployNow(ctx: Ctx, svc: ServiceRow, o: DeployOptions): Promise<D
   const s = svc.server_id ? serverRow(ctx, svc.server_id) : undefined;
   if (!s) throw new Unit7Error('no_server', `${svc.name} isn't assigned to a server yet.`);
   if (s.status !== 'ready') throw new Unit7Error('server_not_ready', `${s.name} isn't prepared yet. Run server.bootstrap first.`);
+  await ensureBase(ctx, s);
   const cfg = json<ServiceConfig>(svc.config, {});
   const src = o.source ?? cfg.source;
   if (!src) throw new Unit7Error('no_source', `${svc.name} has no source. Give a git repo, an uploaded folder, or an image.`);

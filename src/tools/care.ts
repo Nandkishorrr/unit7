@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { defineTool, execute } from './runtime.ts';
 import { fid } from './helpers.ts';
+import { foundProject, foundProjects } from './xray.ts';
 import { notFound } from '../errors.ts';
 import { readiness, allReadiness } from '../care/readiness.ts';
 import { costRadar } from '../care/radar.ts';
@@ -10,11 +11,19 @@ import { foundReadiness } from '../care/partchecks.ts';
 
 defineTool({
   name: 'project.readiness', title: 'Is a project ready for real users', risk: 'read', action: 'read',
-  description: 'A checklist for a project’s live copy, every tick from what Unit7 has seen: its own domain (not only a test address), HTTPS working, email protection (SPF and DMARC), daily backups with a tested restore, a backup copy off the server, phone alerts, an uptime check, errors tracked, a budget, no secrets in the code (the last deploy’s scan), and autonomy chosen by a person. Checks that don’t apply drop out (no database, no backup checks). Each unticked item names its fix: a tool to run, a page, or a request. Without projectId: every project’s score.',
-  input: z.object({ projectId: fid('prj').optional(), serverId: fid('srv').optional().describe('With found: a project the X-ray found on this server (a Coolify project)'), found: z.string().max(200).optional() }),
+  description: 'A checklist for a project’s live copy, every tick from what Unit7 has seen: its own domain (not only a test address), HTTPS working, email protection (SPF and DMARC), daily backups with a tested restore, a backup copy off the server, phone alerts, an uptime check, errors tracked, a budget, no secrets in the code (the last deploy’s scan), and autonomy chosen by a person. Checks that don’t apply drop out (no database, no backup checks). Each unticked item names its fix: a tool to run, a page, or a request. A Coolify project found on a server (an ast_ id from project.list) gets its own list, from what its server shows. Without projectId: every project’s score.',
+  input: z.object({ projectId: z.string().regex(/^(prj|ast)_[A-Za-z0-9_-]{12}$/, 'must be a prj_ or ast_ id').optional(), serverId: fid('srv').optional().describe('With found: a project the X-ray found on this server (a Coolify project)'), found: z.string().max(200).optional() }),
   run(ctx, i) {
     if (i.serverId && i.found) { const r = foundReadiness(ctx.db, ctx.orgId, i.serverId, i.found); if (!r) throw notFound('That project'); return r; }
-    if (!i.projectId) return { projects: allReadiness(ctx.db, ctx.orgId) };
+    if (i.projectId?.startsWith('ast_')) {
+      const f = foundProject(ctx.db, ctx.orgId, i.projectId), r = f && foundReadiness(ctx.db, ctx.orgId, f.serverId, f.found);
+      if (!r) throw notFound('That project');
+      return { ...r, projectId: f!.id };
+    }
+    if (!i.projectId) {
+      const found = foundProjects(ctx.db, ctx.orgId).flatMap((f) => { const r = foundReadiness(ctx.db, ctx.orgId, f.serverId, f.found); return r ? [{ projectId: f.id, name: r.name, done: r.done, total: r.total, ready: r.ready }] : []; });
+      return { projects: [...allReadiness(ctx.db, ctx.orgId), ...found] };
+    }
     const r = readiness(ctx.db, ctx.orgId, i.projectId);
     if (!r) throw notFound('That project');
     return r;

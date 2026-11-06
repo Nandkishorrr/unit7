@@ -72,7 +72,7 @@ export function coolifyError(status: number, body: any, server: string): Unit7Er
   if (status === 403 && /not allowed to access the API/i.test(said)) return new Unit7Error('coolify_ip_refused', `Coolify on ${server} only lets the addresses in its “Allowed IPs” use the API. Connect automatically adds 127.0.0.1 (only Coolify itself), so Unit7 can call it from inside the server; or add 127.0.0.1 in Coolify: Settings → Advanced.`, 403);
   if (status === 403 && /not allowed to access the API|API is disabled|api.*(disabled|turned off)/i.test(said)) return new Unit7Error('coolify_api_off', `Coolify's API is turned off on ${server}. Turn it on in Coolify: Settings → Advanced → API Access, then Save.`, 403);
   const need = /Missing required permissions?:\s*([\w:,\s]+)/i.exec(said)?.[1]?.trim();
-  if (status === 403) return new Unit7Error('coolify_permission', need ? `The Coolify token can't do this: it needs the "${need}" permission. Create a token that has it and connect again.` : `Coolify said no (403): ${said || 'not allowed'}.`, 403, { need });
+  if (status === 403) return new Unit7Error('coolify_permission', need ? `The Coolify token can't do this: it needs the "${need}" permission. Create a token that has it and connect again (coolify.connect with auto makes Unit7 a new one).` : `Coolify said no (403): ${said || 'not allowed'}.`, 403, { need });
   if (status === 404) return new Unit7Error('not_found', `Coolify on ${server} doesn't have that (404). It may have been deleted.`, 404);
   if (status === 429) return new Unit7Error('rate_limited', `Coolify on ${server} asked Unit7 to slow down (429). Try again in a minute.`, 429);
   if (status === 409 && /domain/i.test(said)) return new Unit7Error('domain_taken', `That domain is already used by another app in Coolify on ${server}. Pick another name, or take it off that app first.`, 409);
@@ -165,7 +165,7 @@ export async function tree(api: Coolify, o: { deployments?: boolean } = {}): Pro
       a.lastDeploy = lastDeployOf(list(d, 'deployments')[0]);
     }));
   }
-  out.projects.sort((a, b) => a.name.localeCompare(b.name));
+  out.projects.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return out;
 }
 
@@ -426,6 +426,16 @@ $s->save();
 $server = App\Models\Server::find(0);
 if ($server && method_exists($server, 'setupDynamicProxyConfiguration')) $server->setupDynamicProxyConfiguration();
 unit7_out(['before' => $before, 'fqdn' => $s->fqdn]);`,
+  // what the API hides from a key without read:sensitive, for Unit7 itself and never a result: a deploy's build log (no
+  // docker logs for that: its container is gone by then), a database's address (it goes straight into an app), a service's compose
+  deployment_log: String.raw`$d = App\Models\ApplicationDeploymentQueue::where('deployment_uuid', $in['uuid'])->first();
+if (!$d) throw new Exception('Coolify has no deploy with that id.');
+$l = json_decode((string) $d->logs, true);
+unit7_out(['logs' => is_array($l) ? array_slice($l, -(int) $in['lines']) : (string) $d->logs]);`,
+  db_url: String.raw`unit7_out(['url' => data_get(queryResourcesByUuid($in['uuid']), 'internal_db_url')]);`,
+  service_compose: String.raw`$s = App\Models\Service::where('uuid', $in['uuid'])->first();
+if (!$s) throw new Exception('Coolify has no service with that id.');
+unit7_out(['compose' => base64_encode((string) $s->docker_compose_raw)]);`,
 } as const;
 export type PhpOp = keyof typeof PHP_OPS;
 export const phpScript = (op: PhpOp, input: Record<string, unknown>) =>
@@ -583,4 +593,57 @@ export function proxyEdit(text: string, op: ProxyOp): { text: string; changed: s
   const out: string[] = [];
   lines.forEach((l, i) => { if (!drop.has(i)) out.push(swap.get(i) ?? l); out.push(...(after.get(i) ?? [])); });
   return { text: out.join('\n'), changed };
+}
+
+// --- one part of a service's compose, changed line by line ----------------------------------------------------
+// A service (Supabase, WordPress…) has no memory or health fields in Coolify: its compose is where they live, and Coolify
+// keeps that through a redeploy. Done like the proxy above: only the lines that matter, so comments and order stay.
+const composeLines = (text: string) => {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  return { lines, services: child(lines, { start: -1, end: lines.length, indent: -1 }, 'services') };
+};
+// the keys directly inside a block, with their line
+function keysOf(lines: string[], b: Block) {
+  const first = lines.slice(b.start + 1, b.end).find((l) => !skip(l));
+  const ind = first ? indentOf(first) : b.indent + 2, keys: [number, string][] = [];
+  for (let i = b.start + 1; i < b.end; i++) {
+    const m = /^\s*['"]?([\w.-]+)['"]?:/.exec(lines[i]!);
+    if (m && !skip(lines[i]!) && indentOf(lines[i]!) === ind) keys.push([i, m[1]!]);
+  }
+  return { ind, keys };
+}
+export function composeParts(text: string): { part: string; memory?: string; health: boolean }[] {
+  const { lines, services } = composeLines(text);
+  if (!services) return [];
+  return keysOf(lines, services).keys.map(([, part]) => {
+    const b = child(lines, services, part), keys = b ? keysOf(lines, b).keys : [];
+    const mem = keys.find(([, k]) => k === 'mem_limit')?.[0];
+    return { part, health: keys.some(([, k]) => k === 'healthcheck'), ...(mem !== undefined && { memory: lines[mem]!.split(':').slice(1).join(':').trim().replace(/^['"]|['"]$/g, '') }) };
+  });
+}
+export interface ComposeChange { memory?: string | null; health?: { port: number; path: string } | null } // null takes it out
+export function composeEdit(text: string, part: string, change: ComposeChange): string {
+  const { lines, services } = composeLines(text);
+  const p = services && child(lines, services, part);
+  if (!p) throw new Unit7Error('not_found', `That service has no part called ${part}.`, 404);
+  const { ind, keys } = keysOf(lines, p), a = ' '.repeat(ind), b = ' '.repeat(ind + 2), line = (k: string) => keys.find(([, n]) => n === k)?.[0];
+  const drop = new Set<number>(), add: string[] = [];
+  if (change.memory !== undefined) {
+    // Compose refuses two different caps, so one set under deploy stays where it is
+    const deploy = child(lines, p, 'deploy');
+    if (change.memory !== null && deploy && lines.slice(deploy.start, deploy.end).some((l) => /^\s*memory:/.test(l))) throw new Unit7Error('compose_layout', `The compose of ${part} sets its memory under deploy.resources. Change it there, in Coolify.`, 409);
+    if (line('mem_limit') !== undefined) drop.add(line('mem_limit')!);
+    if (change.memory !== null) add.push(`${a}mem_limit: ${change.memory}`);
+  }
+  if (change.health !== undefined) {
+    const block = child(lines, p, 'healthcheck');
+    if (block) for (let i = block.start; i < block.end; i++) drop.add(i);
+    if (change.health) {
+      const url = `http://127.0.0.1:${change.health.port}${change.health.path}`;
+      add.push(`${a}healthcheck:`, `${b}test:`, `${b}  - CMD-SHELL`, `${b}  - 'curl -fsS ${url} >/dev/null || wget -q -O /dev/null ${url}'`, `${b}interval: 30s`, `${b}timeout: 5s`, `${b}retries: 5`, `${b}start_period: 30s`);
+    }
+  }
+  const out: string[] = [];
+  lines.forEach((l, i) => { if (!drop.has(i)) out.push(l); if (i === p.start) out.push(...add); });
+  return out.join('\n');
 }

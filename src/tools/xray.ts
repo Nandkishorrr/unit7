@@ -3,7 +3,7 @@
 // server's price split between them) and server.price (the optional monthly price that split uses).
 import { z } from 'zod';
 import { defineTool, type Ctx, type AccountRow } from './runtime.ts';
-import { all, get, id, json, run, type DB } from '../db.ts';
+import { all, get, id, json, now, run, type DB } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid } from './helpers.ts';
 import { serverRow, parseMetrics, type Facts } from './servers.ts';
@@ -13,9 +13,10 @@ import { cmd } from '../connectors/shell.ts';
 import { hostinger } from '../connectors/hostinger.ts';
 import { coolifyApi, enrich, tree } from '../connectors/coolify.ts';
 import {
-  XRAY_PROBE, SIZES_PROBE, USAGE_PROBE, buildInventory, parseSizes, sizeTargets, sections, parseSentinel, parseDockerStats, rollup, summarize,
+  XRAY_PROBE, SIZES_PROBE, USAGE_PROBE, buildInventory, parseSizes, sizeTargets, sections, parseSentinel, parseDockerStats, rollup, summarize, xrayFound,
   type Inventory, type Sizes,
 } from '../discovery/xray.ts';
+import { archivedAssets, assetIdOf } from '../archive.ts';
 
 // --- storage: every run kept, the last good one always there ------------------------------------------
 const KEEP = 200; // ponytail: a fixed number of runs per server; roll up into daily frames when the time machine needs months
@@ -26,6 +27,35 @@ export function saveXray(db: DB, orgId: string, serverId: string, kind: 'fast' |
 export function lastXray<T = Inventory>(db: DB, orgId: string, serverId: string, kind: 'fast' | 'deep' | 'usage' = 'fast'): { at: string; data: T } | undefined {
   const r = get<{ created_at: string; data: string }>(db, 'SELECT created_at, data FROM xrays WHERE org_id = ? AND server_id = ? AND kind = ? AND ok = 1 ORDER BY created_at DESC LIMIT 1', orgId, serverId, kind);
   return r && { at: r.created_at, data: json<T>(r.data, {} as T) };
+}
+
+// --- Coolify's projects, as projects ------------------------------------------------------------------------------
+// What runs on a real server isn't in Unit7's projects table: Coolify runs it, and that stays so. project.list and graph.get show
+// these from each server's last X-ray, under the id the map already gives them (ast_…), which project.readiness, project.passport,
+// client.assign and group.accept take. Nothing moves and nothing is copied. Tools that take a prj_, env_ or svc_ id still refuse
+// them: those are for what Unit7 deployed itself, and Coolify's things change through coolify.* and part.*.
+export function foundProjects(db: DB, orgId: string) {
+  const off = archivedAssets(db, orgId);
+  return all<{ id: string; name: string }>(db, 'SELECT id, name FROM servers WHERE org_id = ? ORDER BY name', orgId).flatMap((s) => {
+    const inv = lastXray(db, orgId, s.id)?.data;
+    return (inv?.projects ?? []).filter((p) => p.owner === 'coolify' && !p.system && !off.has(assetIdOf(orgId, `${p.owner}:${s.id}/p/${p.id}`))).map((p) => {
+      const apps = (inv?.parts ?? []).filter((x) => p.parts.includes(x.id) && ['app', 'database', 'service'].includes(x.kind));
+      const envs = [...new Set(apps.map((a) => a.coolify?.environment ?? 'production'))];
+      return {
+        id: assetIdOf(orgId, `${p.owner}:${s.id}/p/${p.id}`), name: p.name, source: 'coolify' as const, serverId: s.id, server: s.name, found: p.id, trust: p.trust, health: p.health, domains: p.domains, ...(p.coolify?.uuid && { coolifyProject: p.coolify.uuid }),
+        environments: envs.map((name) => ({ name, apps: apps.filter((a) => (a.coolify?.environment ?? 'production') === name).map((a) => ({ name: a.name, kind: a.kind, part: a.id, ...(a.coolify && { uuid: a.coolify.uuid, type: a.coolify.type }), ...((a.coolify?.status ?? a.state) && { status: a.coolify?.status ?? a.state }), ...(a.hosts?.length && { domains: a.hosts }) })) })),
+      };
+    });
+  });
+}
+export const foundProject = (db: DB, orgId: string, id: string) => foundProjects(db, orgId).find((p) => p.id === id);
+// on the map from this X-ray, not the next sync: the id project.list hands out has to work now (a sync writes the same row)
+function putFound(db: DB, orgId: string, serverId: string, inv: Inventory) {
+  for (const f of xrayFound(serverId, inv).found.filter((x) => x.kind === 'project' && x.provider === 'coolify' && !x.system)) {
+    const { provider, kind, extId, name, url, accountId, ...meta } = f;
+    run(db, `INSERT INTO assets (id, org_id, account_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, meta = excluded.meta, seen_at = excluded.seen_at`,
+      assetIdOf(orgId, `${provider}:${extId}`), orgId, accountId ?? null, provider, kind, extId, name, url ?? null, JSON.stringify(meta), now());
+  }
 }
 
 // --- Coolify on a server: its account, and an API client for it -----------------------------------------
@@ -54,6 +84,8 @@ export async function runXray(ctx: Ctx, s: ServerRow, o: { coolify?: boolean } =
     const r = await ssh(ctx.app).exec(s, `${asRoot(s)}sh -s`, { stdin: XRAY_PROBE, timeoutMs: 60_000, maxBytes: 32 * 1024 * 1024, signal: ctx.signal });
     if (!r.stdout.includes('@@unit7:host')) throw new Unit7Error('xray_failed', `The X-ray of ${s.name} came back empty: ${r.stderr.trim().slice(-300) || `exit ${r.code}`}`, 502);
     let inv = buildInventory(r.stdout, { unit7, serverHost: s.host, coolify: acc ? { accountId: acc.id, managed: abilities.includes('deploy') && acc.status !== 'failing', abilities } : undefined });
+    // ready as it stands (servers.ts readyOf). The map's hourly X-ray brings in a server connected before Coolify was known
+    if (inv.coolify?.running && json<Facts>(s.facts, {}).docker) run(ctx.db, `UPDATE servers SET status = 'ready' WHERE id = ? AND status = 'connected'`, s.id);
     if (acc && inv.coolify && o.coolify !== false) {
       try {
         inv = enrich(inv, await withTimeout(tree(coolifyFor(ctx, s)!.api, { deployments: true }), 45_000, 'took longer than 45 seconds'));
@@ -67,6 +99,7 @@ export async function runXray(ctx: Ctx, s: ServerRow, o: { coolify?: boolean } =
     }
     inv.ms = Date.now() - t0;
     saveXray(ctx.db, ctx.orgId, s.id, 'fast', inv, undefined, inv.ms);
+    putFound(ctx.db, ctx.orgId, s.id, inv);
     return inv;
   } catch (e) {
     const why = (e as Error).message.slice(0, 300);

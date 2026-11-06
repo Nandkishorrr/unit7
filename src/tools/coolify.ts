@@ -10,7 +10,7 @@ import { id, json, run, tx, now, type DB } from '../db.ts';
 import { Unit7Error, notFound } from '../errors.ts';
 import { fid, isAgent, requireHuman, requireRole } from './helpers.ts';
 import { verifiers } from './core.ts';
-import { serverRow } from './servers.ts';
+import { generateKeyPair, serverRow } from './servers.ts';
 import { checkRef } from './env.ts';
 import { isRef, makeRef } from '../vault.ts';
 import { looksRandom, looksSecretName } from '../redact.ts';
@@ -19,14 +19,14 @@ import { hostname } from 'node:os';
 import {
   abilities, coolifyApi, lastDeployOf, plural, tree, waitDeployment, waitStatus, type Coolify, type Kind,
   ENGINES, ENGINE_NAMES, b64, byName, coolifyServerUuid, engineOf, envResources, hostsOf, list as items, setEnvs, waitImport, waitRun,
-  coolifyPhp, phpScript, proxyEdit, proxyFacts, scrubTokens, PROXY_LOG, type ProxyOp,
+  coolifyPhp, composeEdit, composeParts, phpScript, proxyEdit, proxyFacts, scrubTokens, PROXY_LOG, type ComposeChange, type ProxyOp,
 } from '../connectors/coolify.ts';
-import { parseRepo } from '../connectors/github.ts';
+import { addDeployKey, githubToken, parseRepo, removeDeployKey, repoAccess, type Repo } from '../connectors/github.ts';
 import { accountName } from '../connectors/mcp-oauth.ts';
 import { script } from '../connectors/shell.ts';
 import { ssh } from '../connectors/ssh.ts';
 import { traefikAccess } from '../sentinel/traffic.ts';
-import { manageDirs } from './manage.ts';
+import { learnServerSecrets, manageDirs } from './manage.ts';
 import { CHANGE_UNDO } from './manage.ts'; // ZD-SAFE: coolify.health_check's undo
 import { coolifyAccount, coolifyFor, inventoryOf, lastXray } from './xray.ts';
 import { proxyFor, putSite } from '../deploy/caddy.ts';
@@ -44,10 +44,11 @@ verifiers.coolify = async (ctx, account, token) => {
 
 const CAN: Record<string, string> = {
   read: 'see projects, apps, databases, settings names and deploys', 'read:sensitive': 'read logs and setting values (values are shown only to people)', deploy: 'start, stop, restart, deploy and roll back',
-  write: 'create and change apps, databases, domains and settings', root: 'do everything in Coolify',
+  write: 'create and change apps, databases, domains and settings', delete: 'remove things, once a person or the rules allow it', root: 'do everything in Coolify',
 };
-const UUID = z.string().regex(/^[a-zA-Z0-9_-]{3,64}$/, 'a Coolify uuid');
-const KIND = z.enum(['application', 'database', 'service']).default('application');
+export const UUID = z.string().regex(/^[a-zA-Z0-9_-]{3,64}$/, 'a Coolify uuid');
+export const KIND = z.enum(['application', 'database', 'service']).default('application');
+const PART = z.string().regex(/^[\w.-]{1,60}$/, 'a part of a service, like supabase-kong');
 const KEY = z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/, 'letters, digits and _');
 
 export function need(ctx: Ctx, s: ServerRow) {
@@ -60,13 +61,14 @@ export function need(ctx: Ctx, s: ServerRow) {
 const asRoot = (s: ServerRow) => (json<{ sudo?: string }>(s.facts, {}).sudo === 'yes' ? 'sudo -n ' : '');
 const thisMac = () => hostname().split('.')[0]!.replace(/[^\w .()-]/g, '').trim().slice(0, 60) || 'this computer';
 const tokenName = () => `Unit7 (${thisMac()})`;
-const AUTO = ['read', 'write', 'deploy'];
+// delete: from Coolify 4.6 every removal needs it (before, write was enough). Unit7's own gate still decides who may remove what
+const AUTO = ['read', 'write', 'deploy', 'delete'];
 const TOKEN_DAYS = 365;
 const TOKEN_SHAPE = /^\d+\|[A-Za-z0-9]{40,}$/;
 const AUTO_STEPS = [
   'Finds Coolify on the server and reads its version.',
   'Turns on Coolify’s API if it’s off (Activity can undo it), and lets only Coolify itself (127.0.0.1) through its Allowed IPs when that list is set.',
-  'Makes Unit7 its own key in Coolify with Coolify’s own code: see, change and deploy, valid for a year. A key it made before is deleted first.',
+  'Makes Unit7 its own key in Coolify with Coolify’s own code: see, change, deploy and remove, valid for a year. A key it made before is deleted first.',
   'Keeps the key in Unit7’s vault (it’s never shown, logged or sent to an AI) and checks it answers.',
 ];
 const stamp = () => `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '').toLowerCase()}-${randomBytes(2).toString('hex')}`;
@@ -163,7 +165,7 @@ defineTool({
   sensitive: ['token'], peopleOnly: (i) => !!i.token || (!!i.auto && i.readSecrets), timeoutMs: 180_000,
   // connecting by itself changes Coolify's own settings: an AI asks a person first (it's Coolify, which Unit7 found but didn't set up)
   assess: (_c, i) => (i.auto ? { tier: 2, discovered: true, impact: AUTO_STEPS.join(' ') } : { tier: i.token ? 2 : 0 }),
-  description: 'Connect the Coolify that runs on a server, so Unit7 shows and manages its projects through Coolify’s own API (called from inside the server, so the API never has to be open to the internet). With auto (needs SSH as root or sudo): Unit7 turns on Coolify’s API if it’s off (undoable), lets only 127.0.0.1 through its Allowed IPs when that list is set, makes its own token "Unit7 (<this computer>)" on the root team with Coolify’s own code (read, write and deploy for a year; read:sensitive only when a person sets readSecrets), deletes the token it made before, keeps it in the vault and checks it answers. The token is never shown. Without auto or a token it returns what it found and the manual steps. With a token (people only) it stores a pasted one.',
+  description: 'Connect the Coolify that runs on a server, so Unit7 shows and manages its projects through Coolify’s own API (called from inside the server, so the API never has to be open to the internet). With auto (needs SSH as root or sudo): Unit7 turns on Coolify’s API if it’s off (undoable), lets only 127.0.0.1 through its Allowed IPs when that list is set, makes its own token "Unit7 (<this computer>)" on the root team with Coolify’s own code (read, write, deploy and delete for a year; read:sensitive only when a person sets readSecrets), deletes the token it made before, keeps it in the vault and checks it answers. The token is never shown. Without auto or a token it returns what it found and the manual steps. With a token (people only) it stores a pasted one.',
   input: z.object({
     serverId: fid('srv'), token: z.string().trim().min(8).max(600).optional(),
     auto: z.boolean().default(false).describe('Connect by itself over SSH: no token to paste.'),
@@ -431,18 +433,42 @@ function logLines(raw: unknown): string[] {
   return String(v ?? '').split('\n');
 }
 
+// What Coolify's log routes do by version: up to 4.3 they need read, from 4.4 read:sensitive (the automatic key has none);
+// before 4.2 databases and services have no route at all; a service wants a part's name, and a stopped app has no logs there.
+// docker logs over the server connection has none of those limits, and reads the stopped app that needs it most.
+export const DOCKER_LOGS = `n=$1; want=$2; shift 2
+cs=$(for l in "$@"; do docker ps -a --filter "label=$l" --format '{{.Names}}|{{.Label "coolify.pullRequestId"}}'; done | awk -F'|' '($2 == "" || $2 == "0") && !s[$1]++ { print $1 }')
+[ -z "$want" ] || cs=$(printf '%s\\n' "$cs" | grep -- "^$want" || true)
+[ -n "$cs" ] || { echo '@@none'; exit 0; }
+c=$(printf '%s\\n' "$cs" | wc -l); k=$((n / c + 1))
+for x in $cs; do if [ "$c" -gt 1 ]; then docker logs --tail "$k" "$x" 2>&1 | sed "s/^/$x: /"; else docker logs --tail "$k" "$x" 2>&1; fi; done`;
+async function dockerLogs(ctx: Ctx, s: ServerRow, i: { uuid: string; kind: Kind; lines: number; part?: string }) {
+  const r = await ssh(ctx.app).exec(s, asRoot(s) + script(DOCKER_LOGS, i.lines, i.part ?? '', `coolify.${i.kind}Uuid=${i.uuid}`, `com.docker.compose.project=${i.uuid}`), { timeoutMs: 60_000, signal: ctx.signal });
+  const lines = r.stdout.split('\n').filter((l) => l.trim());
+  return r.code !== 0 || lines[0] === '@@none' ? undefined : lines.slice(-i.lines);
+}
+// a build log has no container left to ask, and every version hides it without read:sensitive: Coolify's own record, read with root
+const buildLog = (ctx: Ctx, s: ServerRow, uuid: string, lines: number) => coolifyPhp<{ logs: unknown }>(ctx.app, s, 'deployment_log', { uuid, lines }, ctx.signal).then((r) => r.logs);
+
 defineTool({
   name: 'coolify.logs', title: 'Logs from Coolify', risk: 'read', action: 'read', timeoutMs: 90_000,
-  description: 'Recent logs of a Coolify application, database or service, or the build log of one deployment (pass deployment). Secrets are masked. Needs a token with read:sensitive. Use to answer “why did this deploy fail?”.',
-  input: z.object({ serverId: fid('srv'), uuid: UUID, kind: KIND, lines: z.number().int().min(1).max(2000).default(200), deployment: UUID.optional() }),
+  description: 'Recent logs of a Coolify application, database or service (part picks one container of a service, like supabase-kong), or the build log of one deployment (pass deployment). Reads them through Coolify, and over the server connection (docker logs) when Coolify won’t send them, so stopped apps and keys without read:sensitive work too. Secrets are masked. Use to answer “why did this deploy fail?”.',
+  input: z.object({ serverId: fid('srv'), uuid: UUID, kind: KIND, lines: z.number().int().min(1).max(2000).default(200), deployment: UUID.optional(), part: PART.optional() }),
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
     const c = need(ctx, s);
-    const raw = i.deployment
-      ? (await c.api.call('GET', `/deployments/${encodeURIComponent(i.deployment)}`))?.logs
-      : (await c.api.call('GET', `/${plural(i.kind)}/${encodeURIComponent(i.uuid)}/logs?lines=${i.lines}`))?.logs;
-    if (raw === undefined || raw === null) throw new Unit7Error('coolify_permission', 'Coolify didn’t send the logs: Unit7’s key there can’t read them (from Coolify 4.4 that needs read:sensitive). A person can allow it in one click: Coolify on the server page → Allow Unit7 to see setting values.', 403);
-    return { untrusted: UNTRUSTED, lines: logLines(raw).filter((l) => l.trim()).slice(-i.lines) };
+    learnServerSecrets(ctx, s.id);
+    const clean = (raw: unknown) => logLines(raw).filter((l) => l.trim()).slice(-i.lines);
+    if (i.deployment) {
+      const raw = (await c.api.call('GET', `/deployments/${encodeURIComponent(i.deployment)}`))?.logs ?? await buildLog(ctx, s, i.deployment, i.lines).catch(() => undefined);
+      if (raw === undefined || raw === null) throw new Unit7Error('coolify_permission', 'Coolify didn’t send the build log, and Unit7 couldn’t read it on the server. A person can allow it in one click: Coolify on the server page → Allow Unit7 to see setting values.', 403);
+      return { untrusted: UNTRUSTED, lines: clean(raw) };
+    }
+    const asked = await c.api.call('GET', `/${plural(i.kind)}/${encodeURIComponent(i.uuid)}/logs?lines=${i.lines}${i.part ? `&sub_service_name=${encodeURIComponent(i.part)}` : ''}`).then((b) => b?.logs, (e: Error) => e);
+    if (asked !== undefined && asked !== null && !(asked instanceof Error)) return { untrusted: UNTRUSTED, lines: clean(asked) };
+    const lines = await dockerLogs(ctx, s, i);
+    if (lines) return { untrusted: UNTRUSTED, lines, through: 'docker logs' };
+    throw asked instanceof Error ? asked : new Unit7Error('no_logs', 'Coolify sent no logs, and nothing of that name is on the server.', 404);
   },
 });
 
@@ -485,8 +511,9 @@ export async function act(ctx: Ctx, api: Coolify, i: { uuid: string; kind: Kind;
   if (deployment && i.action !== 'stop') {
     const w = await waitDeployment(api, deployment, (m) => ctx.progress(m), ctx.signal);
     const failed = /^failed/.test(w.status);
+    const logs = failed ? w.deployment?.logs ?? await buildLog(ctx, api.server, deployment, 40).catch(() => undefined) : undefined;
     return { action: i.action, uuid: i.uuid, kind: i.kind, deployment, message, status: w.status,
-      ...(failed && { untrusted: UNTRUSTED, logTail: logLines(w.deployment?.logs).filter((l) => l.trim()).slice(-40), next: 'coolify.logs with this deployment has the whole build log.' }) };
+      ...(failed && { untrusted: UNTRUSTED, logTail: logLines(logs).filter((l) => l.trim()).slice(-40), next: 'coolify.logs with this deployment has the whole build log.' }) };
   }
   const status = await waitStatus(api, i.kind, i.uuid, i.action === 'stop' ? /exited|stopped/ : /running/, (m) => ctx.progress(m), ctx.signal);
   return { action: i.action, uuid: i.uuid, kind: i.kind, deployment, message, status };
@@ -591,6 +618,16 @@ cs=$(for l in "$@"; do docker ps --filter "label=$l" --filter status=running --f
 [ -n "$cs" ] || { echo '@@none'; exit 0; }
 for c in $cs; do v=$(docker inspect -f "$t" "$c" 2>/dev/null) || continue; [ -n "$v" ] && { printf '@@value %s\\n' "$v"; exit 0; }; done
 echo '@@unset'`;
+async function readRunning(ctx: Ctx, s: ServerRow, kind: Kind, uuid: string, key: string): Promise<{ state: 'none' } | { state: 'unset' } | { state: 'value'; value: string }> {
+  const out = await ssh(ctx.app).exec(s, asRoot(s) + script(RUNNING_ENV, runningEnvTemplate(key), `coolify.${kind}Uuid=${uuid}`, `com.docker.compose.project=${uuid}`), { timeoutMs: 30_000, signal: ctx.signal });
+  const line = out.stdout.split('\n').find((l) => l.startsWith('@@'))?.trim() ?? '';
+  if (line === '@@none') return { state: 'none' };
+  if (line === '@@unset') return { state: 'unset' };
+  let entry: unknown;
+  try { entry = JSON.parse(line.slice('@@value '.length)); } catch { /* below */ }
+  if (typeof entry !== 'string' || !entry.startsWith(`${key}=`)) throw new Unit7Error('read_failed', 'Unit7 couldn’t read the value from the server.', 502);
+  return { state: 'value', value: entry.slice(key.length + 1) };
+}
 defineTool({
   name: 'coolify.running_value', title: 'Show a setting from the running app', risk: 'read', action: 'secret_reveal', peopleOnly: true, timeoutMs: 60_000,
   description: 'People only (owners and admins): the value of ONE setting as the running app has it now, read from its container over the server connection (root), for when Coolify’s key can’t read values. Only that key is read; the value is shown once to the person and kept out of logs, audit and events.',
@@ -599,14 +636,10 @@ defineTool({
     requireHuman(ctx, 'reveal a value');
     requireRole(ctx, ['owner', 'admin'], 'reveal setting values');
     const s = serverRow(ctx, i.serverId);
-    const out = await ssh(ctx.app).exec(s, asRoot(s) + script(RUNNING_ENV, runningEnvTemplate(i.key), `coolify.${i.kind}Uuid=${i.uuid}`, `com.docker.compose.project=${i.uuid}`), { timeoutMs: 30_000, signal: ctx.signal });
-    const line = out.stdout.split('\n').find((l) => l.startsWith('@@'))?.trim() ?? '';
-    if (line === '@@none') throw new Unit7Error('not_running', 'The app isn’t running on the server right now, so there’s no value to read. Start or deploy it, then try again.', 409);
-    if (line === '@@unset') throw new Unit7Error('not_set', `The running app doesn’t have ${i.key}. It may be set in Coolify but not deployed yet: deploy to apply it.`, 404);
-    let entry: unknown;
-    try { entry = JSON.parse(line.slice('@@value '.length)); } catch { /* below */ }
-    if (typeof entry !== 'string' || !entry.startsWith(`${i.key}=`)) throw new Unit7Error('read_failed', 'Unit7 couldn’t read the value from the server.', 502);
-    const value = entry.slice(i.key.length + 1);
+    const r = await readRunning(ctx, s, i.kind, i.uuid, i.key);
+    if (r.state === 'none') throw new Unit7Error('not_running', 'The app isn’t running on the server right now, so there’s no value to read. Start or deploy it, then try again.', 409);
+    if (r.state === 'unset') throw new Unit7Error('not_set', `The running app doesn’t have ${i.key}. It may be set in Coolify but not deployed yet: deploy to apply it.`, 404);
+    const { value } = r;
     ctx.redactor.add(value, `setting ${i.key}`);
     const pub = isPublicKey(i.key);
     ctx.emit('secret.revealed', `${ctx.actor.name} revealed ${i.key} from the running app on ${s.name}`, { severity: pub ? 'info' : 'warning', resource: s.id, data: { key: i.key, from: 'running app' } });
@@ -671,14 +704,43 @@ export async function githubApps(api: Coolify) {
   })));
 }
 
+// A private repo no GitHub App reaches: a key pair for this app alone. The private half goes straight into Coolify (never a
+// result, the vault or a log), the public half onto the repo, read-only. It takes a GitHub account that may add keys; with none
+// connected, auto builds the repo as public, as it always did. If a later step fails, this call takes back only what it made.
+async function deployKey(ctx: Ctx, api: Coolify, s: ServerRow, repo: Repo, app: string, must: boolean) {
+  const full = `${repo.owner}/${repo.name}`;
+  const token = await githubToken(ctx).catch((e) => { if (must) throw e; return undefined; });
+  if (!token) {
+    if (must) throw new Unit7Error('no_account', `A deploy key for ${full} needs GitHub connected, so Unit7 can add it to the repo. Connect GitHub in Connections, or install Coolify’s GitHub App on the repo.`, 409);
+    return undefined;
+  }
+  const r = await repoAccess(repo, token).catch((e: Error) => {
+    if (/\b404\b/.test(e.message)) throw new Unit7Error('no_repo', `GitHub says ${full} isn’t there, or the connected account can’t see it. Check the name, or connect an account that can.`, 404);
+    if (must) throw e;
+    return undefined;
+  });
+  if (!r || (!r.private && !must)) return undefined;
+  if (r.permissions?.admin === false) throw new Unit7Error('no_repo_admin', `Adding a deploy key to ${full} takes admin rights on the repo, and the connected GitHub account hasn’t got them. Ask its owner, or install Coolify’s GitHub App on the repo.`, 403);
+  ctx.progress(`Making a deploy key for ${full}…`);
+  const { privateKey, publicKey } = await generateKeyPair(`unit7-${repo.name}`);
+  ctx.redactor.add(privateKey.trim(), 'a deploy key');
+  const uuid = made(await api.call('POST', '/security/keys', { name: `Unit7 ${full}`.slice(0, 255), description: `Deploy key for ${app}, made by Unit7`.slice(0, 255), private_key: privateKey }), 'deploy key');
+  const dropCoolify = () => api.call('DELETE', `/security/keys/${enc(uuid)}`).catch(() => undefined);
+  const github = await addDeployKey(repo, { title: `Coolify on ${s.name} (Unit7)`, key: publicKey }, token).catch(async (e: Error) => {
+    await dropCoolify();
+    throw new Unit7Error('deploy_key', `GitHub didn’t take the deploy key for ${full} (${e.message}). The connected account may not be allowed to add keys there.`, 502);
+  });
+  return { uuid, githubId: github.id, branch: r.default_branch, drop: async () => { await removeDeployKey(repo, github.id, token).catch(() => undefined); await dropCoolify(); } };
+}
+
 const BUILD_PACKS = ['nixpacks', 'railpack', 'static', 'dockerfile', 'dockercompose'] as const;
 defineTool({
   name: 'coolify.create_app', title: 'Create an app in Coolify', risk: 'write', action: 'service_write', timeoutMs: 20 * 60_000,
-  description: 'Create an application in a Coolify project from one of: a GitHub repo (repo: owner/name or its URL; private repos go through the Coolify GitHub App that reaches them, see coolify.repos; others as public), a ready image (image: name:tag), or a Dockerfile’s text. buildPack (nixpacks by default) and port (3000) say how it builds and listens; domains are optional (Coolify gives a free test address). It isn’t deployed until coolify.control deploy (or deploy:true), so settings can go in first. One with the same name in that environment is reused.',
+  description: 'Create an application in a Coolify project from one of: a GitHub repo (repo: owner/name or its URL; a private repo goes through the Coolify GitHub App that reaches it, see coolify.repos, and with no such app through a read-only deploy key Unit7 makes and adds to the repo, which needs GitHub connected; others as public), a ready image (image: name:tag), or a Dockerfile’s text. buildPack (nixpacks by default) and port (3000) say how it builds and listens; domains are optional (Coolify gives a free test address). It isn’t deployed until coolify.control deploy (or deploy:true), so settings can go in first. One with the same name in that environment is reused.',
   input: z.object({
     ...WHERE, name: NAME,
     repo: z.string().trim().max(300).optional(), branch: z.string().regex(/^[\w./-]{1,100}$/).optional(),
-    source: z.enum(['auto', 'public', 'github-app']).default('auto'), githubApp: UUID.optional(),
+    source: z.enum(['auto', 'public', 'github-app', 'deploy-key']).default('auto'), githubApp: UUID.optional(),
     image: z.string().trim().regex(/^[\w.-]+(:\d+)?(\/[\w.-]+)*(:[\w.-]+)?$/, 'an image like ghcr.io/example/api:1.2').optional(),
     dockerfile: z.string().min(10).max(100_000).optional(),
     buildPack: z.enum(BUILD_PACKS).default('nixpacks'), port: z.number().int().min(1).max(65535).default(3000),
@@ -692,7 +754,7 @@ defineTool({
     const had = i.reuse ? byName((await envResources(api, i.project, i.environment)).application, i.name) : undefined;
     if (had) return { uuid: had.uuid, name: i.name, reused: true, domains: hostsOf(had.fqdn) };
     const base = { ...(await where(api, s, i)), name: i.name, ports_exposes: String(i.port), instant_deploy: false, ...(i.domains?.length && { domains: i.domains.map((d) => `https://${hostOf(d)}`).join(',') }) };
-    let path: string, body: Record<string, unknown>, from: string;
+    let path: string, body: Record<string, unknown>, from: string, key: Awaited<ReturnType<typeof deployKey>>;
     if (i.image) {
       const im = splitImage(i.image);
       [path, body, from] = ['/applications/dockerimage', { ...base, docker_registry_image_name: im.name, docker_registry_image_tag: im.tag }, `the image ${i.image}`];
@@ -702,23 +764,26 @@ defineTool({
       const gh = parseRepo(i.repo!);
       if (!gh && !/^https:\/\/[\w.-]+\/[\w./-]+$/.test(i.repo!)) throw new Unit7Error('invalid_input', 'The repo should look like owner/name or https://github.com/owner/name.');
       const full = gh ? `${gh.owner}/${gh.name}` : i.repo!;
-      const via = gh && i.source !== 'public'
+      const via = gh && i.source !== 'public' && i.source !== 'deploy-key'
         ? (await githubApps(api)).flatMap((a) => a.repos.filter((r) => r.fullName.toLowerCase() === full.toLowerCase()).map((r) => ({ uuid: a.uuid, name: a.name, branch: r.defaultBranch }))).find((a) => !i.githubApp || a.uuid === i.githubApp)
         : undefined;
-      if (!via && i.source === 'github-app') throw new Unit7Error('no_github_app', `None of Coolify’s GitHub Apps can reach ${full}. Install the app on that repo in GitHub, or build it as a public repo.`, 404);
+      if (!via && i.source === 'github-app') throw new Unit7Error('no_github_app', `None of Coolify’s GitHub Apps can reach ${full}. Install the app on that repo in GitHub, or use a deploy key (source deploy-key).`, 404);
+      key = gh && !via && i.source !== 'public' ? await deployKey(ctx, api, s, gh, i.name, i.source === 'deploy-key') : undefined;
       const git = {
-        git_branch: i.branch ?? via?.branch ?? 'main', build_pack: i.buildPack,
+        git_branch: i.branch ?? via?.branch ?? key?.branch ?? 'main', build_pack: i.buildPack,
         ...(i.baseDirectory && { base_directory: i.baseDirectory }), ...(i.installCommand && { install_command: i.installCommand }),
         ...(i.buildCommand && { build_command: i.buildCommand }), ...(i.startCommand && { start_command: i.startCommand }),
       };
       [path, body, from] = via
         ? ['/applications/private-github-app', { ...base, ...git, github_app_uuid: via.uuid, git_repository: full }, `${full} (through ${via.name})`]
+        : key ? ['/applications/private-deploy-key', { ...base, ...git, private_key_uuid: key.uuid, git_repository: `git@github.com:${full}.git` }, `${full} (with a deploy key)`]
         : ['/applications/public', { ...base, ...git, git_repository: gh ? `https://github.com/${full}` : full }, full];
     }
-    const r = await api.call('POST', path, body);
+    const r = await api.call('POST', path, body).catch(async (e) => { await key?.drop(); throw e; });
     const uuid = made(r, 'app');
     ctx.emit('coolify.created', `Created the app ${i.name} in Coolify on ${s.name}`, { resource: s.id, data: { uuid } });
-    const out = { uuid, name: i.name, from, port: i.port, domains: hostsOf(r.domains ?? body.domains), reused: false, ...undoOf('application', uuid, i.name) };
+    const out = { uuid, name: i.name, from, port: i.port, domains: hostsOf(r.domains ?? body.domains), reused: false, ...undoOf('application', uuid, i.name),
+      ...(key && { deployKey: { coolify: key.uuid, github: key.githubId, note: 'Read-only, for this repo. It stays on the repo (Settings → Deploy keys) and in Coolify (Keys & Tokens) if the app is removed.' } }) };
     if (!i.deploy) return { ...out, next: 'Deploy it with coolify.control action deploy once its settings are in.' };
     return { ...out, deploy: await act(ctx, api, { uuid, kind: 'application', action: 'deploy' }) };
   },
@@ -735,7 +800,9 @@ async function makeDatabase(ctx: Ctx, api: Coolify, s: ServerRow, i: DbInput) {
     uuid = had.uuid;
     if (i.injectInto) {
       url = (await api.call('GET', `/databases/${enc(uuid)}`))?.internal_db_url;
-      if (typeof url !== 'string' || !url.includes('@')) throw new Unit7Error('coolify_permission', `Coolify didn’t share the address of ${name} (that needs a token with read:sensitive). Set ${e.key} on the app in Coolify, or connect a token that can read settings.`, 403);
+      // hidden without read:sensitive: Coolify's own record then, read with root, straight into the app
+      if (typeof url !== 'string' || !url.includes('@')) url = await coolifyPhp<{ url?: string }>(ctx.app, s, 'db_url', { uuid }, ctx.signal).then((r) => r.url, () => undefined);
+      if (typeof url !== 'string' || !url.includes('@')) throw new Unit7Error('coolify_permission', `Unit7 couldn’t read the address of ${name} from Coolify or from the server. Set ${e.key} on the app in Coolify, or connect a token that can read settings.`, 403);
     }
   } else {
     const pw = newSecret(), root = newSecret();
@@ -774,9 +841,14 @@ async function wireSupabase(ctx: Ctx, api: Coolify, service: string, app: string
     const v = e?.real_value ?? e?.value;
     return typeof v === 'string' && v.trim() && !/^\*+$|redacted|hidden/i.test(v) ? v.trim() : undefined;
   };
-  let url = val(/^SERVICE_URL_SUPABASEKONG(_\d+)?$/) ?? val(/^SERVICE_FQDN_SUPABASEKONG(_\d+)?$/);
-  const anon = val(/^SERVICE_SUPABASEANON_KEY$/);
-  if (!url || !anon) throw new Unit7Error('coolify_permission', `${name} is made, but Coolify didn’t share its address and key (that needs a token with read:sensitive). Copy SUPABASE_URL and SUPABASE_ANON_KEY from it into the app in Coolify, or connect a token that can read settings and run this again.`, 403);
+  // without read:sensitive Coolify sends the names alone, on every version: the running stack has the same values
+  const running = async (...keys: string[]) => {
+    for (const k of keys) { const r = await readRunning(ctx, api.server, 'service', service, k).catch(() => undefined); if (r?.state === 'value' && r.value.trim()) return r.value.trim(); }
+    return undefined;
+  };
+  let url = val(/^SERVICE_URL_SUPABASEKONG(_\d+)?$/) ?? val(/^SERVICE_FQDN_SUPABASEKONG(_\d+)?$/) ?? await running('SUPABASE_PUBLIC_URL', 'SERVICE_URL_SUPABASEKONG', 'SERVICE_FQDN_SUPABASEKONG');
+  const anon = val(/^SERVICE_SUPABASEANON_KEY$/) ?? await running('SUPABASE_ANON_KEY', 'ANON_KEY');
+  if (!url || !anon) throw new Unit7Error('coolify_permission', `${name} is made, but Unit7 couldn’t read its address and key: Coolify shares them only with a token that has read:sensitive, and the running stack didn’t have them yet. Wait until it’s running and run this again, or copy SUPABASE_URL and SUPABASE_ANON_KEY from it into the app in Coolify.`, 403);
   url = url.split(',')[0]!;
   if (!/^https?:\/\//.test(url)) url = `https://${url}`;
   ctx.redactor.add(anon, `${name}’s anon key`);
@@ -1016,7 +1088,7 @@ defineTool({
 
 defineTool({
   name: 'coolify.repos', title: 'Repos Coolify can build', risk: 'read', action: 'read', timeoutMs: 60_000,
-  description: 'The GitHub Apps connected to the Coolify on a server and the repos each reaches (private ones included). coolify.create_app builds a repo through the app that reaches it; a public repo needs none.',
+  description: 'The GitHub Apps connected to the Coolify on a server and the repos each reaches (private ones included). coolify.create_app builds a repo through the app that reaches it; a public repo needs none, and a private one no app reaches gets a deploy key.',
   input: z.object({ serverId: fid('srv') }),
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
@@ -1042,14 +1114,66 @@ export function healthProbe(out: string): { tool: boolean; path?: string } {
   return { tool: true, path: answers.find((a) => a.ok && a.path !== '/')?.path ?? answers.find((a) => a.ok)?.path };
 }
 type HealthFields = { health_check_enabled: boolean; health_check_path: string };
+
+// --- what only a service's compose can hold ---------------------------------------------------------------------------
+// Coolify's API has no memory or health fields for the parts of a service, on any version. PATCH /services/{uuid} takes the
+// compose itself (base64) and Coolify keeps that through a redeploy, so that's the route. Reading it needs read:sensitive,
+// so without that it comes from Coolify's own record. Nothing restarts: it applies when the service next restarts.
+async function composeOf(ctx: Ctx, api: Coolify, uuid: string): Promise<string> {
+  const raw = (await api.call('GET', `/services/${enc(uuid)}`))?.docker_compose_raw;
+  if (typeof raw === 'string' && raw.trim()) return raw;
+  return Buffer.from((await coolifyPhp<{ compose: string }>(ctx.app, api.server, 'service_compose', { uuid }, ctx.signal)).compose, 'base64').toString('utf8');
+}
+const putCompose = (api: Coolify, uuid: string, compose: string) => api.call('PATCH', `/services/${enc(uuid)}`, { docker_compose_raw: b64(compose) });
+const pickPart = (i: { part?: string }, parts: { part: string }[]) => {
+  const part = i.part ?? (parts.length === 1 ? parts[0]!.part : undefined);
+  if (!part) throw new Unit7Error('which_part', `This service has ${parts.length} parts. Say which one: ${parts.map((p) => p.part).join(', ')}.`, 400, { choices: parts.map((p) => p.part) });
+  return part;
+};
+// A change Coolify's API can take back: no steps on the server, so Activity's Undo finds it by its verb (CHANGE_UNDO)
+export function apiChange(ctx: Ctx, s: ServerRow, uuid: string, verb: string, summary: string, undo: Record<string, unknown>) {
+  const changeId = id('chg');
+  run(ctx.db, 'INSERT INTO changes (id, org_id, server_id, part, verb, summary, undo, status, actor) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)',
+    changeId, ctx.orgId, `coolify:${uuid}`, verb, summary, JSON.stringify({ steps: [], serverId: s.id, uuid, ...undo }), 'done', ctx.actor.name);
+  ctx.emit('change.made', `${summary} on ${s.name}. It can be undone.`, { severity: 'success', resource: s.id, data: { changeId, part: `coolify:${uuid}`, undo: 'change.undo' } });
+  return changeId;
+}
+CHANGE_UNDO['coolify.compose'] = async (ctx, ch) => {
+  const u = json<{ serverId: string; uuid: string; part: string; before: ComposeChange }>(ch.undo, { serverId: '', uuid: '', part: '', before: {} });
+  const { api } = need(ctx, serverRow(ctx, u.serverId));
+  await putCompose(api, u.uuid, composeEdit(await composeOf(ctx, api, u.uuid), u.part, u.before));
+  return { restored: `${u.part} in Coolify`, next: 'Coolify uses it from the next restart.' };
+};
+
+async function serviceHealth(ctx: Ctx, s: ServerRow, api: Coolify, i: { uuid: string; part?: string; port?: number; path?: string }) {
+  const compose = await composeOf(ctx, api, i.uuid), parts = composeParts(compose);
+  if (!i.part) return { parts: parts.map((p) => ({ part: p.part, healthCheck: p.health })), next: 'To add one to a part that has none, pass part and port. Coolify’s one-click stacks mostly come with their own.' };
+  const p = parts.find((x) => x.part === i.part);
+  if (!p) throw notFound(i.part);
+  if (p.health) return { changed: false, why: `${i.part} already has a health check in its compose.` };
+  if (!i.port) throw new Unit7Error('invalid_input', `Say which port ${i.part} listens on (port).`);
+  ctx.progress(`Looking for a page ${i.part} answers on…`);
+  // Coolify names a service's containers <part>-<service uuid>
+  const r = await ssh(ctx.app).exec(s, asRoot(s) + script(PROBE, `${i.part}-${i.uuid}`, i.port, ...(i.path ? [i.path] : HEALTH_PATHS)), { timeoutMs: 60_000 });
+  const found = healthProbe(r.stdout);
+  if (!found.tool) throw new Unit7Error('no_probe_tool', `${i.part}’s image has neither curl nor wget, so a health check would always fail. Add one to the image, then try again.`, 409);
+  if (!found.path) throw new Unit7Error('no_health_page', `${i.part} didn’t answer on port ${i.port} at ${i.path ?? HEALTH_PATHS.join(', ')} from inside its container. Is it running? Give a page it does answer on (path).`, 409);
+  await putCompose(api, i.uuid, composeEdit(compose, i.part, { health: { port: i.port, path: found.path } }));
+  const changeId = apiChange(ctx, s, i.uuid, 'coolify.compose', `Added a health check to ${i.part} (${found.path})`, { part: i.part, before: { health: null } });
+  return { changed: true, part: i.part, path: found.path, changeId, undo: { tool: 'change.undo', input: { changeId }, label: 'Undo' },
+    note: 'It goes in the service’s compose. Coolify uses it from the next restart (coolify.control restart, kind service). Nothing restarted.' };
+}
+
 defineTool({
-  name: 'coolify.health_check', title: 'Add a health check in Coolify', risk: 'write', action: 'settings_write', timeoutMs: 120_000,
-  description: 'Turn on Coolify’s health check for an application that has none, so Coolify can swap versions without visitors seeing errors. Unit7 first finds a page the app answers on from inside its container (/health, /api/health, /healthz, then /; or the path given) and checks the image has curl or wget, which Coolify’s check needs. Coolify uses it from the next deploy: the result offers one to test it. Undo (change.undo) puts the previous settings back.',
-  input: z.object({ serverId: fid('srv'), uuid: UUID, path: z.string().regex(/^\/[\w\-./]{0,120}$/, 'a path like /health').optional() }),
-  assess: () => ({ tier: 2, impact: 'Turns on Coolify’s health check for this app with a page it answers on. Nothing restarts now; Coolify uses it from the next deploy. Undo puts the old settings back.', shows: 'Coolify’s API: PATCH the application with health_check_enabled and health_check_path' }),
+  name: 'coolify.health_check', title: 'Add a health check in Coolify', risk: (i) => (i.kind === 'service' && !i.part ? 'read' : 'write'), action: (i) => (i.kind === 'service' && !i.part ? 'read' : 'settings_write'), timeoutMs: 120_000,
+  description: 'Turn on Coolify’s health check for an application that has none, so Coolify can swap versions without visitors seeing errors. Unit7 first finds a page the app answers on from inside its container (/health, /api/health, /healthz, then /; or the path given) and checks the image has curl or wget, which Coolify’s check needs. Coolify uses it from the next deploy: the result offers one to test it. For a service (kind service): without part it lists which parts have a check; with part and port it adds one to that part’s compose the same way, used from the service’s next restart. Undo (change.undo) puts the previous settings back.',
+  input: z.object({ serverId: fid('srv'), uuid: UUID, path: z.string().regex(/^\/[\w\-./]{0,120}$/, 'a path like /health').optional(), kind: z.enum(['application', 'service']).default('application'), part: PART.optional(), port: z.number().int().min(1).max(65535).optional() }),
+  assess: (_c, i) => (i.kind === 'service' ? (i.part ? { tier: 2, impact: `Adds a health check to ${i.part} in the service’s compose. Nothing restarts now; Coolify uses it from the next restart. Undo takes it out.`, shows: 'Coolify’s API: PATCH the service with its changed compose' } : { tier: 0 })
+    : { tier: 2, impact: 'Turns on Coolify’s health check for this app with a page it answers on. Nothing restarts now; Coolify uses it from the next deploy. Undo puts the old settings back.', shows: 'Coolify’s API: PATCH the application with health_check_enabled and health_check_path' }),
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
     const { api } = need(ctx, s);
+    if (i.kind === 'service') return serviceHealth(ctx, s, api, i);
     const app = await api.call('GET', `/applications/${enc(i.uuid)}`);
     const name = String(app?.name ?? 'this app');
     if (app?.health_check_enabled === true) return { changed: false, why: `Coolify already checks ${name}’s health (at ${app.health_check_path ?? '/'}).` };
@@ -1092,11 +1216,18 @@ CHANGE_UNDO['coolify.health_check'] = async (ctx, ch) => {
 // A memory cap Coolify keeps across deploys (Docker's own would be lost on the next one). It applies from the next deploy.
 defineTool({
   name: 'coolify.memory_cap', title: 'Set a memory cap in Coolify', risk: 'write', action: 'settings_write', timeoutMs: 60_000,
-  description: 'Set Coolify’s Maximum memory for an application, so one leak can’t take the rest of the server down. Nothing restarts; Coolify uses it from the next deploy. Undo puts the old value back.',
-  input: z.object({ serverId: fid('srv'), uuid: UUID, memoryMb: z.number().int().min(64).max(1_048_576) }),
-  assess: (_c, i) => ({ tier: 2, impact: `Sets a ${i.memoryMb} MB cap. Nothing restarts; it applies from the next deploy. Undo puts the old value back.`, shows: 'Coolify’s Maximum memory for this app' }),
+  description: 'Set a memory cap that Coolify keeps across deploys, so one leak can’t take the rest of the server down. An application: Coolify’s Maximum memory, used from the next deploy. A service such as Supabase (kind service, part like supabase-db, one part at a time): a mem_limit in its compose, used from its next restart. Nothing restarts now. Undo puts the old value back.',
+  input: z.object({ serverId: fid('srv'), uuid: UUID, memoryMb: z.number().int().min(64).max(1_048_576), kind: z.enum(['application', 'service']).default('application'), part: PART.optional() }),
+  assess: (_c, i) => (i.kind === 'service' ? { tier: 2, impact: `Sets a ${i.memoryMb} MB cap in the service’s compose. Nothing restarts; it applies from its next restart. Undo puts the old value back.`, shows: 'Coolify’s API: PATCH the service with its changed compose' }
+    : { tier: 2, impact: `Sets a ${i.memoryMb} MB cap. Nothing restarts; it applies from the next deploy. Undo puts the old value back.`, shows: 'Coolify’s Maximum memory for this app' }),
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId), { api } = need(ctx, s);
+    if (i.kind === 'service') {
+      const compose = await composeOf(ctx, api, i.uuid), parts = composeParts(compose), part = pickPart(i, parts);
+      await putCompose(api, i.uuid, composeEdit(compose, part, { memory: `${i.memoryMb}m` }));
+      const changeId = apiChange(ctx, s, i.uuid, 'coolify.compose', `Set ${part}’s memory cap to ${i.memoryMb} MB in Coolify`, { part, before: { memory: parts.find((p) => p.part === part)?.memory ?? null } });
+      return { capped: `${i.memoryMb} MB`, part, changeId, next: 'Coolify uses it from the service’s next restart (coolify.control restart, kind service). Nothing restarted.' };
+    }
     const app = await api.call('GET', `/applications/${enc(i.uuid)}`), name = String(app?.name ?? 'this app'), before = String(app?.limits_memory ?? '0');
     await api.call('PATCH', `/applications/${enc(i.uuid)}`, { limits_memory: `${i.memoryMb}m` });
     const changeId = id('chg'), summary = `Set ${name}’s memory cap to ${i.memoryMb} MB in Coolify`;

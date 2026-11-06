@@ -60,7 +60,7 @@ test('a Coolify server: 4 projects with both label generations, Supabase as one 
   assert.deepEqual(inv.loose.sort(), ['c:old-test', 'v:orphan-data']);
   assert.equal(part(inv, 'v:orphan-data').health?.reason, 'nothing uses it');
 
-  assert.deepEqual(inv.coolify, { version: '4.4.0', dashboard: 'https://coolify.example.com', apiPort: 8000, sentinel: true, proxy: true });
+  assert.deepEqual(inv.coolify, { version: '4.4.0', dashboard: 'https://coolify.example.com', apiPort: 8000, running: true, sentinel: true, proxy: true });
   assert.deepEqual(inv.paas, [{ id: 'coolify', name: 'Coolify' }]);
   assert.equal(inv.disk?.reclaimable, 5_000_000_000, 'unused images (their own layers) plus build cache');
   assert.match(inv.summary, /^Runs 4 projects \(3 with their own Supabase\), 1 database and 5 domains, run by Coolify\./);

@@ -120,7 +120,7 @@ export function confirmed(ctx: Ctx, p: Part, tier: Tier, confirm?: string) {
   if (tier < 3 || isAgent(ctx)) return;
   if ((confirm ?? '').trim().toLowerCase() !== p.name.toLowerCase()) throw new Unit7Error('confirm_needed', `This is hard to undo. Type the name (${p.name}) to confirm.`, 400, { confirm: p.name });
 }
-const learnServerSecrets = (ctx: Ctx, serverId: string) => { for (const s of all<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE server_id = ? AND org_id = ?', serverId, ctx.orgId)) learnSecrets(ctx, s.id); };
+export const learnServerSecrets = (ctx: Ctx, serverId: string) => { for (const s of all<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE server_id = ? AND org_id = ?', serverId, ctx.orgId)) learnSecrets(ctx, s.id); };
 
 // --- through Coolify: its own tools, through the same gate ---------------------------------------------
 async function viaCoolify(ctx: Ctx, tool: string, input: Record<string, unknown>) {
@@ -406,10 +406,12 @@ defineTool({
     const { s, p, system } = await load(ctx, i.serverId, i.part);
     const r = routeFor(p, 'logs', system);
     learnServerSecrets(ctx, s.id);
-    if (r.via === 'coolify' && coolifyAccount(ctx, s.id)) {
-      const out = await viaCoolify(ctx, 'coolify.logs', { serverId: s.id, uuid: r.uuid, kind: r.kind, lines: i.grep ? 2000 : i.lines }) as { lines?: string[] };
-      const lines = (out.lines ?? []).filter((l) => !i.grep || l.toLowerCase().includes(i.grep.toLowerCase())).slice(-i.lines);
-      return { part: p.name, through: 'Coolify', untrusted: UNTRUSTED, lines };
+    // Coolify's route has no container or time filter, and can't always answer (coolify.logs): docker logs takes over then
+    const got = r.via === 'coolify' && coolifyAccount(ctx, s.id) && !i.container && !i.sinceMinutes
+      ? await viaCoolify(ctx, 'coolify.logs', { serverId: s.id, uuid: r.uuid, kind: r.kind, lines: i.grep ? 2000 : i.lines }).catch(() => undefined) as { lines?: string[]; through?: string } | undefined : undefined;
+    if (got?.lines) {
+      const lines = got.lines.filter((l) => !i.grep || l.toLowerCase().includes(i.grep.toLowerCase())).slice(-i.lines);
+      return { part: p.name, through: got.through, untrusted: UNTRUSTED, lines };
     }
     const how = r.via === 'coolify' ? 'docker' : r.how;
     const container = how === 'docker' || how === 'compose' ? await pickContainer(ctx, s, p, i.container, false) : undefined;
@@ -501,7 +503,10 @@ defineTool({
     const r = routeFor(p, 'update', system);
     const tier = verbTier('update', p, i);
     confirmed(ctx, p, tier, i.confirm);
-    if (r.via === 'coolify') return viaCoolify(ctx, 'coolify.control', { serverId: s.id, uuid: r.uuid, kind: r.kind, action: 'deploy' });
+    if (r.via === 'coolify') {
+      if (tier >= 3) await freshBackup(ctx, s, p, 'update it');
+      return viaCoolify(ctx, 'coolify.control', { serverId: s.id, uuid: r.uuid, kind: r.kind, action: 'deploy' });
+    }
     if (r.via !== 'ssh' || r.how !== 'compose') throw refuse(`Unit7 can’t update ${p.name} this way.`);
     const wd = p.compose?.workingDir;
     if (!wd) throw refuse(`Unit7 doesn’t know which folder ${p.name}’s Compose project lives in, so it can’t update it.`);

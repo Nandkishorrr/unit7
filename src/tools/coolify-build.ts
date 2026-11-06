@@ -99,7 +99,7 @@ export async function makePlan(api: Coolify, s: ServerRow, it: Intent): Promise<
     if (gh && !appThere) {
       const full = `${gh.owner}/${gh.name}`.toLowerCase();
       const via = (await githubApps(api).catch(() => [])).find((g) => g.repos.some((r) => r.fullName.toLowerCase() === full));
-      from = `${gh.owner}/${gh.name}${a.branch ? ` (${a.branch})` : ''}${via ? `, through ${via.name}` : ''}`;
+      from = `${gh.owner}/${gh.name}${a.branch ? ` (${a.branch})` : ''}${via ? `, through ${via.name}` : ', with a read-only deploy key if it’s private'}`;
     }
     steps.push({ tool: 'coolify.create_app', title: `Create the app ${it.name}`, keep: { app: 'uuid' }, input: {
       ...where, name: it.name, ...(a.repo && { repo: a.repo }), ...(a.branch && { branch: a.branch }), ...(a.image && { image: a.image }), ...(a.dockerfile && { dockerfile: a.dockerfile }),

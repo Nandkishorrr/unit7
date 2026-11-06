@@ -45,7 +45,7 @@ export interface Inventory {
   version: 1; at: string; ms?: number;
   server: { os?: string; cpus?: number; memTotal?: number; memAvailable?: number; diskTotal?: number; diskUsed?: number; load?: string; docker?: string; user?: string };
   paas: { id: string; name: string }[];
-  coolify?: { version?: string; dashboard?: string; apiPort: number; sentinel: boolean; proxy: boolean; connected?: string; abilities?: string[] };
+  coolify?: { version?: string; dashboard?: string; apiPort: number; running?: boolean; sentinel: boolean; proxy: boolean; connected?: string; abilities?: string[] };
   projects: Project[]; parts: Part[]; loose: string[]; ports: Listener[]; repos: Repo[];
   disk?: DiskSummary; summary: string; notes: string[];
   blocked?: { port: number; chains: string[] }[]; // ports Unit7 closed at the firewall (server.close_port's tagged rules)
@@ -781,7 +781,7 @@ export function buildInventory(out: string, known: Known = {}, at = new Date().t
   const coolify: Inventory['coolify'] = paas.some((p) => p.id === 'coolify') ? {
     version: versionTag(coolifyCtr?.image) ?? ctrs.map((c) => c.labels['coolify.version']).find(Boolean),
     dashboard: traefik.dashboard ? `https://${traefik.dashboard}` : known.serverHost ? `http://${known.serverHost}:${Number(/APP_PORT=(\d+)/.exec(sec.markers ?? '')?.[1] ?? 8000)}` : undefined,
-    apiPort: Number(/APP_PORT=(\d+)/.exec(sec.markers ?? '')?.[1] ?? 8000), sentinel: ctrs.some((c) => c.name === 'coolify-sentinel' && c.state === 'running'), proxy: ctrs.some((c) => c.name === 'coolify-proxy' && c.state === 'running'),
+    apiPort: Number(/APP_PORT=(\d+)/.exec(sec.markers ?? '')?.[1] ?? 8000), running: coolifyCtr?.state === 'running', sentinel: ctrs.some((c) => c.name === 'coolify-sentinel' && c.state === 'running'), proxy: ctrs.some((c) => c.name === 'coolify-proxy' && c.state === 'running'),
     ...(known.coolify?.accountId && { connected: known.coolify.accountId }), ...(known.coolify?.abilities && { abilities: known.coolify.abilities }),
   } : undefined;
   if (host.has_docker && !host.docker) notes.push('Docker is installed but Unit7 couldn’t use it: it isn’t running, or this user isn’t in the docker group.');

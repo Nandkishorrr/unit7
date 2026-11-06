@@ -12,6 +12,7 @@ import { CATALOG } from '../connectors/oneclick.ts';
 import { accountName, closeOauthMcp } from '../connectors/mcp-oauth.ts';
 import { hostinger } from '../connectors/hostinger.ts';
 import { keptMarks } from '../kept.ts';
+import { foundProjects } from './xray.ts';
 
 export const PROVIDERS = ['ssh', 'smtp', 'stripe', 'generic', 'coolify', ...CATALOG.map((p) => p.id)] as [string, ...string[]];
 const ENV_KINDS = ['development', 'staging', 'production', 'custom'] as const;
@@ -21,11 +22,11 @@ const ruleSchema = z.record(z.string().regex(/^[a-z_]+$/), z.enum(['allowed', 'r
 
 defineTool({
   name: 'project.list', title: 'List projects', risk: 'read', action: 'read',
-  description: 'All projects in the organization with their environments. Start here to find ids.',
+  description: 'All projects in the organization with their environments, then the Coolify projects server.xray found on servers (source coolify, an ast_ id). project.readiness, project.passport and client.assign take that id; they stay in Coolify, so change them with coolify.* and part.*. Start here to find ids.',
   input: z.object({}),
-  run: (ctx) => all<{ id: string; name: string; slug: string; description: string | null; repo: string | null; created_at: string }>(ctx.db,
+  run: (ctx) => [...all<{ id: string; name: string; slug: string; description: string | null; repo: string | null; created_at: string }>(ctx.db,
     'SELECT id, name, slug, description, repo, created_at FROM projects WHERE org_id = ? ORDER BY name', ctx.orgId)
-    .map((p) => ({ ...p, environments: all(ctx.db, "SELECT id, name, slug, kind, autonomy FROM environments WHERE project_id = ? ORDER BY CASE kind WHEN 'development' THEN 0 WHEN 'staging' THEN 1 WHEN 'production' THEN 2 ELSE 3 END, created_at", p.id) })),
+    .map((p) => ({ ...p, environments: all(ctx.db, "SELECT id, name, slug, kind, autonomy FROM environments WHERE project_id = ? ORDER BY CASE kind WHEN 'development' THEN 0 WHEN 'staging' THEN 1 WHEN 'production' THEN 2 ELSE 3 END, created_at", p.id) })), ...foundProjects(ctx.db, ctx.orgId)],
 });
 
 defineTool({
@@ -339,8 +340,8 @@ defineTool({
 
 defineTool({
   name: 'graph.get', title: 'Read the infrastructure graph', risk: 'read', action: 'read',
-  description: 'The structured state of everything Unit7 manages: projects → environments → accounts, services (apps, workers, databases) on servers, their domains, current deployments and credential references. Query this before assuming anything.',
-  input: z.object({ projectId: fid('prj').optional() }),
+  description: 'The structured state of everything Unit7 manages: projects → environments → accounts, services (apps, workers, databases) on servers, their domains, current deployments and credential references. foundProjects are the Coolify projects server.xray found (an ast_ id; project.readiness, project.passport and client.assign take it, and they change through coolify.* and part.*). Query this before assuming anything.',
+  input: z.object({ projectId: z.string().regex(/^(prj|ast)_[A-Za-z0-9_-]{12}$/, 'must be a prj_ or ast_ id').optional() }),
   run: (ctx, i) => graph(ctx, i.projectId),
 });
 
@@ -369,7 +370,8 @@ export function graph(ctx: Pick<Ctx, 'db' | 'orgId'>, projectId?: string) {
       })),
     }));
   const accounts = all(db, 'SELECT id, provider, name, slug, status FROM accounts WHERE org_id = ? ORDER BY provider, name', orgId);
-  return { servers, projects, accounts };
+  const found = foundProjects(db, orgId).filter((p) => !projectId || p.id === projectId).map((p) => ({ ...p, ...(marks.has(p.id) && { kept: true, ...(marks.get(p.id)!.important && { important: true }) }) }));
+  return { servers, projects, foundProjects: found, accounts };
 }
 
 // Whether a server answered the last time Unit7 looked (its last X-ray, or a sign-in since), and when it last did:

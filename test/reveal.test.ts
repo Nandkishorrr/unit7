@@ -41,7 +41,7 @@ test('option A: “allow Unit7 to see values” makes a new key with read:sensit
     const sh = shell(dir, host.port);
     ssh(app).exec = async (_s, command, x: ExecOptions = {}) => sh(command, String(x.stdin ?? ''));
     const first = ok(await o.h('coolify.connect', { serverId: srv, auto: true }));
-    assert.deepEqual(first.abilities, ['read', 'write', 'deploy']);
+    assert.deepEqual(first.abilities, ['read', 'write', 'deploy', 'delete']);
     const want = { serverId: srv, uuid: 'shopapp01', op: 'reveal', key: 'NEXT_PUBLIC_SUPABASE_URL' };
     const no = await o.h('coolify.envs', want);
     assert.equal(no.status, 'error');

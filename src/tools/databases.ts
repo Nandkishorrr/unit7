@@ -9,7 +9,7 @@ import { all, get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
 import { cmd, script, safeName, secretIn } from '../connectors/shell.ts';
-import { serverRow } from './servers.ts';
+import { ensureBase, serverRow } from './servers.ts';
 import { makeRef } from '../vault.ts';
 import { setVar } from './env.ts';
 import { backupBeforeChange } from './backups.ts';
@@ -57,6 +57,7 @@ defineTool({
       ?? all<{ id: string }>(ctx.db, `SELECT id FROM servers WHERE org_id = ? AND status = 'ready' LIMIT 1`, ctx.orgId)[0]?.id;
     if (!serverId) throw new Unit7Error('no_server', 'No prepared server. Connect one and run server.bootstrap first.');
     const s = serverRow(ctx, serverId);
+    await ensureBase(ctx, s);
     const label = i.name ?? i.engine;
     const slug = uniqueSlug(ctx, 'SELECT 1 FROM services WHERE environment_id = ? AND slug = ?', label, i.environmentId);
     const container = safeName(`unit7-${slug}-${i.environmentId.slice(-6)}`.toLowerCase(), 'container');

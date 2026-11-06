@@ -147,12 +147,12 @@ export function ConnectFlow({ serverId, serverName, human, onConnected, paste: p
     <div className="space-y-4">
       <p className="text-[13px] text-ink-2" title={conn.key}>{[conn.version && `Coolify ${conn.version}`, conn.automatic ? 'Unit7’s own key' : 'a pasted token', conn.expiresAt && `valid until ${until(conn.expiresAt)}`].filter(Boolean).join(' · ')}</p>
       <Can can={conn.can} />
-      {/* without read:sensitive, setting values and (from Coolify 4.4) logs stay hidden: one click for Unit7's own key */}
+      {/* without read:sensitive, setting values stay hidden (logs come over the server connection then): one click for Unit7's own key */}
       {human && !conn.abilities.includes('read:sensitive') && !conn.abilities.includes('root') && (
         <div className="space-y-2 rounded-[14px] bg-raised px-3.5 py-3">
           <p className="text-[12.5px] text-ink-2">{conn.automatic
-            ? 'Unit7 can’t see setting values or, on Coolify 4.4 and newer, logs. Allowing it makes a new key that can, and deletes the old one. Values are only ever shown to people.'
-            : 'This pasted token can’t read setting values or, on Coolify 4.4 and newer, logs. In Coolify, make a token with “read” and “read:sensitive” (or “root”) and paste it, or let Unit7 make its own key.'}</p>
+            ? 'Unit7 can’t see setting values. Allowing it makes a new key that can, and deletes the old one. Values are only ever shown to people.'
+            : 'This pasted token can’t read setting values. In Coolify, make a token with “read” and “read:sensitive” (or “root”) and paste it, or let Unit7 make its own key.'}</p>
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="primary" icon={<KeyRound size={13} />} onClick={() => void connect(true)}>{conn.automatic ? 'Allow Unit7 to see setting values' : 'Let Unit7 make its own key'}</Button>
             {!conn.automatic && <Button size="sm" variant="ghost" onClick={() => setPhase('paste')}>Paste a new token</Button>}

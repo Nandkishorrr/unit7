@@ -1,7 +1,7 @@
 // Servers: connect over SSH, understand the machine, prepare it, watch it. Every command here is
 // a constant script with values passed as arguments (connectors/shell.ts).
 import { fromSshConfig } from '../connectors/sshconfig.ts';
-import { proxyOf } from '../deploy/caddy.ts';
+import { proxyFor, proxyOf } from '../deploy/caddy.ts';
 import { z } from 'zod';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -40,7 +40,11 @@ export interface Facts {
   swap_total?: number; disk_total?: number; disk_used?: number; uptime?: number; load?: string; docker?: string; compose?: string;
   caddy?: string; ufw?: string; user?: string; sudo?: string; ports?: number[]; has?: string[]; checkedAt?: string;
   web?: string; // "name|image" of the container that publishes port 80, if any
+  coolify?: string; // Coolify's own container, when it runs here
 }
+// Coolify already keeps Docker, the proxy and HTTPS on its server, so server.bootstrap has nothing to add: it counts as
+// ready as it stands, and nothing on it changes for that. Unit7's own network and folders come with its first deploy (ensureBase).
+export const readyOf = (f: Facts) => !!f.docker && (!!f.caddy || !!f.coolify);
 
 // one round trip that answers "what is this machine?"
 const FACTS = `
@@ -53,6 +57,7 @@ command -v docker >/dev/null 2>&1 && echo "docker=$(docker version --format '{{.
 docker compose version --short 2>/dev/null | sed 's/^/compose=/'
 for b in git curl ufw apt-get apk dnf systemctl journalctl ss python3; do command -v $b >/dev/null 2>&1 && echo "has=$b"; done
 docker ps --filter name=^unit7-caddy$ --format 'caddy={{.Status}}' 2>/dev/null
+docker ps --filter name=^coolify$ --format 'coolify={{.Status}}' 2>/dev/null
 docker ps --filter publish=80 --format 'web={{.Names}}|{{.Image}}' 2>/dev/null | head -1
 command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | head -1 | sed 's/^Status: /ufw=/'
 echo "user=$(id -un)"
@@ -79,7 +84,24 @@ export async function inspect(ctx: Ctx, s: ServerRow) {
   const facts = parseFacts(await ssh(ctx.app).check(s, script(FACTS), { what: 'Inspecting the server', timeoutMs: 30_000 }));
   // merge, don't replace: Shield's blocklist, the public IP and hardening state live here too
   run(ctx.db, 'UPDATE servers SET facts = json_patch(facts, ?), last_seen_at = ? WHERE id = ?', JSON.stringify(facts), now(), s.id);
+  if (readyOf(facts)) run(ctx.db, `UPDATE servers SET status = 'ready' WHERE id = ? AND status = 'connected'`, s.id);
   return facts;
+}
+
+// What Unit7's own apps need on a server, and nothing else.
+const BASE = `set -e
+docker network inspect unit7 >/dev/null 2>&1 || docker network create unit7 >/dev/null
+$1 mkdir -p /etc/unit7/caddy/sites /var/lib/unit7/apps /var/lib/unit7/backups && $1 chmod 700 /var/lib/unit7/backups
+# deploys, backups and the pooler write here without sudo, so a sudo user owns it (backups stay 700)
+[ -z "$1" ] || $1 chown -R "$(id -un)": /var/lib/unit7`;
+const baseScript = (f: Facts) => script(BASE, f.sudo === 'root' ? '' : 'sudo -n');
+// A server that counts as ready without server.bootstrap (readyOf) gets them from the first thing Unit7 runs there itself.
+// Only when one is missing: the folders hold files others own by then (the pooler's), and BASE would take them back.
+export async function ensureBase(ctx: Ctx, s: ServerRow) {
+  const f = json<Facts>(s.facts, {});
+  if (!f.coolify && proxyFor(s).kind !== 'coolify') return;
+  const there = await ssh(ctx.app).exec(s, script('docker network inspect unit7 >/dev/null 2>&1 && [ -d /var/lib/unit7/apps ] && [ -d /var/lib/unit7/backups ]'), { timeoutMs: 30_000, signal: ctx.signal });
+  if (there.code !== 0) await ssh(ctx.app).check(s, baseScript(f), { what: 'Making Unit7’s network and folders', timeoutMs: 60_000, signal: ctx.signal });
 }
 
 const sudo = (f: Facts) => (f.sudo === 'root' ? '' : 'sudo -n ');
@@ -192,12 +214,12 @@ defineTool({
     ctx.progress(`Connecting to ${s.name} at ${s.host}…`);
     try {
       const facts = await inspect(ctx, s);
-      run(ctx.db, `UPDATE servers SET status = ? WHERE id = ?`, facts.docker && facts.caddy ? 'ready' : 'connected', serverId);
+      run(ctx.db, `UPDATE servers SET status = ? WHERE id = ?`, readyOf(facts) ? 'ready' : 'connected', serverId);
       const hostKey = get<{ host_key: string }>(ctx.db, 'SELECT host_key FROM servers WHERE id = ?', serverId)!.host_key;
       ctx.emit('server.connected', `Connected ${s.name} (${facts.os ?? 'unknown OS'}, ${facts.cpus} CPU, ${gb(facts.mem_total)} RAM)`, { severity: 'success', resource: serverId });
       // the key works: a fresh box is prepared by itself (in the background, through the gate as this same actor)
       const prepare = facts.docker && facts.caddy ? 'ready' : afterKeyWorks(ctx.app, ctx.orgId, ctx.actor, serverId);
-      return { serverId, status: facts.docker && facts.caddy ? 'ready' : 'connected', hostKey, facts, prepare,
+      return { serverId, status: readyOf(facts) ? 'ready' : 'connected', hostKey, facts, prepare,
         next: prepare === 'checking' ? 'Unit7 is looking inside: a fresh server is prepared by itself (watch server.list), one that already runs things is shared and left as it is.' : undefined };
     } catch (e) {
       run(ctx.db, `UPDATE servers SET status = 'unreachable' WHERE id = ? AND ssh_block IS NULL`, serverId);
@@ -214,7 +236,7 @@ defineTool({
     const s = serverRow(ctx, i.serverId);
     const facts = await inspect(ctx, s);
     if (s.status === 'unreachable' || s.status === 'awaiting_key' || s.status === 'new') {
-      run(ctx.db, `UPDATE servers SET status = ? WHERE id = ?`, facts.docker && facts.caddy ? 'ready' : 'connected', s.id);
+      run(ctx.db, `UPDATE servers SET status = ? WHERE id = ?`, readyOf(facts) ? 'ready' : 'connected', s.id);
     }
     return { name: s.name, host: s.host, ...facts, memory: `${gb(facts.mem_total! - facts.mem_available!)} used of ${gb(facts.mem_total)}`, disk: `${gb(facts.disk_used)} used of ${gb(facts.disk_total)}` };
   },
@@ -391,10 +413,7 @@ defineTool({
       } else if (!daemon.stdout.includes('max-size')) say('Note: /etc/docker/daemon.json exists without log rotation; left untouched.');
 
       // network + folders
-      await x(`docker network inspect unit7 >/dev/null 2>&1 || docker network create unit7 >/dev/null`, 'Creating the unit7 network', 60_000);
-      await x(`${su}mkdir -p /etc/unit7/caddy/sites /var/lib/unit7/apps /var/lib/unit7/backups && ${su}chmod 700 /var/lib/unit7/backups`, 'Creating folders', 30_000);
-      // deploys, backups and the pooler write here without sudo, so a sudo user owns it (backups stay 700)
-      if (f.sudo !== 'root') await x(`${su}chown -R "$(id -un)": /var/lib/unit7`, 'Giving the user its folders', 60_000);
+      await pool.check(s, baseScript(f), { what: 'Creating the unit7 network and folders', timeoutMs: 60_000, signal: ctx.signal });
       await x(`[ -f /etc/unit7/caddy/Caddyfile ] || printf '%s' "$1" | ${su}tee /etc/unit7/caddy/Caddyfile >/dev/null`, 'Writing the base Caddyfile', 30_000, BASE_CADDYFILE);
       await x(`[ -f /etc/unit7/caddy/snippets.caddy ] || printf '%s' "$1" | ${su}tee /etc/unit7/caddy/snippets.caddy >/dev/null`, 'Writing the blocklist', 30_000, '(unit7_blocklist) {\n\t@unit7_blocked client_ip 192.0.2.1\n\tabort @unit7_blocked\n}\n');
 
@@ -573,7 +592,8 @@ export function afterKeyWorks(app: Ctx['app'], orgId: string, actor: Actor, serv
   const s = get<ServerRow>(app.db, 'SELECT * FROM servers WHERE id = ? AND org_id = ?', serverId, orgId);
   if (!s) return 'ready';
   const f = json<Facts & { sharedHost?: string }>(s.facts, {});
-  if (s.status === 'ready' || s.status === 'bootstrapping' || f.caddy?.startsWith('Up') || f.sharedHost) return 'ready'; // prepared (or shared) already
+  // ready by running Coolify still gets its look: that's what marks it shared
+  if ((s.status === 'ready' && !f.coolify) || s.status === 'bootstrapping' || f.caddy?.startsWith('Up') || f.sharedHost) return 'ready'; // prepared (or shared) already
   if (preparing.has(serverId)) return 'checking';
   const say = (type: string, message: string, data?: Record<string, unknown>, severity: 'info' | 'success' | 'warning' = 'info') => app.events.emit(orgId, type, message, { severity, resource: serverId, ...(data && { data }) });
   const p = (async () => {

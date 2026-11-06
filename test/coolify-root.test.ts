@@ -57,16 +57,16 @@ test('connect automatically: the API switched on (with an undo), Unit7’s own t
     assert.equal(r.status, 'verified');
     assert.equal(r.mode, 'automatic');
     assert.equal(r.version, '4.3.23');
-    assert.deepEqual(r.abilities, ['read', 'write', 'deploy']);
+    assert.deepEqual(r.abilities, ['read', 'write', 'deploy', 'delete']);
     assert.equal(r.key, `Unit7 (${mac})`);
     assert.match(r.apiChange, /was off: Unit7 turned it on/);
     assert.equal(c.st.api, true);
     const [t] = unit7Tokens(c.st);
-    assert.deepEqual([t!.name, t!.abilities], [`Unit7 (${mac})`, ['read', 'write', 'deploy']]);
+    assert.deepEqual([t!.name, t!.abilities], [`Unit7 (${mac})`, ['read', 'write', 'deploy', 'delete']]);
     const acc = get<{ id: string; meta: string; status: string }>(c.app.db, `SELECT id, meta, status FROM accounts WHERE provider = 'coolify'`)!;
     assert.equal(acc.status, 'verified');
     assert.equal(c.app.vault.resolve(c.o.orgId, json<{ ref: string }>(acc.meta, { ref: '' }).ref), t!.plain, 'kept in the vault like a pasted one');
-    assert.deepEqual(json<{ facts: { abilities: string[] }; tokenId: string; made: string }>(acc.meta, {} as never).facts.abilities, ['read', 'write', 'deploy']);
+    assert.deepEqual(json<{ facts: { abilities: string[] }; tokenId: string; made: string }>(acc.meta, {} as never).facts.abilities, ['read', 'write', 'deploy', 'delete']);
     assert.ok(c.st.calls.some((x) => x.path === '/version') && c.st.calls.some((x) => x.path === '/team'), 'checked with /version and /team');
 
     // the exact commands: Coolify's PHP on stdin, the API through curl's stdin; the token on no command line, in no record
@@ -123,7 +123,7 @@ test('connecting again replaces Unit7’s own token; disconnect deletes it in Co
     assert.equal(unit7Tokens(c.st).length, 1, 'never two');
     const second = unit7Tokens(c.st)[0]!;
     assert.notEqual(second.id, first.id);
-    assert.deepEqual(second.abilities, ['read', 'write', 'deploy', 'read:sensitive']);
+    assert.deepEqual(second.abilities, ['read', 'write', 'deploy', 'delete', 'read:sensitive']);
     assert.deepEqual(c.st.php.at(-1)!.input.revoke, first.id, 'the old one by the id Unit7 kept');
     assert.match(b.replaced, /earlier key was deleted/);
     assert.equal(c.app.vault.resolve(c.o.orgId, json<{ ref: string }>(get<{ meta: string }>(c.app.db, `SELECT meta FROM accounts WHERE id = ?`, a.accountId)!.meta, { ref: '' }).ref), second.plain);

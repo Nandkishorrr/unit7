@@ -432,6 +432,11 @@ Object.assign(TOOL_WORDS, {
   'coolify.servers': 'See a Coolify app’s servers', 'coolify.add_server': 'Run a Coolify app on one more server', 'coolify.remove_server': 'Stop running a Coolify app on a server',
 });
 
+// an app in Coolify, day to day (tools/coolify-app.ts)
+Object.assign(TOOL_WORDS, {
+  'coolify.auto_deploy': 'Turn deploy on push on or off', 'coolify.previews': 'Turn pull request previews on or off', 'coolify.storage': 'Change an app’s storage', 'coolify.scale': 'See if an app can have more copies',
+});
+
 // Staging → Production (tools/promote.ts), and the chat's Delete card (tools/ui.ts)
 Object.assign(TOOL_WORDS, { 'deployment.promote': 'Promote to Production', 'ui.delete': 'Ask about deleting it' });
 Object.assign(NAMED, { 'deployment.promote': (x: string) => `Promote ${x} to Production` });

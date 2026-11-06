@@ -87,6 +87,7 @@ import './fresh.ts';
 import './dr.ts';
 import './coolify-fleet.ts';
 import './coolify-dashboard.ts';
+import './coolify-app.ts';
 import './promote.ts';
 import './supabase.ts';
 import '../seven/index.ts';

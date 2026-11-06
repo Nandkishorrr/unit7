@@ -69,6 +69,12 @@ async function api<T>(token: string | undefined, path: string, init: { method?: 
 // Files that mention a term, for "where to look". Code search needs a token, and it indexes the default branch.
 export const searchCode = (repo: Repo, term: string, token: string) => api<{ items?: { path: string }[] }>(token, `/search/code?q=${encodeURIComponent(`${term} repo:${repo.owner}/${repo.name}`)}&per_page=5`).then((r) => (r.items ?? []).map((x) => x.path));
 export const repoIsPrivate = (repo: Repo, token: string) => api<{ private: boolean }>(token, `/repos/${repo.owner}/${repo.name}`).then((r) => r.private === true);
+export const repoAccess = (repo: Repo, token: string) => api<{ private: boolean; default_branch?: string; permissions?: { admin?: boolean } }>(token, `/repos/${repo.owner}/${repo.name}`);
+// a read-only key on one repo, for a server that clones it
+export const addDeployKey = (repo: Repo, o: { title: string; key: string }, token: string) => api<{ id: number }>(token, `/repos/${repo.owner}/${repo.name}/keys`, { method: 'POST', body: { ...o, read_only: true } });
+export const removeDeployKey = (repo: Repo, id: number, token: string) => api(token, `/repos/${repo.owner}/${repo.name}/keys/${id}`, { method: 'DELETE' });
+export const repoHooks = (repo: Repo, token: string) => api<{ id: number; config?: { url?: string } }[]>(token, `/repos/${repo.owner}/${repo.name}/hooks?per_page=100`);
+export const addHook = (repo: Repo, o: { url: string; secret: string }, token: string) => api<{ id: number }>(token, `/repos/${repo.owner}/${repo.name}/hooks`, { method: 'POST', body: { name: 'web', active: true, events: ['push', 'pull_request'], config: { url: o.url, content_type: 'json', secret: o.secret } } });
 export const createIssue = (repo: Repo, o: { title: string; body: string }, token: string) => api<{ number: number; html_url: string }>(token, `/repos/${repo.owner}/${repo.name}/issues`, { method: 'POST', body: o });
 
 // A file's text (e.g. package.json), or undefined when it isn't there or can't be read

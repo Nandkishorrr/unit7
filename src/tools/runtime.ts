@@ -146,7 +146,7 @@ const TABLE: Record<string, string> = {
   err: 'error_groups', task: 'agent_tasks', job: 'jobs', lnk: 'links',
   chg: 'changes',
   grp: 'product_groups', cli: 'clients',
-  rtn: 'routines',
+  rtn: 'routines', ast: 'assets',
 };
 function checkOwnership(db: DB, orgId: string, input: unknown, path = ''): void {
   if (Array.isArray(input)) return input.forEach((v, i) => checkOwnership(db, orgId, v, `${path}[${i}]`));

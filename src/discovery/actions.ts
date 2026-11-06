@@ -439,7 +439,7 @@ export function routeOf(p: Part, verb: Verb, inSystemProject = false): Route {
   if (inSystemProject && p.owner !== 'systemd') return no(`${p.name} is part of ${who} itself, so Unit7 leaves it alone.`);
   if (p.owner === 'coolify') {
     if (!p.coolify) return no(`${p.name} belongs to Coolify itself, so Unit7 leaves it alone.`);
-    if (verb === 'limits') return no(`Coolify runs ${p.name}: set its memory and CPU limits in Coolify (the resource’s Resource limits), so Coolify keeps them.`);
+    if (verb === 'limits') return no(`Coolify runs ${p.name}: set its memory and CPU limits in Coolify (coolify.memory_cap, or the resource’s Resource limits), so Coolify keeps them.`);
     if (verb === 'run') return { via: 'ssh', how: 'docker' };
     return { via: 'coolify', kind: coolifyKind(p), uuid: p.coolify.uuid };
   }

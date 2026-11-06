@@ -3,9 +3,9 @@
 import { z } from 'zod';
 import { all, type DB } from '../db.ts';
 import { defineTool } from '../tools/runtime.ts';
-import { lastXray } from '../tools/xray.ts';
+import { foundProject, lastXray } from '../tools/xray.ts';
 import { fid } from '../tools/helpers.ts';
-import { notFound } from '../errors.ts';
+import { Unit7Error, notFound } from '../errors.ts';
 import { LEVEL_WORDS, protectionOf } from './safetynet.ts';
 import type { Inventory, Part } from '../discovery/xray.ts';
 
@@ -40,11 +40,13 @@ export function passportMarkdown(p: Passport) {
 
 defineTool({
   name: 'project.passport', title: 'A project’s passport', risk: 'read', action: 'read',
-  description: 'One page on a project found on a server: what runs where, its addresses, its databases and how safe they are, scheduled jobs, how it deploys, and settings by name (never values). Includes it as Markdown to hand to a new developer or an AI. project is its name or id from server.xray.',
-  input: z.object({ serverId: fid('srv'), project: z.string().min(1).max(200) }),
+  description: 'One page on a project found on a server: what runs where, its addresses, its databases and how safe they are, scheduled jobs, how it deploys, and settings by name (never values). Includes it as Markdown to hand to a new developer or an AI. project is its ast_ id from project.list, or its name or id from server.xray with serverId.',
+  input: z.object({ serverId: fid('srv').optional(), project: z.string().min(1).max(200) }),
   run(ctx, i) {
-    const inv = lastXray(ctx.db, ctx.orgId, i.serverId)?.data, s = ctx.db.prepare('SELECT name FROM servers WHERE id = ?').get(i.serverId) as { name: string } | undefined;
-    const p = inv && s && passportOf(ctx.db, ctx.orgId, i.serverId, s.name, inv, i.project);
+    const f = i.project.startsWith('ast_') ? foundProject(ctx.db, ctx.orgId, i.project) : undefined, serverId = f?.serverId ?? i.serverId;
+    if (!serverId) throw new Unit7Error('invalid_input', 'Say which server (serverId), or give the project’s ast_ id from project.list.');
+    const inv = lastXray(ctx.db, ctx.orgId, serverId)?.data, s = ctx.db.prepare('SELECT name FROM servers WHERE id = ?').get(serverId) as { name: string } | undefined;
+    const p = inv && s && passportOf(ctx.db, ctx.orgId, serverId, s.name, inv, f?.found ?? i.project);
     if (!p) throw notFound('That project');
     return { ...p, markdown: passportMarkdown(p) };
   },
