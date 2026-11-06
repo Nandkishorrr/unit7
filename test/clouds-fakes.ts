@@ -11,7 +11,8 @@ export async function fakeApi(handler: (r: Req) => unknown) {
     const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
     const raw = Buffer.concat(chunks), r = { method: req.method!, path: req.url!, auth: String(req.headers.authorization ?? ''), body: raw.toString(), raw, headers: req.headers };
     calls.push(r);
-    const out = handler(r);
+    let out: unknown;
+    try { out = handler(r); } catch (e) { res.writeHead(500).end(); throw e; } // answer: a failed assert in here would otherwise hold the test run open until the caller's timeout
     const [status, data] = Array.isArray(out) && typeof out[0] === 'number' ? out as [number, unknown] : out === undefined ? [404, { error: { code: 404, message: 'Not found.' } }] : [200, out];
     res.writeHead(status, { 'content-type': typeof data === 'string' && data.startsWith('<') ? 'text/xml' : 'application/json' }).end(typeof data === 'string' ? data : JSON.stringify(data));
   });
