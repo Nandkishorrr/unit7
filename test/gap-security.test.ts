@@ -13,6 +13,8 @@ import { decideApproval, type Actor } from '../src/tools/runtime.ts';
 import { coolifyTiming } from '../src/connectors/coolify.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { moveTiming } from '../src/tools/moves.ts';
+import { addHost } from '../src/live/hosts.ts';
+import { fakeApi, account } from './clouds-fakes.ts';
 import { dropsDatabase, statement, tokenize } from '../src/tools/datamask.ts';
 import { buildInventory, type Part } from '../src/discovery/xray.ts';
 import { saveXray } from '../src/tools/xray.ts';
@@ -219,4 +221,72 @@ test('2. what comes back as a column’s name is masked like a row', real, async
   const r = ok<any>(await o.a('part.query', { serverId: SRV, part: PG, sql: `select 1 as "sam@shop.example", 2 as "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"` }));
   assert.ok(!JSON.stringify(r).includes('sam@shop.example'), JSON.stringify(r));
   assert.ok(!JSON.stringify(r).includes('sk-ant'), JSON.stringify(r));
+});
+
+// a host that only remembers what it was given
+function fakeHost() {
+  const got: { key: string; value: string }[][] = [];
+  addHost({ id: 'fakehost', name: 'Fake', builds: true, places: () => [{ host: 'fakehost', label: 'Fake' }], fit: () => ({ ok: true, why: '' }),
+    put: async (_c, p) => { got.push(p.env); return { url: '', project: 'p1', notes: [] }; }, env: async () => [] });
+  return got;
+}
+const KEYS = { ssh: 'credential://ssh/box/private-key', coolify: 'credential://coolify/box/token', manual: 'credential://manual/mine/stripe' };
+const storeKeys = (app: App, orgId: string) => { app.vault.put(orgId, KEYS.ssh, 'SERVER-PRIVATE-KEY', { kind: 'ssh_key', by: 't' }); app.vault.put(orgId, KEYS.coolify, 'COOLIFY-ROOT-TOKEN', { kind: 'api_token', by: 't' }); app.vault.put(orgId, KEYS.manual, 'sk_live_stored', { kind: 'manual', by: 't' }); };
+
+test('3. a repo’s .env can’t open the vault: a reference from a file is dropped and said, for an AI, after a yes and for a person', async () => {
+  const { app, o } = await world(), got = fakeHost();
+  storeKeys(app, o.orgId);
+  repoWith({ 'index.html': '<h1>hi</h1>', '.env': `NEXT_PUBLIC_A=${KEYS.ssh}\nVITE_B=${KEYS.manual}\nNEXT_PUBLIC_C=plain\n` });
+  const move = { repo: 'evil/site', to: 'fakehost', skipMissing: true };
+  const plan = ok<any>(await o.a('move.plan', { repo: 'evil/site' }));
+  assert.ok(plan.warnings.some((w: string) => /NEXT_PUBLIC_A, VITE_B/.test(w) && /never opens/.test(w)), JSON.stringify(plan.warnings));
+  assert.deepEqual(plan.comes.settings.comeByThemselves, ['NEXT_PUBLIC_C']);
+  const ai = ok<any>(await o.a('move.run', { ...move, name: 'site-a' }));
+  assert.deepEqual(ai.settings.notOpened, ['NEXT_PUBLIC_A', 'VITE_B']);
+  assert.match(ai.settings.why, /never opens/);
+  const asked = await o.a('move.run', { ...move, name: 'site-b', copySettings: true }) as any;
+  assert.equal(asked.status, 'approval_required');
+  assert.equal(code(await approve(app, o, asked)), 'ok');
+  ok(await o.h('move.run', { ...move, name: 'site-c' }));
+  assert.equal(got.length, 3);
+  for (const env of got) assert.deepEqual(env.map((e) => [e.key, e.value]), [['NEXT_PUBLIC_C', 'plain']]);
+  assert.ok(!JSON.stringify(got).includes('SERVER-PRIVATE-KEY'));
+});
+
+test('3. a value read from the old host isn’t opened either', async () => {
+  const { app, o } = await world(), got = fakeHost();
+  storeKeys(app, o.orgId);
+  repoWith({ 'index.html': '<h1>hi</h1>' });
+  const api = await fakeApi(({ path }) => (path.startsWith('/v10/projects/prj_old/env') ? { envs: [{ key: 'PLANTED', type: 'plain', value: KEYS.manual, target: ['production'] }, { key: 'FINE', type: 'plain', value: 'ok', target: ['production'] }] } : undefined));
+  process.env.UNIT7_VERCEL_API = api.base;
+  try {
+    const acc = account(app, o.orgId, 'vercel', 'tok-demo');
+    const assetId = id('ast');
+    run(app.db, `INSERT INTO assets (id, org_id, provider, kind, ext_id, name, account_id, meta, seen_at) VALUES (?, ?, 'vercel', 'app', 'prj_old', 'old', ?, ?, '2026-11-01')`, assetId, o.orgId, acc, JSON.stringify({ repo: 'evil/site', end: { kind: 'vercel', accountId: acc, project: 'prj_old' } }));
+    ok(await o.h('move.run', { assetId, to: 'fakehost', copySettings: true, skipMissing: true }));
+    assert.deepEqual(got[0]!.map((e) => [e.key, e.value]), [['FINE', 'ok']]);
+  } finally { api.close(); delete process.env.UNIT7_VERCEL_API; }
+});
+
+test('3. a yes can’t carry a reference past what it may reach, and the card names the keys', async () => {
+  const { app, o } = await world(), got = fakeHost();
+  storeKeys(app, o.orgId);
+  repoWith({ 'index.html': '<h1>hi</h1>' });
+  const move = (env: Record<string, string>) => ({ repo: 'evil/site', to: 'fakehost', skipMissing: true, env });
+  assert.equal((await o.a('move.run', move({ X: KEYS.coolify }))).status, 'denied', 'a key for people, even with approval');
+  // Unit7's own keys never go into an app, whoever asks
+  assert.match((await o.h('move.run', move({ X: KEYS.ssh })) as any).error.message, /one of Unit7's own keys/);
+  assert.match((await o.h('live.put', { repo: 'evil/site', to: 'fakehost', env: { X: KEYS.ssh } }) as any).error.message, /one of Unit7's own keys/);
+  const acc = account(app, o.orgId, 'vercel', 'tok-demo'), token = json<{ ref: string }>(get<{ meta: string }>(app.db, 'SELECT meta FROM accounts WHERE id = ?', acc)!.meta, { ref: '' }).ref;
+  const bound = await o.a('move.run', move({ X: token })) as any;
+  assert.equal(bound.status, 'approval_required');
+  const out = await approve(app, o, bound) as any;
+  assert.match(out.error.message, /isn't bound to this environment/, 'the yes doesn’t reach a connected account’s token');
+  const ask = await o.a('move.run', move({ STRIPE: KEYS.manual, PLAIN: 'x' })) as any;
+  assert.equal(ask.status, 'approval_required');
+  assert.ok(ask.why.includes(KEYS.manual), ask.why);
+  const card = ok<any[]>(await o.a('approval.list')).find((x) => x.id === ask.approvalId);
+  assert.equal(card.input.env, `STRIPE = ${KEYS.manual}, PLAIN`);
+  assert.equal(code(await approve(app, o, ask)), 'ok');
+  assert.deepEqual(got.at(-1)!.map((e) => [e.key, e.value]).sort(), [['PLAIN', 'x'], ['STRIPE', 'sk_live_stored']]);
 });

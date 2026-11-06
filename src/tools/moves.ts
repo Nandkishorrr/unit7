@@ -14,7 +14,7 @@ import { all, get, id, json, now, run } from '../db.ts';
 import { Unit7Error, notFound } from '../errors.ts';
 import { assertReachable } from '../netguard.ts';
 import { fid } from './helpers.ts';
-import { isPublicKey, parseDotenv } from './env.ts';
+import { checkRef, isPublicKey, parseDotenv } from './env.ts';
 import { NAME, SOURCE, WHERE, costs, placesOf } from './live.ts';
 import { supabaseVars } from './links.ts';
 import { step } from '../live/coolify.ts';
@@ -47,7 +47,10 @@ const hostName = (provider: string) => hostOf(provider)?.name ?? DNS_NAMES[provi
 const FREE_ADDRESS = /\.(pages\.dev|lovable\.app|lovableproject\.com|bolt\.host|sslip\.io|nip\.io)$/;
 const domainsOf = (hosts: string[] = []) => uniq(hosts.map((h) => h.toLowerCase())).filter((h) => h.includes('.') && !h.startsWith('*.') && !platformOf({ host: h }) && !FREE_ADDRESS.test(h));
 
-interface Look { pkg: { name?: string }; deps: string[]; reads: string[]; files: string[]; code: string; readme: string; dotenv: Record<string, string>; file(path: string): string | undefined }
+interface Look { pkg: { name?: string }; deps: string[]; reads: string[]; files: string[]; code: string; readme: string; dotenv: Record<string, string>; storedKeys: string[]; file(path: string): string | undefined }
+// a value found in a repo or on a host is data: one that names a stored key is never opened for it, only a person's own env is
+const namesKey = (v?: string) => !!v?.trim().startsWith('credential://');
+const NOT_OPENED = 'These name stored keys, and Unit7 never opens a key because a file or a host says so. A person gives them to move.run in env.';
 const SOURCE_FILE = /\.(html?|js|mjs|cjs|jsx|ts|tsx|vue|svelte|astro)$/;
 function lookAt(site: Site): Look {
   const file = (path: string) => { const f = site.files.find((x) => x.path === path); return f && f.size <= LIMITS.scan ? readFileSync(f.abs, 'utf8') : undefined; };
@@ -59,8 +62,9 @@ function lookAt(site: Site): Look {
   const pkg = parsed<{ name?: string; dependencies?: object; devDependencies?: object }>(file('package.json'), {});
   // a repo's own .env is left out of every site (source.ts), so it's read here, and never through a link
   const env = join(site.dir, '.env'), st = lstatSync(env, { throwIfNoEntry: false });
+  const dotenv = Object.entries(st?.isFile() && st.size <= LIMITS.scan ? parseDotenv(readFileSync(env, 'utf8')) : {});
   return { pkg, deps: Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }), reads: site.detection.envKeys, files: site.files.map((f) => f.path), code, readme: file('README.md') ?? '', file,
-    dotenv: st?.isFile() && st.size <= LIMITS.scan ? parseDotenv(readFileSync(env, 'utf8')) : {} };
+    dotenv: Object.fromEntries(dotenv.filter(([, v]) => !namesKey(v))), storedKeys: dotenv.filter(([, v]) => namesKey(v)).map(([k]) => k) };
 }
 
 const BUILDERS: { name: string; is(l: Look): boolean; behind: string }[] = [
@@ -88,7 +92,7 @@ const OLD_SETTINGS: { [K in keyof Ends]: (ctx: Ctx, e: Ends[K]) => Promise<Setti
 async function oldSettings(ctx: Ctx, app?: App): Promise<Setting[] | undefined> {
   const names: Setting[] | undefined = app?.m.envKeys?.map((key) => ({ key })), end = app?.m.end;
   const read = end && (OLD_SETTINGS as Record<string, ((c: Ctx, e: unknown) => Promise<Setting[]>) | undefined>)[end.kind];
-  const got = read ? await read(ctx, end).catch(() => names) : names;
+  const got = (read ? await read(ctx, end).catch(() => names) : names)?.map((s) => (namesKey(s.value) ? { key: s.key } : s));
   for (const s of got ?? []) if (s.value && s.value.length >= 6) ctx.redactor.add(s.value, `setting ${s.key}`);
   return got;
 }
@@ -264,6 +268,7 @@ defineTool({
           ...(plan === 'hobby' && why ? [HOBBY_RULE(why)] : []),
           ...(site?.secrets.length ? [`These files hold keys, and they would travel with the code: ${site.secrets.slice(0, 5).map((s) => `${s.file} (${s.kinds.join(', ')})`).join('; ')}. Take them out first.`] : []),
           ...(l && Object.keys(l.dotenv).some((k) => !isPublicKey(k)) ? [`The repo holds a .env file with ${Object.keys(l.dotenv).filter((k) => !isPublicKey(k)).join(', ')}. Anyone who can read the repo has those: change them once the move is done.`] : []),
+          ...(l?.storedKeys.length ? [`The repo’s .env has ${l.storedKeys.join(', ')}. ${NOT_OPENED}`] : []),
         ],
         next: 'Show this to the person and let them pick where it goes. Then move.run builds the copy. Nothing has changed.',
         untrusted: UNTRUSTED,
@@ -377,8 +382,8 @@ async function finishCheck(ctx: Ctx, moveId: string, m: Move, extra: Record<stri
 }
 
 const SETTINGS_RISK = 'Whoever runs code on the new host can read these settings, so a person says yes first.';
-const refsIn = (env?: Record<string, string>) => Object.values(env ?? {}).some((v) => v.startsWith('credential://'));
-const movesKeys = (i: { copySettings?: boolean; env?: Record<string, string> }) => !!i.copySettings || refsIn(i.env);
+const refsIn = (env?: Record<string, string>) => Object.values(env ?? {}).filter((v) => v.startsWith('credential://'));
+const movesKeys = (i: { copySettings?: boolean; env?: Record<string, string> }) => !!i.copySettings || refsIn(i.env).length > 0;
 const sourceOf = (i: { repo?: string; branch?: string; uploadId?: string }, app?: App) => {
   if (i.uploadId) return { uploadId: i.uploadId };
   const repo = pickRepo(i, app);
@@ -391,8 +396,8 @@ defineTool({
   // live.put, the step that can cost money, keeps its own purchase gate and asks a person once; this one only keeps AIs out
   peopleOnly: (i) => (costs(i) ? `${i.to} can cost money, so a person starts it. An AI can’t.` : false),
   green: (i) => !costs(i) && !movesKeys(i) && !i.rebuild && !(i.moveId && i.env),
-  view: (_f, i) => Object.keys(i.env ?? {}).join(', '),
-  assess: (_c, i) => (movesKeys(i) ? { tier: 2, ask: SETTINGS_RISK, impact: `Puts ${i.copySettings ? 'the settings Unit7 can read from the old site' : 'stored keys'} on the new site.` } : { tier: 1 }),
+  view: (_f, i) => Object.entries(i.env ?? {}).map(([k, v]) => (v.startsWith('credential://') ? `${k} = ${v}` : k)).join(', '),
+  assess: (_c, i) => (movesKeys(i) ? { tier: 2, ask: SETTINGS_RISK, impact: `Puts ${[i.copySettings && 'the settings Unit7 can read from the old site', refsIn(i.env).length && `these stored keys: ${refsIn(i.env).join(', ')}`].filter(Boolean).join(' and ')} on the new site.` } : { tier: 1 }),
   description: 'Build a copy of a site on a new host (to, from move.plan) from its repo, set the settings given, check the new address answers, and compare it with the old site on the home page and a few paths. It only creates: the old site and DNS are never touched. env takes the settings a person gave, by name; a value may be a credential:// reference. copySettings copies the ones Unit7 can read from the old host, and waits for a person’s yes. If a setting has no value it stops before anything is made and names it; skipMissing builds without it. A connected Supabase project’s address and public key go on by themselves, and so do public values in the repo’s .env. oldUrl is the old address for a repo with no site on the map. Run it again with moveId to check again; with env or rebuild it builds again first. Hosts that can cost money are for a person to start.',
   input: z.object({ moveId: fid('chg').optional().describe('Go on with this move: check again, or with env or rebuild build again'), assetId: fid('ast').optional(), repo: SOURCE.repo, branch: SOURCE.branch, uploadId: SOURCE.uploadId, ...WHERE, name: NAME.optional(), team: z.string().max(100).optional(),
     env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,200}$/), z.string().max(65_536)).optional(), copySettings: z.boolean().default(false), skipMissing: z.boolean().default(false), rebuild: z.boolean().default(false),
@@ -408,6 +413,8 @@ defineTool({
     }
     if (moveId && m?.stage === 'built' && !i.rebuild && !i.env) return finishCheck(ctx, moveId, { ...m, paths: uniq([...(i.paths ?? []), ...m.paths]) });
 
+    // a yes covers the steps, not what a reference may reach: that's checked here, as whoever asked
+    for (const ref of refsIn(i.env)) checkRef(ctx, { type: 'org', id: ctx.orgId, label: 'organization' }, ref);
     const assetId = i.assetId ?? m?.assetId, app = assetId ? appOf(ctx, assetId) : undefined, me = asPerson(ctx);
     const source = m?.source ?? sourceOf(i, app), site = await openSource(ctx, source, i.name ?? m?.name ?? app?.name);
     try {
@@ -443,7 +450,7 @@ defineTool({
       }
       m = { ...m, stage: 'built', made: true, to: toOf(put, m.want.team), set: uniq([...m.set, ...Object.keys(env)]) };
       const there = await step<{ settings: { key: string }[] }>(me, 'live.env', { to: put.host, ...(put.accountId && { accountId: put.accountId }), ...(put.serverId && { serverId: put.serverId }), project: put.project }).then((r) => r.settings.map((x) => x.key), () => undefined);
-      return await finishCheck(ctx, moveId, m, { settings: { set: Object.keys(env), missing, ...(there && { notOnTheHost: Object.keys(env).filter((k) => !there.includes(k)) }) }, ...(put.notes?.length && { notes: put.notes }) });
+      return await finishCheck(ctx, moveId, m, { settings: { set: Object.keys(env), missing, ...(there && { notOnTheHost: Object.keys(env).filter((k) => !there.includes(k)) }), ...(l.storedKeys.length && { notOpened: l.storedKeys, why: NOT_OPENED }) }, ...(put.notes?.length && { notes: put.notes }) });
     } finally { site.done(); }
   },
 });

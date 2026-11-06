@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { askPerson, defineTool, type Ctx } from './runtime.ts';
 import { COMPOSE_ASK } from './coolify.ts';
 import { fid, isAgent } from './helpers.ts';
+import { checkRef } from './env.ts';
 import { Unit7Error } from '../errors.ts';
 import { assertReachable } from '../netguard.ts';
 import { openSource, type Site } from '../live/source.ts';
@@ -67,6 +68,7 @@ function secretWarning(site: Site) {
 function settingOf(ctx: Ctx, key: string, v: string) {
   const ref = v.startsWith('credential://');
   if (ref && isAgent(ctx) && !ctx.approvalId) throw new Unit7Error('forbidden', `A person has to put a stored key on a site. Ask them to set ${key} in Unit7.`, 403);
+  if (ref) checkRef(ctx, { type: 'org', id: ctx.orgId, label: 'organization' }, v); // a yes doesn't widen what a reference may reach
   return { key, value: ref ? ctx.secret(v) : v, secret: ref || /key|secret|token|password/i.test(key) };
 }
 const answers = (url: string) => Promise.race<number | false>([
