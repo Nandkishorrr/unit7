@@ -99,3 +99,4 @@ import '../seven/index.ts';
 import './files.ts';
 import './vps.ts';
 import './moves.ts';
+import './hostinger-sites.ts';

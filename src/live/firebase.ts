@@ -9,11 +9,12 @@ import { isMissing } from '../connectors/cloudcli.ts';
 import { Unit7Error } from '../errors.ts';
 import type { Ctx } from '../tools/runtime.ts';
 import { accountsOf, addHost, type Host } from './hosts.ts';
-import { finished, one, publicFiles, send, taken } from './kit.ts';
+import { finished, one, parts, publicFiles, send, taken } from './kit.ts';
 
 const API = () => `${googleApi('firebasehosting')}/v1beta1`;
 const NEEDS = ['firebasehosting.sites.create', 'firebasehosting.sites.update'];
 const quotaOf = (ctx: Ctx, acc: string, project: string) => ('cli' in googleCred(ctx, acc) ? project : undefined);
+interface Requests { entries?: { timestamp?: string; httpRequest?: { requestMethod?: string; requestUrl?: string; status?: number } }[] }
 
 async function upload(ctx: Ctx, acc: string, url: string, want: string[], byHash: Map<string, string>, quota?: string) {
   const headers = { authorization: `Bearer ${await googleToken(ctx, acc)}`, 'content-type': 'application/octet-stream', ...(quota && { 'x-goog-user-project': quota }) }, queue = [...want];
@@ -57,6 +58,21 @@ export const firebaseHost: Host = addHost({
     }
     await g(`/${version}?update_mask=status`, { method: 'PATCH', body: { status: 'FINALIZED' } });
     await g(`/sites/${site}/releases?versionName=${encodeURIComponent(version)}`, { body: { message: 'From Unit7' } });
-    return { url: `https://${site}.web.app`, project: site, deployment: lastPart(version), point: 'Add your domain in the Firebase console, under Hosting. Unit7 can’t point domains at Firebase Hosting yet.' };
+    return { url: `https://${site}.web.app`, project: site, deployment: lastPart(version), point: { firebase: { accountId: acc, project, site } } };
+  },
+  // Hosting builds nothing, so all it has are visitors' requests, and those only reach Cloud Logging once a person links them
+  // https://firebase.google.com/docs/hosting/web-request-logs-and-metrics · https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/entries/list
+  async logs(ctx, r) {
+    const acc = r.place.accountId!, [site] = parts(r.project), project = one('Google projects', (await google.projects(ctx, acc)).map((x) => x.projectId), r.team);
+    const names = [`${site}.web.app`, `${site}.firebaseapp.com`, ...await google.siteDomains(ctx, acc, project, site!).catch(() => [])];
+    const body = { resourceNames: [`projects/${project}`], filter: `resource.type="firebase_domain" AND resource.labels.domain_name=(${names.map((n) => `"${n}"`).join(' OR ')})`, orderBy: 'timestamp desc', pageSize: 120 };
+    const got = await gsend<Requests>(ctx, acc, `${googleApi('logging')}/v2/entries:list`, { body, quotaProject: quotaOf(ctx, acc, project) }).catch((e: Unit7Error): Requests => {
+      if (e.status === 403) throw new Unit7Error('no_logs', `This Google sign-in can’t read Cloud Logging. Give it the Logs Viewer role, or read them at https://console.cloud.google.com/logs/query?project=${project}.`, 403);
+      if (isMissing(e)) return {};
+      throw e;
+    });
+    const lines = (got.entries ?? []).map((e) => [e.timestamp, e.httpRequest?.status, e.httpRequest?.requestMethod, e.httpRequest?.requestUrl].filter(Boolean).join(' ')).reverse();
+    if (!lines.length) throw new Unit7Error('no_logs', `Firebase Hosting builds nothing, so it has no build log. All it has are visitors’ requests, and Google keeps those in Cloud Logging only once you link them: https://console.firebase.google.com/project/${project}/settings/integrations/cloudlogging. New requests show up within 30 minutes.`, 404);
+    return lines;
   },
 });

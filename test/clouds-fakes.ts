@@ -13,8 +13,8 @@ export async function fakeApi(handler: (r: Req) => unknown) {
     calls.push(r);
     let out: unknown;
     try { out = handler(r); } catch (e) { res.writeHead(500).end(); throw e; } // answer: a failed assert in here would otherwise hold the test run open until the caller's timeout
-    const [status, data] = Array.isArray(out) && typeof out[0] === 'number' ? out as [number, unknown] : out === undefined ? [404, { error: { code: 404, message: 'Not found.' } }] : [200, out];
-    res.writeHead(status, { 'content-type': typeof data === 'string' && data.startsWith('<') ? 'text/xml' : 'application/json' }).end(typeof data === 'string' ? data : JSON.stringify(data));
+    const [status, data, headers] = Array.isArray(out) && typeof out[0] === 'number' ? out as [number, unknown, Record<string, string>?] : out === undefined ? [404, { error: { code: 404, message: 'Not found.' } }] : [200, out];
+    res.writeHead(status, { 'content-type': typeof data === 'string' && data.startsWith('<') ? 'text/xml' : 'application/json', ...headers }).end(typeof data === 'string' ? data : JSON.stringify(data));
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   return { base: `http://127.0.0.1:${(server.address() as { port: number }).port}`, calls, close: () => server.close() };

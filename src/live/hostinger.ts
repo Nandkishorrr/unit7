@@ -21,24 +21,27 @@ import type { Site, SiteFile } from './source.ts';
 import { liveTiming } from './vercel.ts';
 
 const DEPLOY_MS = 15 * 60_000;
-interface Website { domain: string; username: string; website_type?: string | null }
+export interface Website { domain: string; username: string; website_type?: string | null; order_id?: number | null }
 // what a new website comes with, none of it the person's
 const FRESH = /^(default\.php|\.htaccess|\.well-known|cgi-bin)$/;
-const APPS: Record<string, string> = { wordpress: 'WordPress', builder: 'Hostinger’s website builder', horizons: 'Hostinger Horizons' };
+export const APPS: Record<string, string> = { wordpress: 'WordPress', builder: 'Hostinger’s website builder', horizons: 'Hostinger Horizons' };
 const isPhp = (s: Site) => s.detection.runtime === 'php' || (s.detection.stack === 'unknown' && s.files.some((f) => /\.php$/.test(f.path)));
 
 // its operations put the reason inside the JSON they quote
-const said = (why: unknown) => /"message"\s*:\s*"([^"]+)"/.exec(String(why))?.[1] ?? String(why).replace(/^Hostinger said: /, '').slice(0, 300);
-const refused = (what: string, why: unknown) => new Unit7Error('hostinger_error', `Hostinger refused to ${what}: ${said(why)}`, 502);
+export const said = (why: unknown) => /"(?:message|error)"\s*:\s*"([^"]+)"/.exec(String(why))?.[1] ?? String(why).replace(/^Hostinger said: /, '').slice(0, 300);
+// a refused key keeps its 401: that's what stops background work on the account until a person reconnects it
+export const refused = (what: string, why: unknown) => (/\bHTTP 401\b/.test(String(why))
+  ? new Unit7Error('hostinger_refused', `Hostinger didn’t accept this account’s key (unauthorized), so Unit7 couldn’t ${what}. Put a new key in Connections, then run this again.`, 401)
+  : new Unit7Error('hostinger_error', `Hostinger refused to ${what}: ${said(why)}`, 502));
 
-async function websiteOf(ctx: Ctx, acc: string, domain?: string): Promise<Website> {
+export async function websiteOf(ctx: Ctx, acc: string, domain?: string): Promise<Website> {
   const name = domain?.replace(/^www\./, '');
   const got = await hostingerExec(ctx, acc, 'hosting_websites_list', name ? { domain: name } : {}).catch((e: Error) => { throw refused('list your websites', e.message); });
   const rows = (Array.isArray(got) ? got : []) as Website[];
   if (!name) throw new Unit7Error('which_website', rows.length ? `Hostinger hosts one site per domain. Say which of yours this goes on: ${rows.slice(0, 10).map((r) => r.domain).join(', ')}.` : 'This Hostinger account has no websites yet. Add one in hPanel (Websites → Add website), then run this again. Unit7 doesn’t buy hosting.', 400);
   // the filter matches part of a name, so shop.example also finds myshop.example
   const w = rows.find((r) => r.domain === name);
-  if (!w) throw new Unit7Error('no_website', `${name} isn’t a website on this Hostinger account. Add it in hPanel (Websites → Add website), then run this again. Unit7 doesn’t buy hosting.`, 404);
+  if (!w) throw new Unit7Error('no_website', `${name} isn’t a website on this Hostinger account. Unit7 can create it on a plan you already have (hostinger.website_create, a person says yes first), or add it in hPanel (Websites → Add website). Then run this again. Unit7 doesn’t buy hosting.`, 404);
   return w;
 }
 
@@ -58,10 +61,11 @@ async function settingsOf(ctx: Ctx, acc: string, w: Website): Promise<string[]> 
 }
 
 // Hostinger takes every setting at once, deletes what's left out and never shows a value, so one left out is gone for good
-async function saveSettings(ctx: Ctx, acc: string, w: Website, set: Put['env'], unset: string[] = []) {
-  const lost = (await settingsOf(ctx, acc, w)).filter((k) => !unset.includes(k) && !set.some((e) => e.key === k));
+export async function saveSettings(ctx: Ctx, acc: string, w: Website, set: Put['env'], unset: string[] = []) {
+  const had = await settingsOf(ctx, acc, w), lost = had.filter((k) => !unset.includes(k) && !set.some((e) => e.key === k));
   if (lost.length) throw new Unit7Error('would_erase', `Hostinger only takes all of a site’s settings together and never shows their values, so this would erase ${lost.slice(0, 8).join(', ')}. Give them all together with live.put, or change this one in hPanel.`, 409);
   await hostingerExec(ctx, acc, 'hosting_nodejs_replace-environment-variables', { username: w.username, domain: w.domain, env_vars: set.map(({ key, value }) => ({ key, value })) }).catch((e: Error) => { throw refused('save the settings', e.message); });
+  return had;
 }
 
 async function withArchive<T>(dir: string, files: SiteFile[], go: (archivePath: string) => Promise<T>) {

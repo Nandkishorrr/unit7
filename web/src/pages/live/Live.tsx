@@ -23,8 +23,9 @@ interface Other { to: string; name: string; ok: boolean; why: string }
 interface Site { name: string; stack: string; runtime: string | null; files: number; mb: number; needs: string[]; settings: string[]; buildCommand?: string | null; startCommand?: string | null; output?: string | null; port?: number }
 interface Found { site: Site; places: Place[]; notConnected: Other[]; keysFound?: string; publishRefused?: boolean }
 type Source = { name: string } & ({ uploadId: string } | { repo: string; branch?: string });
-interface Put { url: string; name: string; verified: boolean; autoDeploy: boolean; notes: string[]; domain?: { error?: string }; site: Site }
-interface Run { at: number; where: string; input: Record<string, unknown>; lines: string[]; out?: Put; failed?: Exclude<ToolResult, { status: 'ok' }> }
+interface Put { url: string; name: string; verified: boolean; autoDeploy: boolean; notes: string[]; domain?: { error?: string; addThese?: { type: string; name: string; value: string }[]; at?: string; also?: string[] }; site: Site }
+interface Plan { plan: number; websites: string[] }
+interface Run { at: number; where: string; input: Record<string, unknown>; lines: string[]; out?: Put; failed?: Exclude<ToolResult, { status: 'ok' }>; plans?: Plan[]; proof?: string }
 interface Tune { buildCommand?: string; startCommand?: string; output?: string; port?: string }
 interface State { source?: Source; found?: Found; looking?: boolean; error?: string; pick?: string; name: string; domain: string; env: Record<string, string>; size?: string; tune: Tune; run?: Run }
 
@@ -73,16 +74,31 @@ function go(place: Place, update = false) {
   const input = { ...inputOf(source!), to: place.to, accountId: place.accountId, serverId: place.serverId, name, ...(domain && { domain }), ...(Object.keys(filled).length && { env: filled }), ...(size && { size: size.id }), ...(place.tunes && tuneOf(tune)), update };
   void putLive(input, place.label);
 }
-async function putLive(input: Record<string, unknown>, where: string) {
-  const run: Run = { at: Date.now(), where, input, lines: [] };
-  patch({ run });
+// a host's steps are tools of their own, so theirs are said here too
+function sayProgress() {
   const add = (l: string) => { const now = state.run!; if (now.lines.at(-1) !== l) patch({ run: { ...now, lines: [...now.lines.slice(-29), l] } }); };
-  // a host's steps are tools of their own, so theirs are said here too
-  const off = onLive((e) => { if (e.type === 'tool.progress' && /^(live\.put|coolify\.|domain\.)/.test(e.data?.tool ?? '')) add(e.message); });
+  return onLive((e) => { if (e.type === 'tool.progress' && /^(live\.put|coolify\.|domain\.|hostinger\.)/.test(e.data?.tool ?? '')) add(e.message); });
+}
+async function putLive(input: Record<string, unknown>, where: string) {
+  patch({ run: { at: Date.now(), where, input, lines: [] } });
+  const off = sayProgress();
   const r = await runTool('live.put', input).catch(unreachable);
   off();
   const now = state.run!;
   patch({ run: r.status === 'ok' ? { ...now, out: r.output } : { ...now, failed: r } });
+}
+// the website isn't on Hostinger yet: a person says make it, on a plan they already pay for, and it goes live there
+async function newWebsite(run: Run, plan?: number) {
+  patch({ run: { ...run, at: Date.now(), lines: [], failed: undefined, plans: undefined, proof: undefined } });
+  const off = sayProgress();
+  const r = await runTool('hostinger.website_create', { domain: run.input.domain, accountId: run.input.accountId, plan }).catch(unreachable);
+  off();
+  if (r.status === 'ok' && r.output.status === 'ready') return putLive(run.input, run.where);
+  if (r.status !== 'ok') return patch({ run: { ...state.run!, failed: r } });
+  // not made: it needs an answer first
+  const o = r.output, domain = String(run.input.domain), message = o.plans ? `Pick the Hostinger plan ${domain} goes on. Nothing was created yet.`
+    : `Hostinger wants proof that ${domain} is yours. Where your domain’s DNS is managed, add a TXT record at ${o.addThis?.name} saying the text below, next to the ones there. Wait up to 10 minutes, then press the button again. Nothing was created yet.`;
+  patch({ run: { ...state.run!, failed: { status: 'error', error: { code: o.status, message } }, plans: o.plans, proof: o.addThis?.value } });
 }
 
 export function LivePage() {
@@ -433,7 +449,7 @@ function Done({ s, run, out }: { s: State; run: Run; out: Put }) {
   const next: ReactNode[] = [
     ...(out.url && !out.verified ? ['It says it’s live but didn’t answer yet. Try the link again in a minute.'] : []),
     ...out.notes.filter((n) => !n.startsWith('The code reads')), // the form below says that
-    ...(out.domain ? [out.domain.error ? `Your domain isn’t pointed yet: ${out.domain.error}` : 'Your domain is set. It can take a few minutes to reach everyone.'] : []),
+    ...(out.domain ? [out.domain.error ? `Your domain isn’t pointed yet: ${out.domain.error}` : out.domain.addThese ? `Your domain isn’t pointed yet. Add these at ${out.domain.at ?? 'your DNS provider'}: ${out.domain.addThese.map((r) => `${r.type} ${r.name} ${r.value}`).join('; ')}. Unit7 keeps checking.` : 'Your domain is set. It can take a few minutes to reach everyone.', ...(out.domain.also ?? [])] : []),
     out.autoDeploy ? 'Every push to GitHub goes live by itself.' : 'To change the site, bring the new version here and use the same name.',
     ...(out.site.needs.length ? [`It uses ${out.site.needs.map((n) => DATA[n] ?? n).join(' and ')}, so it needs ${out.site.needs.length > 1 ? 'them' : 'one'} to work properly.`] : []),
   ];
@@ -474,26 +490,32 @@ function Stopped({ s, run, failed }: { s: State; run: Run; failed: Exclude<ToolR
   const code = failed.status === 'error' ? failed.error.code : failed.status;
   const step = nextStep(failed, run.input);
   const taken = code === 'already_exists', built = code === 'build_failed'; // a failed build left the project there: the next try updates it
+  const noWebsite = code === 'no_website' || code === 'needs_proof'; // proof added, the same button tries again
+  const asking = !!run.plans || !!run.proof; // nothing went wrong: it needs an answer
   const settings = built ? s.found?.site.settings ?? [] : [];
   const back = () => patch({ run: undefined });
   const update = async () => { if (await confirmDialog({ title: `Replace what’s live on ${String(run.input.name)}?`, body: 'The new version takes its place. Earlier versions stay on the host.', confirm: 'Update it' })) again(s, run, true); };
   return (
     <Card className="animate-rise space-y-4 p-5 sm:p-7">
       <div className="flex items-start gap-3.5">
-        <StatusMark state={failed.status === 'approval_required' ? 'warn' : 'bad'} size={40} solid label="Stopped" />
+        <StatusMark state={failed.status === 'approval_required' || asking ? 'warn' : 'bad'} size={40} solid label={asking ? 'One thing first' : 'Stopped'} />
         <div className="min-w-0 flex-1">
-          <h2 className="text-[17px] font-semibold tracking-[-0.02em] text-ink [overflow-wrap:anywhere]">{failed.status === 'approval_required' ? 'Waiting for your OK' : taken ? 'That name is taken' : `${String(run.input.name)} didn’t go live`}</h2>
-          <ErrorLine text={said(failed)} detail={failed.status === 'error' ? failed.error.logTail : undefined} title="What the host said" className="mt-1 text-[13.5px]" />
+          <h2 className="text-[17px] font-semibold tracking-[-0.02em] text-ink [overflow-wrap:anywhere]">{failed.status === 'approval_required' ? 'Waiting for your OK' : run.plans ? 'Which plan?' : run.proof ? 'Show it’s your domain' : taken ? 'That name is taken' : `${String(run.input.name)} didn’t go live`}</h2>
+          {asking ? <p className="mt-1 text-[13.5px] text-ink-2 [overflow-wrap:anywhere]">{said(failed)}</p>
+            : <ErrorLine text={said(failed)} detail={failed.status === 'error' ? failed.error.logTail : undefined} title="What the host said" className="mt-1 text-[13.5px]" />}
+          {run.proof && <p className="mt-2 flex items-center gap-1.5 rounded-[14px] bg-raised px-3 py-1.5"><code className="min-w-0 flex-1 text-[12.5px] text-ink [overflow-wrap:anywhere]">{run.proof}</code><CopyButton text={run.proof} /></p>}
         </div>
       </div>
       {!!run.lines.length && <ul className="space-y-1 border-t border-line pt-3 text-[12.5px] text-muted">{run.lines.slice(-4).map((l, i) => <li key={i} className="[overflow-wrap:anywhere]">{l}</li>)}</ul>}
       {!!settings.length && <Settings s={s} keys={settings} title="Settings your code reads" note="A missing setting is a common reason a build stops. Fill in what you have, then build again." saveLabel="Save and build again" onSave={() => again(s, run, true)} />}
       <div className="flex flex-wrap gap-2 border-t border-line pt-4">
         {taken && <Button variant="primary" onClick={() => void update()}>Update what’s live</Button>}
+        {noWebsite && <Button variant="primary" className="max-w-full" onClick={() => void newWebsite(run)}><span className="truncate">Create {String(run.input.domain)} on your plan</span></Button>}
+        {run.plans?.map((p) => <Button key={p.plan} variant="primary" className="max-w-full" onClick={() => void newWebsite(run, p.plan)}><span className="truncate">{p.websites.length ? `On the plan with ${p.websites.slice(0, 2).join(', ')}` : `On plan ${p.plan}`}</span></Button>)}
         {step?.href && <Button variant="primary" onClick={() => navigate(step.href!)}>{step.label}</Button>}
         {(built || step?.kind === 'retry') && <Button variant={step?.kind === 'retry' || built ? 'primary' : 'secondary'} icon={<RefreshCw size={14} />} onClick={() => again(s, run, built)}>Try again</Button>}
         {step?.kind === 'ask' && <AskButton size="md" label="Ask Unit7 why" prompt={`Putting ${String(run.input.name)} live on ${run.where} failed: “${said(failed)}”. Why, and how do I fix it?`} />}
-        <Button variant={taken || step || built ? 'ghost' : 'primary'} onClick={back}>{taken ? 'Pick another name' : 'Back'}</Button>
+        <Button variant={taken || step || built || noWebsite || run.plans ? 'ghost' : 'primary'} onClick={back}>{taken ? 'Pick another name' : 'Back'}</Button>
       </div>
     </Card>
   );

@@ -16,7 +16,8 @@ import { aws, route53, type R53Set } from './aws.ts';
 import { azure, azureDns, type AzRecordSet } from './azure.ts';
 import { hetzner, hetznerDns } from './hetzner.ts';
 
-export interface Rec { type: 'A' | 'AAAA' | 'CNAME' | 'ALIAS' | 'TXT'; name: string; content: string; ttl?: number }
+// beside: it goes next to what's at this name and type, never over it (an ownership TXT on a domain with an SPF record)
+export interface Rec { type: 'A' | 'AAAA' | 'CNAME' | 'ALIAS' | 'TXT'; name: string; content: string; ttl?: number; beside?: boolean }
 
 interface Writer {
   owns(ctx: Ctx, accountId: string, zone: string): Promise<boolean>;
@@ -230,7 +231,10 @@ export async function writeRecords(ctx: Ctx, hostname: string, records: Rec[], p
     try { if (!(await writer.owns(ctx, acc, zone))) continue; } catch (e) { problems.push((e as Error).message); continue; }
     const ed = prefer?.keep ? EDITORS[provider] : undefined;
     const before = ed ? (await Promise.all(records.map((r) => ed.find(ctx, acc, zone, { name: r.name, type: r.type }).catch(() => [])))).flat() : undefined;
-    for (const r of records) await writer.upsert(ctx, acc, zone, r);
+    for (const r of records) {
+      if (!r.beside) await writer.upsert(ctx, acc, zone, r);
+      else if (!(await EDITORS[provider]!.find(ctx, acc, zone, r)).some((x) => matches(x, r.content))) await EDITORS[provider]!.add(ctx, acc, zone, r);
+    }
     return { zone, host, written: true, provider, accountId: acc, records, ...(before && { before }) };
   }
   return { zone, host, written: false, records, why: problems[0] ?? (accounts.length ? `None of your connected ${provider} accounts manages ${zone}.` : `${zone}'s DNS is at ${provider}. Connect your ${provider} account and Unit7 does this itself.`) };

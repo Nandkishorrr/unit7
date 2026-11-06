@@ -178,7 +178,15 @@ export const appEngine = {
 // Firebase Hosting: the live channel's releases, and a new release of a version that's already there (a re-release or
 // a rollback). https://firebase.google.com/docs/reference/hosting/rest/v1beta1/sites.channels.releases
 export interface HostingRelease { name: string; type?: string; releaseTime?: string; version?: { name: string; status?: string } }
+// A custom domain on a site. Adding one answers with an operation that stays open until the domain is live, so what's read is the
+// domain itself: Google looks at the name, then says which DNS records it wants.
+// https://firebase.google.com/docs/reference/hosting/rest/v1beta1/projects.sites.customDomains
+export interface HostingDnsRecord { domainName?: string; type?: string; rdata?: string; requiredAction?: string }
+export interface HostingDomain { name: string; requiredDnsUpdates?: { desired?: { records?: HostingDnsRecord[] }[]; discovered?: { records?: HostingDnsRecord[] }[] } }
+const customDomains = (project: string, site: string) => `${G('firebasehosting')}/v1beta1/projects/${encodeURIComponent(project)}/sites/${site}/customDomains`;
 export const hosting = {
+  customDomain: (ctx: Ctx, acc: string, project: string, site: string, domain: string, quotaProject?: string) => gsend<HostingDomain>(ctx, acc, `${customDomains(project, site)}/${encodeURIComponent(domain)}`, { method: 'GET', quotaProject }),
+  addCustomDomain: (ctx: Ctx, acc: string, project: string, site: string, domain: string, quotaProject?: string) => gsend<{ error?: { message?: string } }>(ctx, acc, `${customDomains(project, site)}?customDomainId=${encodeURIComponent(domain)}`, { body: {}, quotaProject }),
   releases: (ctx: Ctx, acc: string, site: string) => glist<HostingRelease>(ctx, acc, `${G('firebasehosting')}/v1beta1/sites/${site}/channels/live/releases?pageSize=20`, 'releases')
     .then((r) => r.sort((a, b) => (b.releaseTime ?? '').localeCompare(a.releaseTime ?? ''))), // the order isn't documented: newest first here
   release: (ctx: Ctx, acc: string, site: string, version: string, message: string) => gsend<HostingRelease>(ctx, acc, `${G('firebasehosting')}/v1beta1/sites/${site}/channels/live/releases?versionName=${encodeURIComponent(version)}`, { body: { message } }),

@@ -370,8 +370,8 @@ test('Firebase Hosting: a version, hashes of the gzipped files, only what’s mi
     assert.deepEqual(st.steps, ['site shop', 'finalize status FINALIZED', 'release sites/shop/versions/v1']);
     assert.ok(st.quota.every((q: unknown) => q === undefined), 'a service account uses its own project');
     const d = ok<any>(await w.org.a('live.put', { uploadId: await w.up(BUILT), to: 'firebase', name: 'shop', update: true, domain: 'www.shop.example' }));
-    assert.match(d.domain.error, /Firebase console/);
-    refused(await w.org.h('live.logs', { to: 'firebase', project: 'shop' }), /doesn’t give its logs/);
+    assert.match(d.domain.error, /Approvals/, 'an AI’s domain waits for a person, like on the other outside hosts');
+    refused(await w.org.h('live.logs', { to: 'firebase', project: 'shop' }), /has no build log.*integrations\/cloudlogging/);
   } finally { w.close(); }
 });
 
