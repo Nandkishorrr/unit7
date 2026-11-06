@@ -116,7 +116,7 @@ const lastBackupOf = (db: DB, orgId: string, serverId: string, part: string) => 
   return r ? ago(r.created_at) : undefined;
 };
 // a hard-to-undo change asked for by a person directly: they type its name
-function confirmed(ctx: Ctx, p: Part, tier: Tier, confirm?: string) {
+export function confirmed(ctx: Ctx, p: Part, tier: Tier, confirm?: string) {
   if (tier < 3 || isAgent(ctx)) return;
   if ((confirm ?? '').trim().toLowerCase() !== p.name.toLowerCase()) throw new Unit7Error('confirm_needed', `This is hard to undo. Type the name (${p.name}) to confirm.`, 400, { confirm: p.name });
 }
@@ -130,7 +130,7 @@ async function viaCoolify(ctx: Ctx, tool: string, input: Record<string, unknown>
   throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : 'Coolify didn’t run it.', 409);
 }
 // Coolify renames containers on every deploy: find them by its labels (both generations), never by an old name
-async function coolifyContainers(ctx: Ctx, s: ServerRow, p: Part): Promise<string[]> {
+export async function coolifyContainers(ctx: Ctx, s: ServerRow, p: Part): Promise<string[]> {
   const c = p.coolify!;
   const out = await ssh(ctx.app).check(s, asRoot(s) + script(`for l in "$@"; do docker ps --filter "label=$l" --filter status=running --format '{{.Names}}'; done`, `coolify.${c.type}Uuid=${c.uuid}`, `com.docker.compose.project=${c.uuid}`), { what: 'Finding the container' });
   return [...new Set(out.split('\n').map((x) => x.trim()).filter(Boolean))];
@@ -205,7 +205,7 @@ export async function checkHealth(ctx: Ctx, s: ServerRow, p: Part, how: How, bef
 
 // --- changes and their undo ----------------------------------------------------------------------------
 interface Undo { steps: string[]; how?: How }
-function record(ctx: Ctx, s: ServerRow, p: Part, verb: string, summary: string, undo: Undo, status = 'done', note?: string) {
+export function record(ctx: Ctx, s: ServerRow, p: Part, verb: string, summary: string, undo: Undo, status = 'done', note?: string) {
   const changeId = id('chg');
   sql(ctx.db, 'INSERT INTO changes (id, org_id, server_id, part, verb, summary, undo, status, actor, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     changeId, ctx.orgId, s.id, p.id, verb, summary, JSON.stringify(undo), status, ctx.actor.name, note ?? null);
@@ -215,9 +215,9 @@ function record(ctx: Ctx, s: ServerRow, p: Part, verb: string, summary: string, 
 const setStatus = (db: DB, changeId: string, status: string, note?: string) =>
   sql(db, `UPDATE changes SET status = ?, note = COALESCE(?, note), undone_at = CASE WHEN ? IN ('undone', 'rolled_back') THEN ? ELSE undone_at END WHERE id = ?`, status, note ?? null, status, now(), changeId);
 async function runSteps(ctx: Ctx, s: ServerRow, steps: string[], what: string) {
-  for (const c of steps) await ssh(ctx.app).check(s, c, { what, timeoutMs: 300_000 });
+  for (const c of steps) await ssh(ctx.app).check(s, c, { what, timeoutMs: 25 * 60_000 }); // a WordPress site's files take a while
 }
-async function rollback(ctx: Ctx, s: ServerRow, p: Part, changeId: string, steps: string[], why: string) {
+export async function rollback(ctx: Ctx, s: ServerRow, p: Part, changeId: string, steps: string[], why: string) {
   try {
     await runSteps(ctx, s, steps, 'Putting it back');
     setStatus(ctx.db, changeId, 'rolled_back', why);

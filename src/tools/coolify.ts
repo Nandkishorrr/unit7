@@ -779,7 +779,8 @@ defineTool({
     ...WHERE, type: z.string().regex(/^[a-z0-9][a-z0-9-]{1,60}$/).optional(), compose: z.string().min(10).max(256_000).optional(), name: NAME.optional(),
     urls: z.array(z.object({ part: z.string().regex(/^[\w.-]{1,60}$/), domain: HOST })).max(10).optional(),
     injectInto: UUID.optional(), nextPublic: z.boolean().default(false), reuse: z.boolean().default(true), wait: z.boolean().default(true),
-  }).refine((i) => !!i.type !== !!i.compose, 'Give a template type or compose, one of them.').refine((i) => !i.injectInto || i.type === 'supabase', 'injectInto works with Supabase.'),
+  }).refine((i) => !!i.type !== !!i.compose, 'Give a template type or compose, one of them.').refine((i) => !i.injectInto || i.type === 'supabase', 'injectInto works with Supabase.')
+    .refine((i) => !/^wordpress/.test(i.type ?? ''), 'Use wordpress.install: this way would leave WordPress’s install screen open for its first visitor.'),
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
     const { api } = need(ctx, s);

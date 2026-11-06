@@ -444,7 +444,7 @@ test('the catalog: room for each tool, how it’s added, Plausible off, a subdom
     const cat = ok(await o.a('addon.catalog', {}));
     assert.equal(cat.server.id, srv, 'the server with Coolify connected');
     assert.deepEqual([cat.freeMb, cat.root], [1024, 'example.com']);
-    assert.equal(cat.items.length, 12);
+    assert.equal(cat.items.length, 13);
     const by = Object.fromEntries(cat.items.map((x: any) => [x.id, x]));
     assert.deepEqual([by.umami.how, by.umami.fits, by.umami.suggest], ['coolify', true, 'analytics.example.com']);
     assert.equal(by.glitchtip.fits, false, '1 GB needed, 1 GB free: no room to spare');

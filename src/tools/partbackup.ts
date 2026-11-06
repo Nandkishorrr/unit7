@@ -68,6 +68,17 @@ export async function takePartBackup(ctx: Ctx, s: ServerRow, p: Part, reason: st
   return { backupId, size, location: file, offServer: offsite ? ['this computer', offsite.syncedFolder && 'your synced folder', offsite.bucket].filter(Boolean) as string[] : [], ...(offsiteProblem && { offsiteProblem }), ...(removed && { removedOld: removed }) };
 }
 
+// a copy of files on the server: its size and checksum, a row in backups, and (off: unless it's only a moment's undo) the copy off the server
+export async function keepCopy(ctx: Ctx, s: ServerRow, part: string, kind: string, reason: string, file: string, off = true) {
+  const meta = (await ssh(ctx.app).exec(s, asRoot(s) + script('wc -c < "$1"; sha256sum "$1" | cut -d" " -f1', file))).stdout.trim().split('\n');
+  const backupId = id('bak'), size = Number(meta[0] ?? 0);
+  run(ctx.db, `INSERT INTO backups (id, org_id, service_id, server_id, part, kind, reason, location, size, checksum, status, finished_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'done', ?)`,
+    backupId, ctx.orgId, s.id, part, kind, reason, file, size, meta[1] ?? null, now());
+  let copied: Awaited<ReturnType<typeof copyOffsite>> | undefined;
+  if (off && get<{ offsite: string }>(ctx.db, 'SELECT offsite FROM orgs WHERE id = ?', ctx.orgId)?.offsite !== 'off') { try { copied = await copyOffsite(ctx, backupId); } catch { /* the copy stays on the server, and the level says so */ } }
+  return { backupId, size, checksum: meta[1] ?? null, offServer: copied ? ['this computer', copied.syncedFolder && 'your synced folder', copied.bucket].filter(Boolean) as string[] : [] };
+}
+
 // the newest `keep` automatic backups of a part stay; older ones go from the server and from off it. After signs of a break-in the old
 // copies are the clean ones, so nothing goes for a month, until a person has had time to look.
 async function prunePart(ctx: Ctx, s: ServerRow, part: string, keep: number, kind = 'scheduled%') {
@@ -200,15 +211,7 @@ defineTool({
     const tight = roomVerdict((await ssh(ctx.app).exec(s, script(ROOM_PROBE, dir), { timeoutMs: 20_000 })).stdout, ctx.actor.kind === 'user');
     if (tight) throw new Unit7Error('no_room', `Unit7 didn’t copy ${p.name}’s files: ${tight}.`, 507);
     const made: { kind: string; size: number; offServer: string[] }[] = [];
-    const keep = async (kind: string, file: string) => {
-      const meta = (await ssh(ctx.app).exec(s, asRoot(s) + script('wc -c < "$1"; sha256sum "$1" | cut -d" " -f1', file))).stdout.trim().split('\n');
-      const backupId = id('bak');
-      run(ctx.db, `INSERT INTO backups (id, org_id, service_id, server_id, part, kind, reason, location, size, checksum, status, finished_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'done', ?)`,
-        backupId, ctx.orgId, s.id, part, kind, warden ? 'scheduled (safety net)' : 'extra (files and settings)', file, Number(meta[0] ?? 0), meta[1] ?? null, now());
-      let off: Awaited<ReturnType<typeof copyOffsite>> | undefined;
-      if (get<{ offsite: string }>(ctx.db, 'SELECT offsite FROM orgs WHERE id = ?', ctx.orgId)?.offsite !== 'off') { try { off = await copyOffsite(ctx, backupId); } catch { /* the copy stays on the server, and the level says so */ } }
-      made.push({ kind, size: Number(meta[0] ?? 0), offServer: off ? ['this computer', off.syncedFolder && 'your synced folder', off.bucket].filter(Boolean) as string[] : [] });
-    };
+    const keep = async (kind: string, file: string) => { const c = await keepCopy(ctx, s, part, kind, warden ? 'scheduled (safety net)' : 'extra (files and settings)', file); made.push({ kind, size: c.size, offServer: c.offServer }); };
     if (here.length || volumes.length) {
       ctx.progress(`Copying ${p.name}’s files…`);
       const file = `${dir}/${t}.files.tgz`;

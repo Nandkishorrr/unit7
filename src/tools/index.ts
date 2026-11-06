@@ -78,6 +78,7 @@ import './clouds-money.ts';
 import './alerts.ts';
 import './snooze.ts';
 import './partbackup.ts';
+import './wordpress.ts';
 import './recheck.ts';
 import './fleet.ts';
 import './release.ts';

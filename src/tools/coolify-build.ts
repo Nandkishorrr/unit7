@@ -59,7 +59,9 @@ export function parseWish(w: Wish): Intent {
   const gh = repo ? parseRepo(repo) : undefined;
   const name = slug(w.name ?? gh?.name ?? (image && splitImage(image).name.split('/').pop()) ?? fw?.[1] ?? services[0] ?? databases[0] ?? '') || 'app';
   const missing: Intent['missing'] = [];
-  if (wantsApp && !repo && !image && !w.dockerfile) {
+  // WordPress isn't code to deploy, and only wordpress.install claims its admin login before a first visitor can
+  if (/\bwordpress\b/i.test(t) && !repo && !image && !w.dockerfile) missing.push({ field: 'wordpress', ask: 'WordPress has its own tool: use wordpress.install, not a build.' });
+  else if (wantsApp && !repo && !image && !w.dockerfile) {
     missing.push({ field: 'repo', ask: /\b(repo|github|git)\b/i.test(t) || fw ? 'Which GitHub repo? (coolify.repos and github.repos list them)' : 'Where is the code: a GitHub repo, or a ready image?' });
   }
   const dockerfile = /\bdockerfile\b/i.test(t) && repo;

@@ -17,7 +17,7 @@ import { all, get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid, requireHuman, requireRole } from './helpers.ts';
 import { serverRow } from './servers.ts';
-import { coolifyAccount, coolifyFor } from './xray.ts';
+import { coolifyAccount, coolifyFor, lastXray } from './xray.ts';
 import { b64, coolifyServerUuid, hostsOf, list, setEnvs, waitStatus } from '../connectors/coolify.ts';
 import { ssh } from '../connectors/ssh.ts';
 import { script } from '../connectors/shell.ts';
@@ -41,7 +41,7 @@ type Wire = { note: string; snippet?: string; env?: { key: string; from: string 
 //   extra: plain settings set before the first start (no open sign-up, no setup wizard for a database)
 //   socket: its own first-run setup over its socket.io API, from inside its container, while the extra password still
 //         stands in front of it (so nobody else can reach it first); once that worked the extra password goes
-export interface Claim { env?: (pw: string) => Record<string, string>; user?: string; api?: 'umami' | 'n8n' | 'glitchtip'; port?: number; gate?: number; extra?: Record<string, string>; socket?: boolean }
+export interface Claim { env?: (pw: string) => Record<string, string>; user?: string; api?: 'umami' | 'n8n' | 'glitchtip' | 'wordpress'; port?: number; gate?: number; extra?: Record<string, string>; socket?: boolean }
 export interface Addon {
   id: string; name: string; logo: string; category: string; line: string; memoryMb: number; sub: string;
   template?: string; part?: string;           // Coolify's one-click key, and the part of it that gets the domain
@@ -142,26 +142,49 @@ export const ADDONS: Addon[] = [
   // to it afterwards (is_allow_external_registrations defaults to true, with no setting): it holds database backups.
   { id: 'databasus', name: 'Databasus', logo: 'databasus', category: 'Backups dashboard', line: 'Scheduled database backups you can see (Postgres, MySQL, MongoDB)', memoryMb: 512, sub: 'backups', template: 'databasus', part: 'databasus',
     off: 'Coming soon: Databasus lets the first visitor become its admin and anyone sign up after that, so Unit7 can’t add it safely yet. Unit7 already backs up the databases it runs.' },
+  // WordPress hands its admin to whoever opens /wp-admin/install.php first, so it starts behind the extra password, Unit7
+  // runs its install through wp-cli from inside the server (CLAIM.wordpress), and only then does the extra password go.
+  // templates/compose/wordpress-with-mariadb.yaml: parts wordpress and mariadb, volume wordpress-files on /var/www/html.
+  { id: 'wordpress', name: 'WordPress', logo: 'wordpress', category: 'Website', line: 'A blog or business site you run yourself', memoryMb: 768, sub: 'blog', template: 'wordpress-with-mariadb', part: 'wordpress',
+    claim: { api: 'wordpress', gate: 80, port: 80, user: 'siteadmin' }, firstVisit: SIGNED },
   { id: 'unleash', name: 'Unleash', logo: 'unleash', category: 'Feature flags', line: 'Turn features on and off without a deploy', memoryMb: 512, sub: 'flags', template: 'unleash-with-postgresql', part: 'unleash', compose: UNLEASH_COMPOSE,
     creds: [{ key: 'SERVICE_PASSWORD_UNLEASH', label: 'Admin password (user admin)' }],
     wire: { note: 'Make an API token in Unleash for your app, and point its SDK at the address.', env: [{ key: 'UNLEASH_URL', from: 'url:/api' }] },
     unit7: { image: 'unleashorg/unleash-server:latest', port: 4242, db: 'postgres', env: { DATABASE_SSL: 'false', UNLEASH_DEFAULT_ADMIN_USERNAME: 'admin' }, secrets: [{ key: 'UNLEASH_DEFAULT_ADMIN_PASSWORD', cred: 'SERVICE_PASSWORD_UNLEASH' }] } },
 ];
 const IDS = ADDONS.map((a) => a.id) as [string, ...string[]];
-const byId = (x: string) => ADDONS.find((a) => a.id === x)!;
+// A server holds many WordPress sites: past the catalogue's one, each is the same add-on under its own id (wordpress.install,
+// .staging, .import), with its own record and keys, and addon.remove, .credentials and .unlock work on it like any other.
+const SITE_ID = /^wordpress-[a-z0-9-]{1,36}$/;
+// short enough for a vault reference (credRef), and a long name stays its own with a piece of its hash
+export const wordpressSite = (hostname: string): Addon => {
+  const slug = hostname.replace(/[^a-z0-9]+/g, '-');
+  return { ...ADDONS.find((a) => a.id === 'wordpress')!, id: `wordpress-${slug.length > 36 ? `${slug.slice(0, 28).replace(/-+$/, '')}-${createHash('sha256').update(hostname).digest('hex').slice(0, 7)}` : slug}` };
+};
+const ADDON_ID = z.union([z.enum(IDS), z.string().regex(SITE_ID)]);
+const byId = (x: string): Addon => ADDONS.find((a) => a.id === x) ?? { ...ADDONS.find((a) => a.id === 'wordpress')!, id: x };
 const credRef = (serverId: string, addon: string, key: string) => makeRef('addon', `${serverId}-${addon}`, key);
-interface AddonMade { via: 'coolify' | 'unit7'; uuid?: string; project?: string; serviceId?: string; dbId?: string; domain?: string; url?: string; healthy?: boolean; creds: { label: string; ref: string }[]; gate?: { file: string; ref: string } }
+export interface AddonMade { via: 'coolify' | 'unit7'; uuid?: string; project?: string; serviceId?: string; dbId?: string; domain?: string; url?: string; healthy?: boolean; creds: { label: string; ref: string }[]; gate?: { file: string; ref: string } }
 
 // --- the admin login, before anyone else can claim it ------------------------------------------------------------
 // A password Unit7 makes for a setting a tool reads at its first start: upper case, lower case and digits (CloudBeaver's
 // and n8n's rules), 39 characters. It goes to Coolify only inside the API call (curl's config on stdin) and to the vault.
-const adminPassword = () => `U7a${randomBytes(18).toString('hex')}`;
+export const adminPassword = () => `U7a${randomBytes(18).toString('hex')}`;
 const keepCred = (ctx: Ctx, rec: AddonMade, s: ServerRow, a: Addon, key: string, label: string, value: string, user?: string) => {
   const ref = credRef(s.id, a.id, key);
   ctx.redactor.add(value, label);
   ctx.app.vault.put(ctx.orgId, ref, value, { kind: 'addon_credential', by: ctx.actor.name, meta: { addon: a.id, label, people: true, ...(user && { user }) } });
   rec.creds = [...rec.creds.filter((c) => c.ref !== ref), { label, ref }];
 };
+// wp-cli for a WordPress container $c, as its files' owner $u: the official image's throwaway container on the site's own
+// files and network. wp-config.php reads its database login from the WORDPRESS_ settings, so they go along in a private
+// file, gone when the script ends (--env-file takes one line each, and WORDPRESS_CONFIG_EXTRA can be several).
+// Plugins and themes stay unloaded: a broken one can't stop wp-cli, and their code never runs on wp-cli's PHP.
+export const WP_CLI = `e=$(mktemp) || exit 7
+trap 'rm -f "$e"' EXIT; trap 'exit 1' HUP INT TERM
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" | grep -E '^WORDPRESS_[A-Z0-9_]+=' | grep -v '^WORDPRESS_CONFIG_EXTRA=' > "$e"
+wp() { docker run --rm -i --volumes-from "$c" --network "container:$c" --user "$u" --env-file "$e" -e HOME=/tmp wordpress:cli wp --allow-root --skip-plugins --skip-themes "$@"; }`;
+
 // The tool's own setup, from inside the server (its container's own address, so nothing has to be public): a password
 // made on the server, printed first (Unit7 learns it before anything else reads the output), then handed to the tool on
 // stdin (curl's config, or the container's shell): never on a command line. printf turns each doubled backslash into
@@ -191,11 +214,20 @@ printf 'data = "{\\\\"email\\\\":\\\\"%s\\\\",\\\\"firstName\\\\":\\\\"Unit7\\\\
   glitchtip: `i=0; until printf '%s\n' "$pw" | docker exec -i "$c" sh -c 'IFS= read -r p; DJANGO_SUPERUSER_PASSWORD="$p" exec ./manage.py createsuperuser --noinput --email "$1"' unit7 "$who" >/dev/null 2>&1; do i=$((i+1)); [ $i -ge 60 ] && { echo "it couldn't make the admin" >&2; exit 7; }; sleep 3; done
 docker exec "$c" ./manage.py shell -c 'from django.contrib.auth import get_user_model as g; print("unit7-users=%d" % g().objects.count())' 2>/dev/null | grep -o 'unit7-users=[0-9]*'
 echo unit7-http=200`,
+  // WordPress: its own install through wp-cli, the password on wp-cli's stdin (--prompt, from wp-cli's own docs), once its
+  // files and database are up; "already installed" is no error there, so its only login has to be the one Unit7 asked for
+  wordpress: `i=0; until u=$(docker exec "$c" stat -c '%u:%g' /var/www/html/wp-includes/version.php 2>/dev/null); do i=$((i+1)); [ $i -ge 30 ] && { echo "it didn't start" >&2; exit 7; }; sleep 2; done
+${WP_CLI}
+wp core is-installed >/dev/null 2>&1 && { echo unit7-taken; exit 0; }
+i=0; until printf '%s\\n' "$pw" | wp core install --url="$4" --title='My site' --admin_user=siteadmin --admin_email="$who" --skip-email --prompt=admin_password >/dev/null 2>&1; do i=$((i+1)); [ $i -ge 40 ] && { echo "it couldn't make the admin" >&2; exit 7; }; sleep 3; done
+[ "$(wp user list --field=user_login 2>/dev/null)" = siteadmin ] && echo unit7-users=1 || echo unit7-taken
+echo unit7-http=200`,
 };
-export const claimScript = (kind: NonNullable<Claim['api']>, container: string, port: number, who: string) => {
+export const claimScript = (kind: NonNullable<Claim['api']>, container: string, port: number, who: string, url = '') => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(container)) throw new Unit7Error('invalid_input', 'That isn’t a container name Unit7 will use.', 400);
   if (!/^[^\s"'\\@]+@[^\s"'\\@]+\.[A-Za-z]{2,}$/.test(who)) throw new Unit7Error('invalid_input', 'That isn’t an email address Unit7 will use.', 400);
-  return script(`${CLAIM.head}\n${CLAIM[kind]}`, container, port, who);
+  if (kind === 'wordpress' && !/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(url)) throw new Unit7Error('invalid_input', 'That isn’t an address Unit7 will use.', 400);
+  return script(`${CLAIM.head}\n${CLAIM[kind]}`, container, port, who, ...(url ? [url] : []));
 };
 // what the claim said: the password, or why it can't be trusted (someone else got there first)
 export function claimResult(out: string): { pw?: string; taken?: boolean; why?: string } {
@@ -206,16 +238,16 @@ export function claimResult(out: string): { pw?: string; taken?: boolean; why?: 
   if (!pw || !code || !/^2/.test(code)) return { why: code ? `it answered ${code}` : 'it didn’t answer' };
   return { pw };
 }
-async function claimFirst(ctx: Ctx, s: ServerRow, a: Addon, container: string, port: number): Promise<{ pw: string; user: string }> {
+async function claimFirst(ctx: Ctx, s: ServerRow, a: Addon, container: string, port: number, url?: string): Promise<{ pw: string; user: string }> {
   const email = get<{ email: string }>(ctx.db, 'SELECT email FROM users WHERE id = ?', ctx.actor.userId ?? '')?.email ?? 'admin@unit7.local';
   const asRoot = json<{ sudo?: string }>(s.facts, {}).sudo === 'yes' ? 'sudo -n ' : '';
-  const r = await ssh(ctx.app).exec(s, asRoot + claimScript(a.claim!.api!, container, port, email), { timeoutMs: 5 * 60_000, signal: ctx.signal });
+  const r = await ssh(ctx.app).exec(s, asRoot + claimScript(a.claim!.api!, container, port, email, url), { timeoutMs: 5 * 60_000, signal: ctx.signal });
   const made = sections(r.stdout).secret?.trim();
   if (made) ctx.redactor.add(made, `${a.name}’s admin password`);
   const got = claimResult(r.stdout);
   if (got.taken) throw new Unit7Error('claimed_by_someone', `Someone else reached ${a.name}’s first sign-in before Unit7 could set it, so Unit7 stopped it. Take it off with its data and add it again.`, 409, { stop: true });
   if (!got.pw) throw new Unit7Error('claim_failed', `Unit7 couldn’t set ${a.name}’s admin login (${got.why ?? ctx.redactor.redact(r.stderr).slice(-200)}), so it stopped it rather than leave its first sign-in open. Take it off and add it again.`, 502, { stop: true });
-  return { pw: got.pw, user: a.claim!.api === 'umami' ? 'admin' : email };
+  return { pw: got.pw, user: a.claim!.user ?? email };
 }
 
 // --- the extra password: Coolify's proxy (Traefik) asks for it on every address of the tool until the person has set
@@ -305,11 +337,12 @@ async function pointHere(ctx: Ctx, s: ServerRow, hostname: string, uuid: string,
     id('dom'), ctx.orgId, hostname, w.accountId ?? null, w.zone ?? null, w.written ? 'pending' : 'waiting_dns', JSON.stringify({ kind: 'addon', serverId: s.id, uuid }), JSON.stringify(records));
   return w.written ? { written: true, at: w.provider } : { written: false, addThese: [{ type: 'A', name: hostname, value: ip }], at: w.host ?? 'your DNS provider', why: w.why };
 }
-// a subdomain nothing else uses: an add-on never takes over a site's address
-function checkHost(ctx: Ctx, hostname: string, mine?: string) {
+// a subdomain nothing else uses: an add-on never takes over a site's address, Unit7's own or one the X-ray found on this server
+function checkHost(ctx: Ctx, serverId: string, hostname: string, mine?: string) {
   if (hostname.split('.').length <= rootOf(hostname).split('.').length) throw new Unit7Error('needs_subdomain', `Use a subdomain like analytics.${hostname}, so ${hostname} keeps pointing where it does.`, 400);
   const d = get<{ org_id: string; service_id: string | null; target: string | null }>(ctx.db, 'SELECT org_id, service_id, target FROM domains WHERE hostname = ?', hostname);
   if (d && !(mine && d.org_id === ctx.orgId && !d.service_id && json<{ uuid?: string }>(d.target, {}).uuid === mine)) throw new Unit7Error('domain_taken', `${hostname} already goes somewhere. Pick another name.`, 409);
+  if (lastXray(ctx.db, ctx.orgId, serverId)?.data.parts?.some((p) => p.hosts?.includes(hostname) && p.coolify?.uuid !== mine)) throw new Unit7Error('domain_taken', `${hostname} is already live on this server. Pick another name.`, 409);
 }
 
 function catalogOf(ctx: Pick<Ctx, 'db' | 'orgId'>, s: ServerRow) {
@@ -332,7 +365,7 @@ function catalogOf(ctx: Pick<Ctx, 'db' | 'orgId'>, s: ServerRow) {
 
 defineTool({
   name: 'addon.catalog', title: 'Tools to add to a server', risk: 'read', action: 'read',
-  description: 'The tools Unit7 can add to a server in one click (Umami analytics, Uptime Kuma, n8n, Listmonk, CloudBeaver, SeaweedFS storage, Meilisearch, GlitchTip, Statusnook, Databasus, Unleash; Plausible is listed but off in Coolify right now), each with the memory it needs against the server’s free room, how it would be added (Coolify’s one-click, or Unit7’s own deploy), whether it’s already there, and a suggested subdomain. Without serverId: the server with Coolify connected, else the first one.',
+  description: 'The tools Unit7 can add to a server in one click (Umami analytics, Uptime Kuma, n8n, Listmonk, CloudBeaver, SeaweedFS storage, Meilisearch, GlitchTip, Statusnook, Databasus, WordPress, Unleash; Plausible is listed but off in Coolify right now), each with the memory it needs against the server’s free room, how it would be added (Coolify’s one-click, or Unit7’s own deploy), whether it’s already there, and a suggested subdomain. Without serverId: the server with Coolify connected, else the first one.',
   input: z.object({ serverId: fid('srv').optional() }),
   run(ctx, i) {
     const servers = all<{ id: string; name: string }>(ctx.db, `SELECT id, name FROM servers WHERE org_id = ? ORDER BY created_at`, ctx.orgId).map((s) => ({ ...s, coolify: !!coolifyAccount(ctx, s.id) }));
@@ -342,7 +375,167 @@ defineTool({
   },
 });
 
-const HOST = z.string().trim().toLowerCase().regex(/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/, 'a subdomain like analytics.example.com');
+// One tool onto one server, as one action. wordpress.install, .staging and .import are this too, under their own id.
+export async function installAddon(ctx: Ctx, a: Addon, i: { serverId: string; domain?: string; takeover?: string }) {
+  const s = serverRow(ctx, i.serverId), key = `${s.id}:${a.id}`;
+  if (a.off) throw new Unit7Error('not_available', `${a.off}${a.instead ? ` ${byId(a.instead).name} does the same job.` : ''}`, 409);
+  const had = madeGet<AddonMade>(ctx, 'addon', key);
+  if (had?.url) return { installed: true, already: true, addon: a.id, name: a.name, url: had.url, note: `${a.name} is already on ${s.name}.` };
+  if (i.domain) { checkHost(ctx, s.id, i.domain, had?.uuid); await mayTakeOver(i.domain, ipOf(s), i.takeover); }
+  const c = coolifyAccount(ctx, s.id) && a.template ? coolifyFor(ctx, s) : undefined;
+  if (!c && !a.unit7) throw new Unit7Error('needs_coolify', `${a.name} has several parts, so Unit7 adds it through Coolify. Connect Coolify on ${s.name} first, or pick a server that has it.`, 409);
+  const cl = a.claim ?? {};
+  if (c && cl.gate && proxyFor(s).kind !== 'coolify') throw new Unit7Error('no_gate', `${a.name} makes its admin from its first visitor, and ${s.name}’s web proxy isn’t one Unit7 can put a password in front of, so Unit7 won’t add it here.`, 409);
+  const presets = c && (cl.env || cl.extra);
+  const titles = c ? ['Set up the Tools project', `Add ${a.name}`, ...(presets ? ['Set its admin login before it starts'] : []), ...(cl.gate ? ['Put an extra password in front of it'] : []), 'Start it and check it’s healthy',
+    ...(cl.api || cl.socket ? ['Set its admin login'] : []), ...(i.domain ? [`Point ${i.domain} here`] : []), ...(a.creds?.length ? ['Keep its keys in the vault'] : []), ...(a.id === 'uptime-kuma' ? ['Watch your sites'] : [])]
+    : ['Set up the Tools project', `Add ${a.name}`, ...(a.unit7!.db ? ['Give it a database'] : []), 'Deploy it and check it’s healthy', ...(cl.api ? ['Set its admin login'] : []), ...(i.domain ? [`Point ${i.domain} at it`] : [])];
+  let n = 0;
+  const say = () => ctx.progress(`Step ${++n} of ${titles.length}: ${titles[n - 1]}`);
+  const rec: AddonMade = { via: c ? 'coolify' : 'unit7', creds: [], ...(i.domain && { domain: i.domain }) };
+  let url: string | undefined, healthy = false, status: string | undefined, dns: Record<string, unknown> | undefined, signedIn = false, socketWhy: string | undefined;
+  if (c) {
+    say();
+    const p = await inside(ctx, 'coolify.create_project', { serverId: s.id, name: 'Tools', description: 'Tools added from Unit7', environment: 'production' });
+    say();
+    // made but not started: its admin login (or the extra password) is in place before it ever answers anyone
+    const made = await c.api.call('POST', '/services', { project_uuid: p.project, environment_name: 'production', server_uuid: await coolifyServerUuid(c.api, s.host), name: a.id, instant_deploy: false,
+      ...(a.compose ? { docker_compose_raw: b64(a.compose) } : { type: a.template }), ...(i.domain && { urls: [{ name: a.part, url: `https://${i.domain}` }] }) });
+    const uuid = typeof made?.uuid === 'string' && /^[a-z0-9]{3,64}$/i.test(made.uuid) ? made.uuid as string : undefined;
+    if (!uuid) throw new Unit7Error('coolify_error', `Coolify made ${a.name} but didn’t say which one it is.`, 502);
+    Object.assign(rec, { uuid, project: p.project });
+    madeSet(ctx, 'addon', key, rec); // written down now, so it can be taken off even if a later step fails
+    const detail = await c.api.call('GET', `/services/${encodeURIComponent(uuid)}`).catch(() => undefined);
+    const fqdns = String(list(detail?.applications).find((x) => x?.name === a.part)?.fqdn ?? '').split(',').map((x) => x.trim()).filter((x) => /^https?:\/\//.test(x));
+    const given = hostsOf(Array.isArray(made.domains) ? made.domains.join(',') : made.domains);
+    url = i.domain ? `https://${i.domain}` : fqdns[0]?.replace(/\/$/, '') ?? (given[0] && `http://${given[0]}`);
+    if (presets) {
+      say();
+      const env: Record<string, string> = { ...cl.extra };
+      const pw = cl.env ? adminPassword() : undefined;
+      if (pw) { Object.assign(env, cl.env!(pw)); keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (user ${cl.user})`, pw, cl.user); }
+      await setEnvs(c.api, 'service', uuid, Object.entries(env).map(([k, value]) => ({ key: k, value })));
+      madeSet(ctx, 'addon', key, rec);
+    }
+    if (cl.gate) { say(); await putGate(ctx, s, rec, a, uuid, [...fqdns, ...(i.domain ? [`https://${i.domain}`] : []), ...(fqdns.length ? [] : given.map((h) => `http://${h}`))]); madeSet(ctx, 'addon', key, rec); }
+    say();
+    await c.api.call('POST', `/services/${encodeURIComponent(uuid)}/start`);
+    status = await waitStatus(c.api, 'service', uuid, /^running/, (m) => ctx.progress(m), ctx.signal);
+    healthy = /^running/.test(status) && !/unhealthy|exited/.test(status);
+    if (cl.api) {
+      say();
+      // its own setup, from inside the server, before its domain points here; if someone else got there first, it's stopped
+      const got = await claimFirst(ctx, s, a, `${a.part}-${uuid}`, cl.port ?? 8000, url).catch(async (e) => {
+        if ((e as Unit7Error).detail && ((e as Unit7Error).detail as { stop?: boolean }).stop) await c.api.call('POST', `/services/${encodeURIComponent(uuid)}/stop`).catch(() => undefined);
+        throw e;
+      });
+      keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (${got.user})`, got.pw, got.user);
+      if (cl.gate) await dropGate(ctx, s, rec).catch(() => undefined); // if it can't go now, “I’ve finished setup” takes it away
+      madeSet(ctx, 'addon', key, rec);
+    }
+    if (cl.socket) {
+      say();
+      // its first-run setup from inside its container, the extra password still in front; kept first, so a login that
+      // was made is never lost (it goes again if the tool clearly said no)
+      const pw = adminPassword();
+      keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (user ${cl.user})`, pw, cl.user);
+      madeSet(ctx, 'addon', key, rec);
+      // the trip itself failing (the connection dropped) says nothing about the setup: the password is kept, and so is the extra password
+      let lost: string | undefined;
+      const r = healthy ? await runKuma(ctx, s, `${a.part}-${uuid}`, { username: cl.user!, password: pw, sites: [], setup: true }).catch((e: Error) => { lost = e.message; return undefined; }) : undefined;
+      if (r?.ok) { signedIn = true; await dropGate(ctx, s, rec).catch(() => undefined); } // if it can't go now, “I’ve finished setup” takes it away
+      else if (lost) socketWhy = `Unit7 lost the connection while setting up ${a.name} (${lost}). Its admin password is in your vault in case it was made.`;
+      else {
+        socketWhy = r ? kumaWhy(r, a.name) : `${a.name} wasn’t running yet.`;
+        // it never ran, couldn't connect, or said no to the setup: no admin was made with this password
+        if (!r || !r.version || ['setup', 'taken', 'unreachable', 'no_client'].includes(r.why ?? '')) {
+          try { ctx.app.vault.retire(ctx.orgId, credRef(s.id, a.id, 'UNIT7_ADMIN_PASSWORD')); } catch { /* not there */ }
+          rec.creds = rec.creds.filter((x) => x.ref !== credRef(s.id, a.id, 'UNIT7_ADMIN_PASSWORD'));
+        }
+      }
+      madeSet(ctx, 'addon', key, rec);
+    }
+    if (i.domain) { say(); dns = await pointHere(ctx, s, i.domain, uuid, i.takeover); }
+    if (a.creds?.length) {
+      say();
+      const envs = list(await c.api.call('GET', `/services/${encodeURIComponent(uuid)}/envs`).catch(() => []));
+      for (const cr of a.creds) {
+        const v = envs.find((e) => e?.key === cr.key && !e.is_preview);
+        const value = v?.real_value ?? v?.value;
+        if (typeof value !== 'string' || !value.trim() || /^\*+$|redacted|hidden/i.test(value)) continue;
+        const ref = credRef(s.id, a.id, cr.key);
+        ctx.redactor.add(value, cr.label);
+        ctx.app.vault.put(ctx.orgId, ref, value, { kind: 'addon_credential', by: ctx.actor.name, meta: { addon: a.id, label: cr.label } });
+        rec.creds.push({ label: cr.label, ref });
+      }
+    }
+  } else {
+    const u = a.unit7!;
+    say();
+    const tools = get<{ id: string }>(ctx.db, `SELECT id FROM projects WHERE org_id = ? AND slug = 'tools'`, ctx.orgId)?.id
+      ?? (await inside(ctx, 'project.create', { name: 'Tools', description: 'Tools added from Unit7', environments: ['production'] })).projectId;
+    const envId = get<{ id: string }>(ctx.db, `SELECT id FROM environments WHERE project_id = ? AND kind = 'production'`, tools)!.id;
+    say();
+    const svcId = get<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE environment_id = ? AND name = ?', envId, a.id)?.id
+      ?? (await inside(ctx, 'service.create', { environmentId: envId, name: a.id, serverId: s.id, source: { type: 'image', image: u.image }, port: u.port })).serviceId;
+    Object.assign(rec, { serviceId: svcId });
+    madeSet(ctx, 'addon', key, rec);
+    if (u.db) {
+      say();
+      rec.dbId = get<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE environment_id = ? AND name = ?', envId, `${a.id}-db`)?.id
+        ?? (await inside(ctx, 'database.create', { environmentId: envId, engine: u.db, name: `${a.id}-db`, serverId: s.id, injectInto: svcId })).serviceId;
+      madeSet(ctx, 'addon', key, rec);
+    }
+    for (const [k, v] of Object.entries(u.env ?? {})) await inside(ctx, 'env.set', { serviceId: svcId, key: k, value: v });
+    for (const sec of u.secrets ?? []) {
+      const ref = credRef(s.id, a.id, sec.cred);
+      const label = a.creds?.find((x) => x.key === sec.cred)?.label;
+      if (!ctx.app.vault.has(ctx.orgId, ref)) ctx.app.vault.put(ctx.orgId, ref, randomBytes(24).toString('base64url'), { kind: 'addon_credential', by: ctx.actor.name, meta: { addon: a.id, ...(label && { label, people: true }) } });
+      // the install wiring the key it just made into its own app (not an app's key placed somewhere else)
+      setVar(ctx, { type: 'service', id: svcId, label: a.id }, sec.key, ref, true, { own: true });
+      if (label) rec.creds.push({ label, ref });
+    }
+    say();
+    const d = await inside(ctx, 'deployment.create', { serviceId: svcId });
+    healthy = d.status === 'live'; status = d.status; url = d.url;
+    if (cl.api) {
+      say();
+      const container = get<{ container: string | null }>(ctx.db, 'SELECT d.container FROM services s JOIN deployments d ON d.id = s.current_deployment_id WHERE s.id = ?', svcId)?.container;
+      const got = await (container ? claimFirst(ctx, s, a, container, cl.port ?? u.port) : Promise.reject(new Unit7Error('claim_failed', `${a.name} didn’t start, so Unit7 couldn’t set its admin login.`, 502, { stop: true })))
+        .catch(async (e) => { if (((e as Unit7Error).detail as { stop?: boolean } | undefined)?.stop) await inside(ctx, 'service.stop', { serviceId: svcId }).catch(() => undefined); throw e; });
+      keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (${got.user})`, got.pw, got.user);
+      madeSet(ctx, 'addon', key, rec);
+    }
+    if (i.domain) { say(); await mayTakeOver(i.domain, ipOf(s), i.takeover); dns = await inside(ctx, 'domain.point', { hostname: i.domain, serviceId: svcId }); url = `https://${i.domain}`; }
+  }
+  Object.assign(rec, { url, healthy });
+  madeSet(ctx, 'addon', key, rec);
+  const refs = Object.fromEntries(rec.creds.map((x, k) => [a.creds?.find((y) => y.label === x.label)?.key ?? String(k), x.ref]));
+  const wire = a.wire && url ? {
+    note: a.wire.note, ...(a.wire.snippet && { snippet: a.wire.snippet.replace('{url}', url) }),
+    env: (a.wire.env ?? []).map((e) => ({ key: e.key, value: e.from === 'url' ? url : e.from.startsWith('url:') ? `${url}${e.from.slice(4)}` : refs[e.from.slice(5)] })).filter((e): e is { key: string; value: string } => !!e.value),
+  } : undefined;
+  // Uptime Kuma: Unit7 adds a monitor for each site it knows (uptime.sync, with the login it just made); without that
+  // login, the sites are listed for the person to add
+  let monitors: Record<string, unknown> | undefined;
+  if (a.id === 'uptime-kuma') {
+    if (signedIn) { say(); monitors = await syncKuma(ctx, s.id).catch((e: Error) => ({ synced: false, note: `${e.message} Add each site as an HTTP(s) monitor in Uptime Kuma meanwhile.` })); }
+    const sites = knownSites(ctx, s.id, i.domain ? [i.domain] : []).map((x) => x.url);
+    if (!monitors?.synced) monitors = { ...monitors, sites: (monitors?.sites as string[] | undefined) ?? sites, note: [socketWhy, (monitors?.note as string | undefined) ?? 'Add each as an HTTP(s) monitor in Uptime Kuma.'].filter(Boolean).join(' ') };
+    if (!(monitors.sites as string[]).length && !monitors.synced) monitors = undefined;
+  }
+  ctx.emit('addon.installed', `Added ${a.name} to ${s.name}${url ? ` at ${url.replace(/^https?:\/\//, '')}` : ''}`, { severity: healthy ? 'success' : 'warning', resource: s.id, data: { addon: a.id } });
+  return {
+    installed: true, addon: a.id, name: a.name, server: s.name, via: rec.via, url, healthy, status, ...(dns && { dns }), ...(rec.gate && { gated: true }),
+    credentials: [...rec.creds.map((x) => ({ label: x.label, saved: true })), ...(a.creds ?? []).filter((cr) => !rec.creds.some((x) => x.label === cr.label)).map((cr) => ({ label: cr.label, saved: false }))],
+    ...(a.creds?.length && rec.creds.length < a.creds.length && rec.via === 'coolify' && { credentialsNote: 'Coolify didn’t share some of its keys (that needs a token with read:sensitive): they’re in Coolify, in the service’s settings.' }),
+    ...(a.firstVisit && { firstVisit: signedIn ? SIGNED : a.firstVisit }), ...(wire && !signedIn && { wire }), ...(monitors && { monitors }),
+    ...(!healthy && { next: `${a.name} is still starting (${status}). Give it a minute, then open it.` }),
+    undo: `addon.remove takes ${a.name} off ${s.name}; its data is kept unless a person chooses otherwise.`,
+  };
+}
+
+export const HOST = z.string().trim().toLowerCase().regex(/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/, 'a subdomain like analytics.example.com');
 defineTool({
   name: 'addon.install', title: 'Add a tool to a server', risk: 'write', action: 'service_write', timeoutMs: 30 * 60_000,
   description: 'Add one of addon.catalog’s tools to a server, as one action: through Coolify’s one-click service where Coolify is connected (else Unit7 deploys it, for the ones that are one container and a database), on the domain given (a subdomain like analytics.example.com: its DNS record is written where the domain lives) or a free test address, then waits until it’s healthy. Its admin login is never left for the first visitor: Unit7 sets it before it starts (or through the tool’s own setup right after, before its domain points here), or it stays behind an extra password until the person finishes setup (addon.unlock); a name that already points somewhere else is never taken over unless a person types it as takeover. Keeps the admin keys in the vault (a person sees them with addon.credentials), and returns the wiring: a tracking snippet, settings for an app (addresses and vault references, never values), and for Uptime Kuma the sites to watch.',
@@ -353,169 +546,23 @@ defineTool({
     const a = byId(i.addon), s = get<{ name: string }>(ctx.db, 'SELECT name FROM servers WHERE id = ? AND org_id = ?', i.serverId, ctx.orgId);
     return { tier: 2, impact: `Adds ${a.name} to ${s?.name ?? 'the server'} (about ${a.memoryMb} MB)${i.domain ? ` at ${i.domain}, writing its DNS record` : ' on a free test address'}; its keys go to the vault.` };
   },
-  async run(ctx, i) {
-    const a = byId(i.addon), s = serverRow(ctx, i.serverId), key = `${s.id}:${a.id}`;
-    if (a.off) throw new Unit7Error('not_available', `${a.off}${a.instead ? ` ${byId(a.instead).name} does the same job.` : ''}`, 409);
-    const had = madeGet<AddonMade>(ctx, 'addon', key);
-    if (had?.url) return { installed: true, already: true, addon: a.id, name: a.name, url: had.url, note: `${a.name} is already on ${s.name}.` };
-    if (i.domain) { checkHost(ctx, i.domain, had?.uuid); await mayTakeOver(i.domain, ipOf(s), i.takeover); }
-    const c = coolifyAccount(ctx, s.id) && a.template ? coolifyFor(ctx, s) : undefined;
-    if (!c && !a.unit7) throw new Unit7Error('needs_coolify', `${a.name} has several parts, so Unit7 adds it through Coolify. Connect Coolify on ${s.name} first, or pick a server that has it.`, 409);
-    const cl = a.claim ?? {};
-    if (c && cl.gate && proxyFor(s).kind !== 'coolify') throw new Unit7Error('no_gate', `${a.name} makes its admin from its first visitor, and ${s.name}’s web proxy isn’t one Unit7 can put a password in front of, so Unit7 won’t add it here.`, 409);
-    const presets = c && (cl.env || cl.extra);
-    const titles = c ? ['Set up the Tools project', `Add ${a.name}`, ...(presets ? ['Set its admin login before it starts'] : []), ...(cl.gate ? ['Put an extra password in front of it'] : []), 'Start it and check it’s healthy',
-      ...(cl.api || cl.socket ? ['Set its admin login'] : []), ...(i.domain ? [`Point ${i.domain} here`] : []), ...(a.creds?.length ? ['Keep its keys in the vault'] : []), ...(a.id === 'uptime-kuma' ? ['Watch your sites'] : [])]
-      : ['Set up the Tools project', `Add ${a.name}`, ...(a.unit7!.db ? ['Give it a database'] : []), 'Deploy it and check it’s healthy', ...(cl.api ? ['Set its admin login'] : []), ...(i.domain ? [`Point ${i.domain} at it`] : [])];
-    let n = 0;
-    const say = () => ctx.progress(`Step ${++n} of ${titles.length}: ${titles[n - 1]}`);
-    const rec: AddonMade = { via: c ? 'coolify' : 'unit7', creds: [], ...(i.domain && { domain: i.domain }) };
-    let url: string | undefined, healthy = false, status: string | undefined, dns: Record<string, unknown> | undefined, signedIn = false, socketWhy: string | undefined;
-    if (c) {
-      say();
-      const p = await inside(ctx, 'coolify.create_project', { serverId: s.id, name: 'Tools', description: 'Tools added from Unit7', environment: 'production' });
-      say();
-      // made but not started: its admin login (or the extra password) is in place before it ever answers anyone
-      const made = await c.api.call('POST', '/services', { project_uuid: p.project, environment_name: 'production', server_uuid: await coolifyServerUuid(c.api, s.host), name: a.id, instant_deploy: false,
-        ...(a.compose ? { docker_compose_raw: b64(a.compose) } : { type: a.template }), ...(i.domain && { urls: [{ name: a.part, url: `https://${i.domain}` }] }) });
-      const uuid = typeof made?.uuid === 'string' && /^[a-z0-9]{3,64}$/i.test(made.uuid) ? made.uuid as string : undefined;
-      if (!uuid) throw new Unit7Error('coolify_error', `Coolify made ${a.name} but didn’t say which one it is.`, 502);
-      Object.assign(rec, { uuid, project: p.project });
-      madeSet(ctx, 'addon', key, rec); // written down now, so it can be taken off even if a later step fails
-      const detail = await c.api.call('GET', `/services/${encodeURIComponent(uuid)}`).catch(() => undefined);
-      const fqdns = String(list(detail?.applications).find((x) => x?.name === a.part)?.fqdn ?? '').split(',').map((x) => x.trim()).filter((x) => /^https?:\/\//.test(x));
-      const given = hostsOf(Array.isArray(made.domains) ? made.domains.join(',') : made.domains);
-      url = i.domain ? `https://${i.domain}` : fqdns[0]?.replace(/\/$/, '') ?? (given[0] && `http://${given[0]}`);
-      if (presets) {
-        say();
-        const env: Record<string, string> = { ...cl.extra };
-        const pw = cl.env ? adminPassword() : undefined;
-        if (pw) { Object.assign(env, cl.env!(pw)); keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (user ${cl.user})`, pw, cl.user); }
-        await setEnvs(c.api, 'service', uuid, Object.entries(env).map(([k, value]) => ({ key: k, value })));
-        madeSet(ctx, 'addon', key, rec);
-      }
-      if (cl.gate) { say(); await putGate(ctx, s, rec, a, uuid, [...fqdns, ...(i.domain ? [`https://${i.domain}`] : []), ...(fqdns.length ? [] : given.map((h) => `http://${h}`))]); madeSet(ctx, 'addon', key, rec); }
-      say();
-      await c.api.call('POST', `/services/${encodeURIComponent(uuid)}/start`);
-      status = await waitStatus(c.api, 'service', uuid, /^running/, (m) => ctx.progress(m), ctx.signal);
-      healthy = /^running/.test(status) && !/unhealthy|exited/.test(status);
-      if (cl.api) {
-        say();
-        // its own setup, from inside the server, before its domain points here; if someone else got there first, it's stopped
-        const got = await claimFirst(ctx, s, a, `${a.part}-${uuid}`, cl.port ?? 8000).catch(async (e) => {
-          if ((e as Unit7Error).detail && ((e as Unit7Error).detail as { stop?: boolean }).stop) await c.api.call('POST', `/services/${encodeURIComponent(uuid)}/stop`).catch(() => undefined);
-          throw e;
-        });
-        keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (${got.user})`, got.pw, got.user);
-        madeSet(ctx, 'addon', key, rec);
-      }
-      if (cl.socket) {
-        say();
-        // its first-run setup from inside its container, the extra password still in front; kept first, so a login that
-        // was made is never lost (it goes again if the tool clearly said no)
-        const pw = adminPassword();
-        keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (user ${cl.user})`, pw, cl.user);
-        madeSet(ctx, 'addon', key, rec);
-        // the trip itself failing (the connection dropped) says nothing about the setup: the password is kept, and so is the extra password
-        let lost: string | undefined;
-        const r = healthy ? await runKuma(ctx, s, `${a.part}-${uuid}`, { username: cl.user!, password: pw, sites: [], setup: true }).catch((e: Error) => { lost = e.message; return undefined; }) : undefined;
-        if (r?.ok) { signedIn = true; await dropGate(ctx, s, rec).catch(() => undefined); } // if it can't go now, “I’ve finished setup” takes it away
-        else if (lost) socketWhy = `Unit7 lost the connection while setting up ${a.name} (${lost}). Its admin password is in your vault in case it was made.`;
-        else {
-          socketWhy = r ? kumaWhy(r, a.name) : `${a.name} wasn’t running yet.`;
-          // it never ran, couldn't connect, or said no to the setup: no admin was made with this password
-          if (!r || !r.version || ['setup', 'taken', 'unreachable', 'no_client'].includes(r.why ?? '')) {
-            try { ctx.app.vault.retire(ctx.orgId, credRef(s.id, a.id, 'UNIT7_ADMIN_PASSWORD')); } catch { /* not there */ }
-            rec.creds = rec.creds.filter((x) => x.ref !== credRef(s.id, a.id, 'UNIT7_ADMIN_PASSWORD'));
-          }
-        }
-        madeSet(ctx, 'addon', key, rec);
-      }
-      if (i.domain) { say(); dns = await pointHere(ctx, s, i.domain, uuid, i.takeover); }
-      if (a.creds?.length) {
-        say();
-        const envs = list(await c.api.call('GET', `/services/${encodeURIComponent(uuid)}/envs`).catch(() => []));
-        for (const cr of a.creds) {
-          const v = envs.find((e) => e?.key === cr.key && !e.is_preview);
-          const value = v?.real_value ?? v?.value;
-          if (typeof value !== 'string' || !value.trim() || /^\*+$|redacted|hidden/i.test(value)) continue;
-          const ref = credRef(s.id, a.id, cr.key);
-          ctx.redactor.add(value, cr.label);
-          ctx.app.vault.put(ctx.orgId, ref, value, { kind: 'addon_credential', by: ctx.actor.name, meta: { addon: a.id, label: cr.label } });
-          rec.creds.push({ label: cr.label, ref });
-        }
-      }
-    } else {
-      const u = a.unit7!;
-      say();
-      const tools = get<{ id: string }>(ctx.db, `SELECT id FROM projects WHERE org_id = ? AND slug = 'tools'`, ctx.orgId)?.id
-        ?? (await inside(ctx, 'project.create', { name: 'Tools', description: 'Tools added from Unit7', environments: ['production'] })).projectId;
-      const envId = get<{ id: string }>(ctx.db, `SELECT id FROM environments WHERE project_id = ? AND kind = 'production'`, tools)!.id;
-      say();
-      const svcId = get<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE environment_id = ? AND name = ?', envId, a.id)?.id
-        ?? (await inside(ctx, 'service.create', { environmentId: envId, name: a.id, serverId: s.id, source: { type: 'image', image: u.image }, port: u.port })).serviceId;
-      Object.assign(rec, { serviceId: svcId });
-      madeSet(ctx, 'addon', key, rec);
-      if (u.db) {
-        say();
-        rec.dbId = get<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE environment_id = ? AND name = ?', envId, `${a.id}-db`)?.id
-          ?? (await inside(ctx, 'database.create', { environmentId: envId, engine: u.db, name: `${a.id}-db`, serverId: s.id, injectInto: svcId })).serviceId;
-        madeSet(ctx, 'addon', key, rec);
-      }
-      for (const [k, v] of Object.entries(u.env ?? {})) await inside(ctx, 'env.set', { serviceId: svcId, key: k, value: v });
-      for (const sec of u.secrets ?? []) {
-        const ref = credRef(s.id, a.id, sec.cred);
-        const label = a.creds?.find((x) => x.key === sec.cred)?.label;
-        if (!ctx.app.vault.has(ctx.orgId, ref)) ctx.app.vault.put(ctx.orgId, ref, randomBytes(24).toString('base64url'), { kind: 'addon_credential', by: ctx.actor.name, meta: { addon: a.id, ...(label && { label, people: true }) } });
-        // the install wiring the key it just made into its own app (not an app's key placed somewhere else)
-        setVar(ctx, { type: 'service', id: svcId, label: a.id }, sec.key, ref, true, { own: true });
-        if (label) rec.creds.push({ label, ref });
-      }
-      say();
-      const d = await inside(ctx, 'deployment.create', { serviceId: svcId });
-      healthy = d.status === 'live'; status = d.status; url = d.url;
-      if (cl.api) {
-        say();
-        const container = get<{ container: string | null }>(ctx.db, 'SELECT d.container FROM services s JOIN deployments d ON d.id = s.current_deployment_id WHERE s.id = ?', svcId)?.container;
-        const got = await (container ? claimFirst(ctx, s, a, container, cl.port ?? u.port) : Promise.reject(new Unit7Error('claim_failed', `${a.name} didn’t start, so Unit7 couldn’t set its admin login.`, 502, { stop: true })))
-          .catch(async (e) => { if (((e as Unit7Error).detail as { stop?: boolean } | undefined)?.stop) await inside(ctx, 'service.stop', { serviceId: svcId }).catch(() => undefined); throw e; });
-        keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (${got.user})`, got.pw, got.user);
-        madeSet(ctx, 'addon', key, rec);
-      }
-      if (i.domain) { say(); await mayTakeOver(i.domain, ipOf(s), i.takeover); dns = await inside(ctx, 'domain.point', { hostname: i.domain, serviceId: svcId }); url = `https://${i.domain}`; }
-    }
-    Object.assign(rec, { url, healthy });
-    madeSet(ctx, 'addon', key, rec);
-    const refs = Object.fromEntries(rec.creds.map((x, k) => [a.creds?.find((y) => y.label === x.label)?.key ?? String(k), x.ref]));
-    const wire = a.wire && url ? {
-      note: a.wire.note, ...(a.wire.snippet && { snippet: a.wire.snippet.replace('{url}', url) }),
-      env: (a.wire.env ?? []).map((e) => ({ key: e.key, value: e.from === 'url' ? url : e.from.startsWith('url:') ? `${url}${e.from.slice(4)}` : refs[e.from.slice(5)] })).filter((e): e is { key: string; value: string } => !!e.value),
-    } : undefined;
-    // Uptime Kuma: Unit7 adds a monitor for each site it knows (uptime.sync, with the login it just made); without that
-    // login, the sites are listed for the person to add
-    let monitors: Record<string, unknown> | undefined;
-    if (a.id === 'uptime-kuma') {
-      if (signedIn) { say(); monitors = await syncKuma(ctx, s.id).catch((e: Error) => ({ synced: false, note: `${e.message} Add each site as an HTTP(s) monitor in Uptime Kuma meanwhile.` })); }
-      const sites = knownSites(ctx, s.id, i.domain ? [i.domain] : []).map((x) => x.url);
-      if (!monitors?.synced) monitors = { ...monitors, sites: (monitors?.sites as string[] | undefined) ?? sites, note: [socketWhy, (monitors?.note as string | undefined) ?? 'Add each as an HTTP(s) monitor in Uptime Kuma.'].filter(Boolean).join(' ') };
-      if (!(monitors.sites as string[]).length && !monitors.synced) monitors = undefined;
-    }
-    ctx.emit('addon.installed', `Added ${a.name} to ${s.name}${url ? ` at ${url.replace(/^https?:\/\//, '')}` : ''}`, { severity: healthy ? 'success' : 'warning', resource: s.id, data: { addon: a.id } });
-    return {
-      installed: true, addon: a.id, name: a.name, server: s.name, via: rec.via, url, healthy, status, ...(dns && { dns }), ...(rec.gate && { gated: true }),
-      credentials: [...rec.creds.map((x) => ({ label: x.label, saved: true })), ...(a.creds ?? []).filter((cr) => !rec.creds.some((x) => x.label === cr.label)).map((cr) => ({ label: cr.label, saved: false }))],
-      ...(a.creds?.length && rec.creds.length < a.creds.length && rec.via === 'coolify' && { credentialsNote: 'Coolify didn’t share some of its keys (that needs a token with read:sensitive): they’re in Coolify, in the service’s settings.' }),
-      ...(a.firstVisit && { firstVisit: signedIn ? SIGNED : a.firstVisit }), ...(wire && !signedIn && { wire }), ...(monitors && { monitors }),
-      ...(!healthy && { next: `${a.name} is still starting (${status}). Give it a minute, then open it.` }),
-      undo: `addon.remove takes ${a.name} off ${s.name}; its data is kept unless a person chooses otherwise.`,
-    };
-  },
+  run: (ctx, i) => installAddon(ctx, byId(i.addon), i),
 });
+
+// what an install made, for what comes after it (a WordPress copy going into the new site)
+export const addonMade = (ctx: Pick<Ctx, 'db' | 'orgId'>, serverId: string, a: Addon) => madeGet<AddonMade>(ctx, 'addon', `${serverId}:${a.id}`);
+// A copy brings its own people along, so the login made for the empty site is gone with its database: it leaves the vault too
+export function forgetLogin(ctx: Ctx, serverId: string, a: Addon) {
+  const key = `${serverId}:${a.id}`, rec = madeGet<AddonMade>(ctx, 'addon', key), ref = credRef(serverId, a.id, 'UNIT7_ADMIN_PASSWORD');
+  if (!rec) return;
+  try { ctx.app.vault.retire(ctx.orgId, ref); } catch { /* not there */ }
+  madeSet(ctx, 'addon', key, { ...rec, creds: rec.creds.filter((c) => c.ref !== ref) });
+}
 
 defineTool({
   name: 'addon.remove', title: 'Take a tool off a server', risk: 'destructive', action: (i) => (i.deleteData ? 'database_delete' : 'service_delete'), peopleOnly: true, timeoutMs: 5 * 60_000,
   description: 'Take an add-on off a server (addon.install made it). Its data is kept unless deleteData, which needs its name typed as confirmName. Its keys leave the vault (restorable for 30 days); the DNS record stays where it is. People only.',
-  input: z.object({ serverId: fid('srv'), addon: z.enum(IDS), deleteData: z.boolean().default(false), confirmName: z.string().max(80).optional() })
+  input: z.object({ serverId: fid('srv'), addon: ADDON_ID, deleteData: z.boolean().default(false), confirmName: z.string().max(80).optional() })
     .refine((i) => !i.deleteData || i.confirmName?.trim() === i.addon, 'To delete its data too, type its name as confirmName.'),
   async run(ctx, i) {
     requireHuman(ctx, 'take a tool off a server');
@@ -538,7 +585,7 @@ defineTool({
 defineTool({
   name: 'addon.unlock', title: 'Remove a tool’s extra password', risk: 'write', action: 'proxy_config', peopleOnly: true, timeoutMs: 60_000,
   description: 'People only: “I’ve finished setup”. Takes away the extra password Unit7 put in front of a tool that makes its admin from its first visitor (Uptime Kuma, Statusnook), once the person has made their own admin login there. Its address then answers anyone, and the tool’s own sign-in protects it.',
-  input: z.object({ serverId: fid('srv'), addon: z.enum(IDS) }),
+  input: z.object({ serverId: fid('srv'), addon: ADDON_ID }),
   async run(ctx, i) {
     requireHuman(ctx, 'take a tool’s extra password away');
     requireRole(ctx, ['owner', 'admin'], 'take a tool’s extra password away');
@@ -556,7 +603,7 @@ defineTool({
 defineTool({
   name: 'addon.credentials', title: 'Show a tool’s sign-in keys', risk: 'read', action: 'secret_reveal', peopleOnly: true,
   description: 'The admin keys an add-on generated (kept in the vault by addon.install), shown to the person who asks. People only, owners and admins, audited.',
-  input: z.object({ serverId: fid('srv'), addon: z.enum(IDS) }),
+  input: z.object({ serverId: fid('srv'), addon: ADDON_ID }),
   run(ctx, i) {
     requireHuman(ctx, 'see a tool’s keys');
     requireRole(ctx, ['owner', 'admin'], 'see a tool’s keys');

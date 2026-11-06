@@ -79,6 +79,11 @@ Object.assign(TOOL_WORDS, {
   'addon.catalog': 'See tools to add', 'addon.install': 'Add a tool to a server', 'addon.remove': 'Take a tool off a server', 'addon.credentials': 'Show a tool’s keys', 'addon.unlock': 'Remove a tool’s extra password',
   'domain.canonical': 'Choose the main address', 'uptime.sync': 'Watch my sites in Uptime Kuma',
 });
+// WordPress sites on a server (src/tools/wordpress.ts)
+Object.assign(TOOL_WORDS, {
+  'wordpress.status': 'Look at a WordPress site', 'wordpress.update': 'Update WordPress', 'wordpress.plugin': 'Change a WordPress plugin', 'wordpress.staging': 'Make a WordPress test copy',
+  'wordpress.import': 'Move a WordPress site in', 'wordpress.install': 'Add a WordPress site', 'wordpress.admin': 'Get into a WordPress site',
+});
 // what Unit7 does by itself on a server, inside rules a person set (tools/firstkey.ts, autofix.ts, reboot.ts)
 Object.assign(TOOL_WORDS, {
   'server.install_key_with_password': 'Add Unit7’s key with the root password', 'server.fingerprint': 'Read a server’s identity',
