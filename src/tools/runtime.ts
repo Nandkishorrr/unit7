@@ -18,8 +18,9 @@ import { importantTouched } from '../kept.ts';
 
 // checks a person added, in their own words (care/rules.ts registers them, so this file needs nothing of theirs)
 const lastChain = new Map<string, string>();
-let holdHook: ((app: App, orgId: string, a: { id: string; tool: string; actor: Actor; by: string }) => string | undefined) | undefined;
-export const setHoldHook = (f: typeof holdHook) => { holdHook = f; };
+// which deletes wait (ops/index.ts): an AI's goes through a person at any autonomy, then the wait starts
+let holds: { isHeld(tool: string, input: Record<string, unknown>, actor: Actor): boolean; hold(app: App, orgId: string, a: { id: string; tool: string; actor: Actor; by: string }): string } | undefined;
+export const setHolds = (h: typeof holds) => { holds = h; };
 export const gateRules: ((db: DB, orgId: string, input: Record<string, unknown>) => string | undefined)[] = [];
 
 export interface Actor {
@@ -397,7 +398,10 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
     // a fix someone asked for from a phone alert: the AI looks freely, then proposes one change, which waits for them
     const fix = !o.approvalId && isAgent && risk !== 'read' && plain.decision !== 'deny' ? proposing(db, orgId, o.conversationId, actor) : undefined;
     if (fix?.approval_id) { const why = 'One fix from the phone alert is already waiting for the person’s OK. Stop here and say in a line what it does.'; return { status: 'denied', why, auditId: audit('denied', { error: why }) }; }
-    const decided = o.askFirst && plain.decision === 'allow' ? { decision: 'approve' as const, why: typeof o.askFirst === 'string' ? o.askFirst : 'Seven asks before doing this.' } : fix && plain.decision === 'allow' ? { decision: 'approve' as const, why: 'You asked for this fix from your phone, so it waits for your OK.' } : plain;
+    // a step of something a person approved was asked already
+    const held = actor.kind !== 'user' && !o.approvalId && !o.underApproval && holds?.isHeld(name, input, actor);
+    const decided = held && plain.decision === 'allow' ? { decision: 'approve' as const, why: 'An AI’s delete waits for a person at any autonomy, then 48 hours more.' }
+      : o.askFirst && plain.decision === 'allow' ? { decision: 'approve' as const, why: typeof o.askFirst === 'string' ? o.askFirst : 'Seven asks before doing this.' } : fix && plain.decision === 'allow' ? { decision: 'approve' as const, why: 'You asked for this fix from your phone, so it waits for your OK.' } : plain;
     // an approval card shows the tier, what happens, and the literal command
     const d = assessed?.shows || assessed?.impact ? { ...decided, why: [decided.why, `${TIER_NAMES[assessed.tier]}.`, assessed.impact, assessed.shows && `Runs: ${assessed.shows}`].filter(Boolean).join(' ') } : decided;
     if (d.decision === 'deny') return { status: 'denied', why: d.why, auditId: audit('denied', { error: d.why }) };
@@ -610,6 +614,6 @@ export async function decideApproval(app: App, orgId: string, approver: Actor, a
   if (!approve) return { status: 'rejected' };
   const original = JSON.parse(a.actor) as Actor;
   // an AI's delete waits, even after a yes (ops/index.ts): a person can still stop it for 48 hours
-  if (original.kind !== 'user') { const held = await holdHook?.(app, orgId, { id: approvalId, tool: a.tool, actor: original, by: approver.name }); if (held) return { status: 'ok', output: { held: true, until: held, note: 'It waits 48 hours, and you can cancel it until then.' }, auditId: '', durationMs: 0 }; }
+  if (original.kind !== 'user' && holds?.isHeld(a.tool, openInput(app, orgId, approvalId, a.input), original)) return { status: 'ok', output: { held: true, until: holds.hold(app, orgId, { id: approvalId, tool: a.tool, actor: original, by: approver.name }), note: 'It waits 48 hours, and you can cancel it until then.' }, auditId: '', durationMs: 0 };
   return execute(app, orgId, { ...original, name: `${original.name} (approved by ${approver.name})` }, a.tool, openInput(app, orgId, approvalId, a.input), { approvalId });
 }

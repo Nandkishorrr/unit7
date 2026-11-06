@@ -14,6 +14,8 @@ import { coolifyTiming } from '../src/connectors/coolify.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { moveTiming } from '../src/tools/moves.ts';
 import { addHost } from '../src/live/hosts.ts';
+import { HELD_OPS, HELD_TOOLS, runHeld } from '../src/ops/index.ts';
+import { ROUTINE_AGENT, routineActor } from '../src/tools/routines.ts';
 import { fakeApi, account } from './clouds-fakes.ts';
 import { dropsDatabase, statement, tokenize } from '../src/tools/datamask.ts';
 import { buildInventory, type Part } from '../src/discovery/xray.ts';
@@ -365,4 +367,55 @@ test('5. coolify.build stops at such a step and says so; what it builds around i
   assert.equal(c.services.length, 0);
   assert.equal(code(await approve(app, o, { approvalId: built.failed.approvalId })), 'ok');
   assert.equal(c.services.length, 1);
+});
+
+const days = (n: number) => Date.now() + n * 86400_000;
+test('6. at Full autopilot an AI’s delete still goes through a person, then waits the 48 hours', async () => {
+  const { app, o } = await world();
+  run(app.db, 'UPDATE orgs SET autonomy = 4 WHERE id = ?', o.orgId);
+  const p = ok<any>(await o.h('project.create', { name: 'old', environments: ['staging'] }));
+  const r = await o.a('project.delete', { projectId: p.projectId, confirm: 'old' }) as any;
+  assert.equal(r.status, 'approval_required', JSON.stringify(r));
+  assert.match(r.why, /48 hours/);
+  assert.ok(get(app.db, 'SELECT 1 FROM projects WHERE id = ?', p.projectId), 'nothing went');
+  assert.equal(((await approve(app, o, r, 'old')) as any).output.held, true);
+  assert.ok(get(app.db, 'SELECT 1 FROM projects WHERE id = ?', p.projectId), 'still there after the yes');
+  assert.deepEqual(await runHeld(app, days(1)), [], 'not after a day');
+  assert.equal((await runHeld(app, days(3))).length, 1);
+  assert.equal(get(app.db, 'SELECT 1 FROM projects WHERE id = ?', p.projectId), undefined, 'gone after the wait');
+  // a staging environment defaults to autopilot too, and a key of any kind counts: it could be any program
+  const q = ok<any>(await o.h('project.create', { name: 'next', environments: ['staging'] })), env = q.environments.find((e: any) => e.kind === 'staging').id;
+  assert.equal((await o.a('environment.delete', { environmentId: env })).status, 'approval_required');
+  const key: Actor = { kind: 'token', id: 'tok_1', userId: o.userId, name: 'CLI', role: 'owner' };
+  assert.equal((await o.as(key)('environment.delete', { environmentId: env })).status, 'approval_required');
+  ok(await o.h('environment.delete', { environmentId: env }));
+});
+
+test('6. the delete of a tool that does many things waits too, and only its delete', async () => {
+  const { app, o } = await world(), c = coolifyOn(app, o.orgId);
+  run(app.db, 'UPDATE orgs SET autonomy = 4 WHERE id = ?', o.orgId);
+  const task = { serverId: SRV, uuid: 'app1x', kind: 'application', op: 'delete', task: 'task1x' };
+  const r = await o.a('coolify.task', task) as any;
+  assert.equal(r.status, 'approval_required', JSON.stringify(r));
+  assert.equal(((await approve(app, o, r)) as any).output.held, true);
+  assert.ok(!c.calls.some((x) => x.startsWith('DELETE')));
+  assert.equal(get<{ n: number }>(app.db, 'SELECT count(*) n FROM held_deletes')!.n, 1);
+  assert.notEqual((await o.a('coolify.task', { ...task, op: 'list' })).status, 'approval_required');
+});
+
+test('6. what waits: every delete with nothing to come back from; a trash doesn’t, and a routine is a person’s own step', async () => {
+  for (const t of ['dns.remove', 'domain.remove_record', 'domain.remove', 'part.copy_remove', 'dr.remove', 'job.remove']) assert.ok(HELD_TOOLS.has(t), t);
+  assert.equal(HELD_OPS['coolify.task'], 'delete');
+  for (const t of ['file.remove', 'part.remove', 'wordpress.plugin', 'coolify.storage']) assert.ok(!HELD_TOOLS.has(t) && !HELD_OPS[t], `${t} has a trash or an undo`);
+  const { app, o } = await world();
+  run(app.db, 'UPDATE orgs SET autonomy = 4 WHERE id = ?', o.orgId);
+  const p = ok<any>(await o.h('project.create', { name: 'old', environments: ['staging'] }));
+  const routine = routineActor({ name: 'tidy', owner_id: o.userId }, 'owner');
+  assert.equal(routine.agent, ROUTINE_AGENT);
+  ok(await o.as(routine)('project.delete', { projectId: p.projectId, confirm: 'old' }));
+  assert.equal(get(app.db, 'SELECT 1 FROM projects WHERE id = ?', p.projectId), undefined);
+  assert.equal(get(app.db, 'SELECT 1 FROM held_deletes'), undefined);
+  // a step of something a person already approved isn't asked for again
+  const q = ok<any>(await o.h('project.create', { name: 'step', environments: ['staging'] }));
+  ok(await o.a('project.delete', { projectId: q.projectId, confirm: 'step' }, { underApproval: 'apr_whole' }));
 });

@@ -4,7 +4,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import type { App } from '../app.ts';
 import { all, get, id, json, now, run, type DB } from '../db.ts';
-import { defineTool, execute, openInput, setHoldHook, tools as allTools, type Actor } from '../tools/runtime.ts';
+import { defineTool, execute, openInput, setHolds, tools as allTools, type Actor } from '../tools/runtime.ts';
 import { requireHuman } from '../tools/helpers.ts';
 import { Unit7Error, notFound } from '../errors.ts';
 import { assertReachable } from '../netguard.ts';
@@ -109,18 +109,19 @@ defineTool({ name: 'audit.export', title: 'Take the audit log away', risk: 'read
 defineTool({ name: 'audit.commands', title: 'Show exact commands', risk: 'read', action: 'read', description: 'The commands one action ran on a server, secrets hidden.', input: z.object({ auditId: z.string().max(40) }), run(ctx, i) { const r = get<{ commands: string | null; tool: string }>(ctx.db, 'SELECT commands, tool FROM audit WHERE id = ? AND org_id = ?', i.auditId, ctx.orgId); if (!r) throw notFound('That action'); return { tool: r.tool, commands: json<string[]>(r.commands, []) }; } });
 
 // --- X5: delete is its own permission. An AI's delete waits 48 hours, even after a yes -----------------------------------------------
-export const HELD_HOURS = 48, HELD_TOOLS = new Set(['coolify.remove', 'service.remove', 'project.delete', 'environment.delete', 'asset.delete', 'addon.remove', 'staging.remove', 'server.remove']);
+// Whatever has no trash to come back from. file.remove and part.remove go to a 7-day trash, wordpress.plugin keeps a copy and
+// coolify.storage keeps the data, each with an undo, so they don't wait.
+export const HELD_HOURS = 48, HELD_TOOLS = new Set(['coolify.remove', 'service.remove', 'project.delete', 'environment.delete', 'asset.delete', 'addon.remove', 'staging.remove', 'server.remove', 'dns.remove', 'domain.remove_record', 'domain.remove', 'part.copy_remove', 'dr.remove', 'job.remove']);
 export function holdDelete(app: App, orgId: string, a: { id: string; tool: string; actor: Actor; by: string }, nowMs = Date.now()) {
   const until = new Date(nowMs + HELD_HOURS * 3600_000).toISOString();
   run(app.db, `INSERT INTO held_deletes (id, org_id, approval_id, tool, actor, by, run_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'held', ?)`, id('hld'), orgId, a.id, a.tool, JSON.stringify(a.actor), a.by, until, now());
   app.events.emit(orgId, 'delete.held', `An AI’s delete (${a.tool}) waits 48 hours. You can cancel it until then.`, { severity: 'warning', resource: a.id });
   return until;
 }
-// a routine is a person's own saved step, not an AI deciding, so it runs when they say yes
 // tools that do many things hold only their delete
-export const HELD_OPS: Record<string, string> = { 'supabase.functions': 'delete', 'supabase.storage': 'delete', 'neon.branch': 'delete', 'github.secret': 'remove', 'supabase.secrets': 'unset' };
-const held = (app: App, orgId: string, a: { id: string; tool: string }) => HELD_TOOLS.has(a.tool) || (!!HELD_OPS[a.tool] && openInput(app, orgId, a.id, get<{ input: string }>(app.db, 'SELECT input FROM approvals WHERE id = ?', a.id)?.input ?? '{}').op === HELD_OPS[a.tool]);
-setHoldHook((app, orgId, a) => (held(app, orgId, a) && a.actor.agent !== ROUTINE_AGENT ? holdDelete(app, orgId, a) : undefined));
+export const HELD_OPS: Record<string, string> = { 'supabase.functions': 'delete', 'supabase.storage': 'delete', 'neon.branch': 'delete', 'github.secret': 'remove', 'supabase.secrets': 'unset', 'coolify.task': 'delete' };
+// a routine is a person's own saved step, not an AI deciding, so it runs when they say yes
+setHolds({ isHeld: (tool, input, actor) => actor.agent !== ROUTINE_AGENT && (HELD_TOOLS.has(tool) || (!!HELD_OPS[tool] && input.op === HELD_OPS[tool])), hold: (app, orgId, a) => holdDelete(app, orgId, a) });
 export async function runHeld(app: App, nowMs = Date.now()) {
   const done: string[] = [];
   for (const h of all<{ id: string; org_id: string; approval_id: string; tool: string; actor: string; by: string }>(app.db, `SELECT id, org_id, approval_id, tool, actor, by FROM held_deletes WHERE status = 'held' AND run_at <= ?`, new Date(nowMs).toISOString())) {

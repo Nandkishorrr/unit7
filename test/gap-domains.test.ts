@@ -1,6 +1,7 @@
 // Domains against fakes. Any DNS record on every host (an MX replaced asks first, says what stops and keeps an undo), a
 // Coolify app in one step (the name, DNS, a restart, HTTPS), redirects (Coolify's folder, Caddy, Vercel), wildcards (and what
 // their certificate needs), a subdomain per client, and certificate trouble on Coolify explained from Traefik's log.
+import { runHeld } from '../src/ops/index.ts';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -171,7 +172,9 @@ for (const h of REGISTRARS) test(`${h.provider}: list, an MX replaced only with 
     const aiRemove = await o.a('dns.remove', mx);
     assert.equal(aiRemove.status, 'approval_required');
     await assert.rejects(decideApproval(app, o.orgId, o.human, (aiRemove as any).approvalId, true), /Type the name \(example\.com\)/);
-    assert.equal((await decideApproval(app, o.orgId, o.human, (aiRemove as any).approvalId, true, 'example.com')).status, 'ok');
+    assert.equal(((await decideApproval(app, o.orgId, o.human, (aiRemove as any).approvalId, true, 'example.com')) as any).output.held, true);
+    assert.equal(h.mx(rows).length, 2, 'it’s an AI’s delete, so it waits 48 hours');
+    await runHeld(app, Date.now() + 49 * 3600_000);
     assert.deepEqual(h.mx(rows), ['10 mx1.example.net']);
     assert.equal((failed(await o.h('dns.remove', { zone: 'example.com', name: '@', type: 'NS', confirmName: 'example.com' }))).code, 'refused', 'never the nameservers');
     assert.equal((failed(await o.h('dns.remove', { zone: 'example.com', name: '@', type: 'MX', value: 'nothere.example.net', confirmName: 'example.com', breakEmail: true }))).code, 'not_found');
