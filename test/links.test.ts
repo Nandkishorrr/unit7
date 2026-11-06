@@ -148,7 +148,7 @@ test('an AI can wire public keys, but a database login or service key waits for 
   const link = getTool('link.create')!, ai = { actor: { kind: 'agent', id: 'mcp', role: 'agent' } }, person = { actor: { kind: 'user', id: 'usr', role: 'owner' } };
   const neonLink = { from: { kind: 'neon', accountId: 'acc', project: 'p' }, to: { kind: 'unit7', serviceId: 'svc' }, apply: true };
   assert.ok(link.assess!(ai as never, neonLink as never)!.ask, 'a Neon login asks a person');
-  assert.equal(link.assess!(ai as never, { ...neonLink, apply: false } as never), undefined, 'a look costs nothing');
+  assert.ok(link.assess!(ai as never, { ...neonLink, apply: false } as never)!.ask, 'apply only says whether to rebuild: the login goes in either way');
   assert.equal(link.assess!(person as never, neonLink as never), undefined);
   assert.equal(link.assess!(ai as never, { ...neonLink, from: { kind: 'supabase', accountId: 'acc', ref: 'r' } } as never), undefined, 'public keys go through');
 

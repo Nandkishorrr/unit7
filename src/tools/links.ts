@@ -419,7 +419,7 @@ defineTool({
   description: 'Wire one thing to another, across providers: a Supabase, Neon, PlanetScale, Turso or Upstash database to an app (Vercel or here), or an app here (an API, a CRM) to another app (here or on Vercel). Unit7 sets the right settings on both sides (URLs, keys, a generated shared secret), redeploys to apply them, and keeps them in sync. A PlanetScale, Turso or Upstash login is secret, so an AI’s link waits for a person. It goes into the app’s settings and the vault, never into a result.',
   input: z.object({ from: endSchema, to: endSchema, apply: z.boolean().default(true) }),
   // a Neon link puts a full database login where the app's code can read it, so a person says yes first
-  assess: (c, i) => (isAgent(c) && [i.from, i.to].some((e) => LOGIN_KINDS.has(e.kind) || (i.apply && e.kind === 'neon')) ? { tier: 3, ask: 'This puts a database login into an app’s settings, where its code can read it.', impact: 'Wires a database to an app, with its login.' } : undefined),
+  assess: (c, i) => (isAgent(c) && [i.from, i.to].some((e) => LOGIN_KINDS.has(e.kind) || e.kind === 'neon') ? { tier: 3, ask: 'This puts a database login into an app’s settings, where its code can read it.', impact: 'Wires a database to an app, with its login.' } : undefined),
   async run(ctx, i) {
     // A link copies an app's secrets to its other end. An AI may only wire an app here to an outside account that
     // environment may use (see accountAllowed), so a second account can't be made to receive production's keys.

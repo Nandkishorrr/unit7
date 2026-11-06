@@ -89,6 +89,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Forwarding needs Cloudflare DNS and works on the bare domain only. Mailboxes aren’t hosted. DKIM is found by usual names unless the DNS host is connected. A Compose file that sets GOTRUE_SITE_URL is edited by hand. Older Cloudflare keys need Email Routing permissions.
 
+## PlanetScale, Turso and Upstash
+
+- One-click sign-ins to these three only read. Creating, connecting, removing and sizes need a key. A Turso token can’t be revoked alone. Upstash gives no login to a read-only key.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

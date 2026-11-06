@@ -78,3 +78,4 @@ Unit7 is open source under the licence in [LICENSE](LICENSE). What's open today 
 See [SECURITY.md](SECURITY.md).
 - A link an AI makes to Neon asks a person, because the app gets a full login. A link an AI makes to Supabase carries public keys only: a service key is a person’s to add. Warden’s automatic wiring does the same, and leaves Neon to a person.
 - The person’s own GitHub token, from the Authorize step, stays in the vault and is used only to create repos. Its App can also delete repos, and Unit7 never calls that.
+- Logins from PlanetScale, Turso and Upstash go only to the vault and the app’s settings, and an AI’s link waits for a person.
