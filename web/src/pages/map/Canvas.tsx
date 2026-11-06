@@ -786,6 +786,7 @@ function DbHover({ a }: { a: Asset }) {
       </div>
       <Facts rows={[
         ['Size', dbSize(a) ? bytes(dbSize(a)) : 'Not known yet'],
+        ['Region', a.region],
         ['Used by', users.length ? users.slice(0, 3).map(label).join(', ') + (users.length > 3 ? ` +${users.length - 3}` : '') : 'Nothing yet'],
         ['Backups', a.backups ? `${plural(a.backups.count, 'backup')}${a.backups.last ? `, last ${timeAgo(a.backups.last)}` : ''}` : a.provider === 'unit7' ? 'None yet' : a.provider === 'supabase' || a.provider === 'neon' ? `Kept by ${providerName(a.provider)}` : undefined],
         ['Internet', a.exposed ? <span className="font-medium text-bad">Open to anyone: its port skips the firewall</span> : a.owner ? 'Not open' : undefined],

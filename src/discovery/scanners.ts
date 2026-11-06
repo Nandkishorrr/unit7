@@ -12,8 +12,9 @@ import { vercel, supabase, neon, SUPABASE_API } from '../connectors/clouds.ts';
 import { fileText, githubToken, parseRepo } from '../connectors/github.ts';
 import { rest, gd, GODADDY, pb, PORKBUN, nc, NAMECOM } from '../connectors/dnswrite.ts';
 import { netlify, render, railway, digitalocean, heroku, fly, hostOf } from '../connectors/hosts.ts';
-import { stripe, resend, sentry, planetscale, turso, upstash, type StripeEndpoint } from '../connectors/services.ts';
+import { stripe, resend, sentry, dataServices, hostedEnd, type DataService, type Spot, type StripeEndpoint } from '../connectors/services.ts';
 import { envRefs, domainKey, type Found, type Ref } from './model.ts';
+import type { End } from '../tools/links.ts';
 import { xrayFound } from './xray.ts';
 import { lastXray, runXray } from '../tools/xray.ts';
 import type { ServerRow } from '../connectors/ssh.ts';
@@ -107,6 +108,9 @@ export async function scanUnit7(ctx: Ctx): Promise<Scan> {
   return { found, refs };
 }
 
+const hostedScan = (p: DataService): Scanner => async (ctx, acc) => ({ refs: [], found: (await dataServices[p].databases(ctx, acc)).map((d): Found => ({ provider: p, kind: 'database', extId: d.id, name: d.name, accountId: acc, url: d.url,
+  ...(d.host && { hosts: [d.host] }), status: d.status, engine: d.engine, region: d.region, end: hostedEnd(p, acc, d) as End | undefined, platform: p })) });
+
 export const SCANNERS: Record<string, Scanner> = {
   // --- Vercel: projects (domains, settings, framework, repo) and Vercel-hosted DNS --------------------
   async vercel(ctx, acc) {
@@ -144,22 +148,7 @@ export const SCANNERS: Record<string, Scanner> = {
   },
 
   // --- PlanetScale, Turso, Upstash: databases. A setting that holds one's address draws the line to it -----
-  async planetscale(ctx, acc) {
-    return { found: (await planetscale.databases(ctx, acc)).map((d): Found => ({ provider: 'planetscale', kind: 'database', extId: `${d.org}/${d.name}`, name: d.name, accountId: acc, url: d.html_url ?? `https://app.planetscale.com/${d.org}/${d.name}`,
-      status: d.state, engine: d.kind === 'postgresql' ? 'postgres' : 'mysql', platform: 'planetscale' })), refs: [] };
-  },
-  async turso(ctx, acc) {
-    return { found: (await turso.databases(ctx, acc)).flatMap((d): Found[] => {
-      const name = d.Name ?? d.name, host = d.Hostname ?? d.hostname;
-      return name ? [{ provider: 'turso', kind: 'database', extId: d.DbId ?? d.id ?? name, name, accountId: acc, ...(d.org && { url: `https://app.turso.tech/${d.org}/databases/${name}` }), ...(host && { hosts: [host.toLowerCase()] }), ...(d.block_reads && { status: 'paused' }), engine: 'sqlite', platform: 'turso' }] : [];
-    }), refs: [] };
-  },
-  async upstash(ctx, acc) {
-    return { found: (await upstash.databases(ctx, acc)).flatMap((d): Found[] => {
-      const id = d.database_id ?? d.id, name = d.database_name ?? d.name, host = d.endpoint && (d.endpoint.includes('.') ? d.endpoint : `${d.endpoint}.upstash.io`);
-      return id && name ? [{ provider: 'upstash', kind: 'database', extId: id, name, accountId: acc, url: `https://console.upstash.com/redis/${id}`, ...(host && { hosts: [host.toLowerCase()] }), status: d.state, engine: 'redis', platform: 'upstash' }] : [];
-    }), refs: [] };
-  },
+  planetscale: hostedScan('planetscale'), turso: hostedScan('turso'), upstash: hostedScan('upstash'),
 
   // --- Stripe, Resend, Sentry: services an app uses, so `service` things: no site to watch, no data to back up ----------
   // Stripe: one per account and mode, saying what it holds, with a line to each site a webhook calls
@@ -526,9 +515,9 @@ SCANNERS.hetzner = async (ctx, acc) => {
 //   Neon: the default branch's logical_size (describe_project) https://api-docs.neon.tech/reference/listprojectbranches
 //   Railway: volumeInstances.currentSizeMB https://docs.railway.com/integrations/api/manage-volumes
 //   Render: GET /v1/metrics/disk-usage?resource= https://api-docs.render.com/reference/get-disk-usage
+//   PlanetScale, Turso, Upstash: the branch metrics, a database's usage, its stats (connectors/services.ts). A sign-in can't read them.
 //   RDS, Cloud SQL, Azure: in their scanners above (CloudWatch FreeStorageSpace, Monitoring bytes_used, Azure Monitor).
-//   DigitalOcean shows used disk for MySQL only as a percent of a size it doesn't give, so its databases stay unknown;
-//   the listings of PlanetScale, Turso and Upstash say no size, so theirs stay unknown too.
+//   DigitalOcean shows used disk for MySQL only as a percent of a size it doesn't give, so its databases stay unknown.
 import { cached } from '../connectors/cloudcli.ts';
 import { bearerFor } from '../connectors/mcp-oauth.ts';
 import { railwayQuery, RENDER_API, renderAuth } from '../connectors/hosts.ts';
@@ -536,7 +525,12 @@ export function dbSize(key: string, read: () => Promise<string>): Promise<string
   return cached(`dbsize:${key}`, async () => ({ value: await read().catch(() => ''), until: Date.now() + 3600_000 }), 3600_000);
 }
 const num = (v: string) => (v ? Number(v) : undefined);
+export const hostedSize = (ctx: Ctx, p: DataService, acc: string, extId: string, s: Spot) => dbSize(`${p}:${extId}`, async () => String(await dataServices[p].size(ctx, acc, s) ?? '')).then(num);
+const sizeHosted = (p: DataService) => async (ctx: Ctx, acc: string, dbs: Found[]) => {
+  await pool(dbs.filter((d) => d.end), 3, async (d) => { const v = await hostedSize(ctx, p, acc, d.extId, d.end as unknown as Spot); if (v !== undefined) d.size = v; });
+};
 const sizing: Record<string, (ctx: Ctx, acc: string, dbs: Found[]) => Promise<void>> = {
+  planetscale: sizeHosted('planetscale'), turso: sizeHosted('turso'), upstash: sizeHosted('upstash'),
   async supabase(ctx, acc, dbs) {
     await pool(dbs.filter((d) => !/inactive|paused/i.test(d.status ?? '')), 3, async (d) => {
       const v = num(await dbSize(`supabase:${d.extId}`, async () => String((await rest<{ metrics?: { fs_used_bytes?: number } }>('Supabase', `${SUPABASE_API()}/projects/${d.extId}/config/disk/util`, { headers: { authorization: `Bearer ${await bearerFor(ctx, 'supabase', acc)}` } })).metrics?.fs_used_bytes ?? '')));

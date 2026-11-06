@@ -37,6 +37,7 @@ export interface Found {
   environment?: string;    // Coolify's environment (production…)
   how?: string;            // projects: what grouped them (Coolify labels, Docker Compose labels, the same folder…)
   size?: number;           // databases: bytes stored, when the provider says (the map draws it as a ring)
+  region?: string;         // databases: where it lives, in the provider's own words
   repo?: string;           // the git repo it deploys from (owner/name or a URL), when the provider says: one product's parts share it
   api?: string;            // where its provider's API lives for it, when that isn't the provider's main address (a Sentry region)
 }
@@ -201,7 +202,7 @@ export function resolve(found: Map<string, Found>, refs: Ref[]): { edges: Edge[]
   // 5. an app relying on a database that's paused
   for (const e of edges.filter((x) => x.kind === 'env')) {
     const t = found.get(e.to);
-    if (t?.kind === 'database' && t.status && /paus|inactive|removed/i.test(t.status)) issues.push({ severity: 'warning', key: `paused:${e.to}`, about: e.from, text: `${found.get(e.from)?.name} uses ${t.name}, which is ${t.status.toLowerCase()}.` });
+    if (t?.kind === 'database' && t.status && /paus|suspend|inactive|removed/i.test(t.status)) issues.push({ severity: 'warning', key: `paused:${e.to}`, about: e.from, text: `${found.get(e.from)?.name} uses ${t.name}, which is ${t.status.toLowerCase()}.` });
   }
   return { edges, issues, dangling };
 }

@@ -111,7 +111,7 @@ defineTool({ name: 'audit.commands', title: 'Show exact commands', risk: 'read',
 // --- X5: delete is its own permission. An AI's delete waits 48 hours, even after a yes -----------------------------------------------
 // Whatever has no trash to come back from. file.remove and part.remove go to a 7-day trash, wordpress.plugin keeps a copy and
 // coolify.storage keeps the data, each with an undo, so they don't wait.
-export const HELD_HOURS = 48, HELD_TOOLS = new Set(['coolify.remove', 'service.remove', 'project.delete', 'environment.delete', 'asset.delete', 'addon.remove', 'staging.remove', 'server.remove', 'dns.remove', 'domain.remove_record', 'domain.remove', 'part.copy_remove', 'dr.remove', 'job.remove']);
+export const HELD_HOURS = 48, HELD_TOOLS = new Set(['coolify.remove', 'service.remove', 'project.delete', 'environment.delete', 'asset.delete', 'addon.remove', 'staging.remove', 'server.remove', 'dns.remove', 'domain.remove_record', 'domain.remove', 'part.copy_remove', 'dr.remove', 'job.remove', 'planetscale.delete_database', 'turso.delete_database', 'upstash.delete_database']);
 export function holdDelete(app: App, orgId: string, a: { id: string; tool: string; actor: Actor; by: string }, nowMs = Date.now()) {
   const until = new Date(nowMs + HELD_HOURS * 3600_000).toISOString();
   run(app.db, `INSERT INTO held_deletes (id, org_id, approval_id, tool, actor, by, run_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'held', ?)`, id('hld'), orgId, a.id, a.tool, JSON.stringify(a.actor), a.by, until, now());

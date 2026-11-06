@@ -17,10 +17,12 @@ const account = () => z.object({ accountId: fid('acc').describe('From account.li
 // Tools that hide what they do in their arguments (Hostinger's execute, Stripe's stripe_api_write): the name says nothing, so
 // they count as destructive whatever their hint, and money named in their arguments is money.
 const PIPE = /(?:^|[_.-])(?:multi-)?execute$|api[_.-]write$/i;
+// a new database or branch can bill by itself: PlanetScale has no free plan, and a plan is an argument here. Unit7's own tools read the plan first.
+const makesData = (tool: string) => /create/i.test(tool) && /database|branch|(?:^|[_.-])db(?:[_.-]|$)/i.test(tool);
 // a tool that buys, pays, refunds or changes a plan: people-only for an AI, a provider_purchase for a person. One that plainly only reads is a read.
 export function judged(i: { accountId: string; tool: string; arguments?: unknown }): { risk: Risk; money: boolean } {
   const pipe = PIPE.test(i.tool), hint = pipe ? 'destructive' : toolHint(i.accountId, i.tool);
-  const money = (MONEY_OP.test(i.tool) || (pipe && MONEY_OP.test(JSON.stringify(i.arguments ?? {})))) && !(hint === 'read' && plainRead(i.tool));
+  const money = (MONEY_OP.test(i.tool) || makesData(i.tool) || (pipe && MONEY_OP.test(JSON.stringify(i.arguments ?? {})))) && !(hint === 'read' && plainRead(i.tool));
   return { risk: money ? 'destructive' : hint, money };
 }
 

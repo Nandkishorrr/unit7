@@ -113,6 +113,12 @@ export async function runSync(ctx: Ctx, o: { only?: string[]; hosts?: string[] }
     for (const ip of a) refs.push({ from: domainKey(h), kind: 'dns', via: `A ${ip} (public DNS)`, ip });
   });
   for (const h of new Set(refs.filter((r) => r.kind === 'domain' && r.host).map((r) => r.host!))) if (!found.has(domainKey(h))) found.set(domainKey(h), { provider: 'domain', kind: 'domain', extId: h, name: h });
+  // every PlanetScale database in a region shares one address, so only Unit7's own connection says which one an app uses
+  const byEnd = new Map([...found].filter(([, f]) => f.end).map(([k, f]) => [JSON.stringify(f.end), k]));
+  for (const l of all<{ source: string; target: string }>(ctx.db, `SELECT source, target FROM links WHERE org_id = ? AND json_extract(source, '$.kind') = 'planetscale'`, ctx.orgId)) {
+    const db = byEnd.get(l.source), app = byEnd.get(l.target);
+    if (db && app) refs.push({ from: app, kind: 'env', via: 'connected by Unit7', to: db });
+  }
 
   const { edges, issues, dangling } = resolve(found, refs);
   // a CNAME to a platform app that no longer exists: whoever creates that app gets the domain
@@ -235,7 +241,7 @@ defineTool({
         // found inside a server by its X-ray: who runs it, how well Unit7 knows it, and the project frame it's in
         ...(m.owner && { owner: m.owner, trust: m.trust, server: m.server && assetId(ctx.orgId, m.server), project: m.project && assetId(ctx.orgId, m.project), parts: m.parts?.map((k) => assetId(ctx.orgId, k)),
           product: m.product, engine: m.engine, version: m.version, exposed: m.exposed, health: m.health, environment: m.environment, system: m.system, how: m.how }),
-        ...(m.size !== undefined && { size: m.size }), ...(m.engine && !m.owner && { engine: m.engine, version: m.version }) }; });
+        ...(m.size !== undefined && { size: m.size }), ...(m.region && { region: m.region }), ...(m.engine && !m.owner && { engine: m.engine, version: m.version }) }; });
     // a server's projects, for drawing each as a frame with its parts inside; the rest is "Not part of a project"
     const frames = (serverId: string) => {
       const projects = assets.filter((x) => x.kind === 'project' && x.server === serverId).map((x) => ({ id: x.id, name: x.name, owner: x.owner, trust: x.trust, system: x.system, health: x.health, environment: x.environment, parts: x.parts ?? [] }));

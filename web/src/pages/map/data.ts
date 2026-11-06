@@ -17,7 +17,7 @@ export interface Asset {
   owner?: string; trust?: string; server?: string; project?: string; parts?: string[]; product?: { id: string; name: string }; engine?: string; version?: string;
   exposed?: boolean; health?: { status: string; reason?: string }; environment?: string; system?: boolean; how?: string;
   projects?: ServerFrame[]; loose?: string[];
-  size?: number; backups?: { count: number; last: string | null; size: number | null }; archived?: boolean; // the canvas: a database's size and backups; hidden once archived
+  size?: number; region?: string; backups?: { count: number; last: string | null; size: number | null }; archived?: boolean; // the canvas: a database's size, where it lives and backups; hidden once archived
   group?: string; // the product it's part of (map.get's groups)
 }
 export interface Edge { source: string; target: string; kind: 'dns' | 'domain' | 'env' | 'runs_on' | 'uses'; via: string; status: 'ok' | 'misconfigured' | 'unknown'; detail: string | null }

@@ -34,22 +34,22 @@ const enc = encodeURIComponent;
 const asRoot = (s: ServerRow) => (json<{ sudo?: string }>(s.facts, {}).sudo === 'yes' ? 'sudo -n ' : '');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const refuse = (why: string) => new Unit7Error('not_here', why, 409);
-const need = (what: string) => new Unit7Error('invalid_input', what, 400);
+export const need = (what: string) => new Unit7Error('invalid_input', what, 400);
 
-const CONFIRM = z.string().max(200).optional().describe('The thing’s name, typed by the person. An AI gives it, and the person approving types it again.');
-const PAID = z.boolean().default(false).describe('True when the plan isn’t free, so it can cost money. People only.');
+export const CONFIRM = z.string().max(200).optional().describe('The thing’s name, typed by the person. An AI gives it, and the person approving types it again.');
+export const PAID = z.boolean().default(false).describe('True when the plan isn’t free, so it can cost money. People only.');
 const NAME = z.string().trim().regex(/^\w[\w .-]{0,62}$/, 'letters, digits, spaces and . _ -');
 const accountId = fid('acc').optional();
 
 // the account a thing lives on: the one named, the one the map saw it on, else the only one
-function accountFor(ctx: Ctx, provider: 'supabase' | 'neon', named?: string, ext?: string) {
+export function accountFor(ctx: Ctx, provider: string, named?: string, ext?: string) {
   const seen = !named && ext ? get<{ account_id: string | null }>(ctx.db, 'SELECT account_id FROM assets WHERE org_id = ? AND provider = ? AND ext_id = ?', ctx.orgId, provider, ext)?.account_id : undefined;
   try { return ctx.credentialFor(provider, named ?? seen ?? undefined).account.id; } catch (e) {
-    if ((e as Unit7Error).code === 'no_account' && accountsOf(ctx, provider).length > 1) throw need(`You have several ${provider} accounts. Say which (accountId): ${provider}.projects lists them.`);
+    if ((e as Unit7Error).code === 'no_account' && accountsOf(ctx, provider).length > 1) throw need(`You have several ${provider} accounts. Say which (accountId): account.list lists them.`);
     throw e;
   }
 }
-const accountsOf = (ctx: Ctx, provider: string, named?: string) => {
+export const accountsOf = (ctx: Ctx, provider: string, named?: string) => {
   const list = all<{ id: string; name: string }>(ctx.db, 'SELECT id, name FROM accounts WHERE org_id = ? AND provider = ? AND (? IS NULL OR id = ?) ORDER BY name', ctx.orgId, provider, named ?? null, named ?? null);
   if (!list.length) throw new Unit7Error('no_account', `No ${provider} account is connected. Connect one in Connections (one click).`, 409);
   return list;
@@ -61,10 +61,10 @@ export function valueOf(ctx: Ctx, v: string, label: string) {
   return ctx.secret(v);
 }
 // a person types the name when it runs; an AI names it up front, and the person approving types it again
-const confirmed = (i: { confirmName?: string }, name: string, what: string) => {
+export const confirmed = (i: { confirmName?: string }, name: string, what: string) => {
   if ((i.confirmName ?? '').trim() !== name) throw new Unit7Error('confirm_needed', `This is hard to undo. Type ${what} (${name}) to confirm.`, 400, { confirm: name });
 };
-const askedByName = (c: { actor: Ctx['actor']; dryRun?: boolean }, i: { confirmName?: string }) => {
+export const askedByName = (c: { actor: Ctx['actor']; dryRun?: boolean }, i: { confirmName?: string }) => {
   if (c.actor.kind !== 'user' && !c.dryRun && !i.confirmName) throw need('Give confirmName. The person approving types it again.');
 };
 // a change that isn't on a server, with what takes it back (Activity's Undo, CHANGE_UNDO below)
@@ -75,7 +75,7 @@ export function remember(ctx: Ctx, part: string, verb: string, summary: string, 
   return { changeId, undo: `change.undo with changeId ${changeId} takes it back.` };
 }
 // a new project shows on the map now, not at the next sync (nothing synced yet: the first sync finds it)
-async function refreshMap(ctx: Ctx, acc: string) {
+export async function refreshMap(ctx: Ctx, acc: string) {
   if (get(ctx.db, `SELECT 1 FROM sync_runs WHERE org_id = ? AND status = 'done' LIMIT 1`, ctx.orgId)) await runSync(ctx, { only: [acc] }).catch(() => undefined);
 }
 // a step of this tool through another tool's own gate
@@ -85,7 +85,7 @@ async function step<T = any>(ctx: Ctx, tool: string, input: Record<string, unkno
   if (r.status === 'approval_required') throw new Unit7Error('approval_required', `${tool} waits for a person on the Approvals page: ${r.why}`, 409);
   throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : `${tool} didn’t run.`, 409);
 }
-const paidPlan = (what: string, plan: string | undefined, instead: string) => new Unit7Error('paid_plan', `${what} is on ${plan ? `the ${plan} plan` : 'a plan Unit7 can’t read'}, so this can cost money. An AI can’t do it, even with approval. A person can: ask again with paid true and confirmName, or ${instead}.`, 403);
+export const paidPlan = (what: string, plan: string | undefined, instead: string) => new Unit7Error('paid_plan', `${what} is on ${plan ? `the ${plan} plan` : 'a plan Unit7 can’t read'}, so this can cost money. An AI can’t do it, even with approval. A person can: ask again with paid true and confirmName, or ${instead}.`, 403);
 
 // --- where: a hosted project, or a stack on a server --------------------------------------------------------------------
 const REF = z.string().regex(/^[a-z0-9]{8,40}$/, 'a Supabase project ref');

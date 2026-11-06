@@ -16,6 +16,7 @@ import { keyOf, type Found } from '../discovery/model.ts';
 import { CATALOG } from '../connectors/oneclick.ts';
 import { cloudRemoval } from '../connectors/clouds.ts';
 import { hostRemoval, heroku } from '../connectors/hosts.ts';
+import { dataServices, type DataService, type Spot } from '../connectors/services.ts';
 
 const KEY = z.string().regex(/^(ast|prj)_[A-Za-z0-9_-]{12}$/, 'a map item or a Unit7 project');
 const DAY = 86400_000;
@@ -315,6 +316,7 @@ function plan(ctx: Ctx, t: Target, inv?: Inventory): Plan {
       : { can: true, how: 'Unit7 asks Heroku to delete the app', dataGoes: 'never', what: ['The app, its releases and settings', 'Add-ons the app owns (like Heroku Postgres)'] };
     case 'neon': return { can: true, how: 'Unit7 asks Neon to delete the project', dataGoes: 'always', what: ['The project: every branch, database and role'] };
     case 'supabase': return { can: true, how: 'Unit7 asks Supabase to delete the project', dataGoes: 'always', what: ['The project: its database, stored files and users'] };
+    case 'planetscale': case 'turso': case 'upstash': return { can: true, how: `Unit7 asks ${providerWord(t.provider)} to delete the database`, dataGoes: 'always', what: ['The database and everything in it'] };
     default: return { can: false, dataGoes: 'never', what: [], why: DASHBOARD(t) };
   }
 }
@@ -476,6 +478,7 @@ async function remove(ctx: Ctx, t: Target, alsoData: boolean, inv?: Inventory): 
     case 'heroku': said(await atProvider(t, () => hostRemoval.herokuApp(ctx, acc, end.app!))); break;
     case 'neon': said(await atProvider(t, () => cloudRemoval.neonProject(ctx, acc, end.project!))); break;
     case 'supabase': said(await atProvider(t, () => cloudRemoval.supabaseProject(ctx, acc, end.ref!))); break;
+    case 'planetscale': case 'turso': case 'upstash': said(await atProvider(t, () => dataServices[t.provider as DataService].remove(ctx, acc, end as unknown as Spot))); break;
     default: throw new Unit7Error('unsupported', DASHBOARD(t), 501);
   }
   return done;
@@ -562,7 +565,7 @@ defineTool({
 
 defineTool({
   name: 'asset.delete', title: 'Delete a project or app', risk: 'destructive', action: 'asset_delete', peopleOnly: true, timeoutMs: 5 * 60_000,
-  description: 'People only: an AI can’t delete, even with approval; asked to delete something, show the person the Delete card (ui_delete) instead, which runs this as them. Deletes a Unit7 project or a map item (by key) with its provider’s own delete call (Vercel, Netlify, Render, Railway, Fly.io, Heroku, Neon, Supabase), through Coolify for Coolify apps, or Unit7’s own removal for Unit7 apps. confirmName must be its exact name. Data (databases, volumes, storage) goes only with alsoData; where the provider can’t delete it without its data, alsoData is required. Read asset.impact first. The map updates at once and Activity records what was removed.',
+  description: 'People only: an AI can’t delete, even with approval; asked to delete something, show the person the Delete card (ui_delete) instead, which runs this as them. Deletes a Unit7 project or a map item (by key) with its provider’s own delete call (Vercel, Netlify, Render, Railway, Fly.io, Heroku, Neon, Supabase, PlanetScale, Turso, Upstash), through Coolify for Coolify apps, or Unit7’s own removal for Unit7 apps. confirmName must be its exact name. Data (databases, volumes, storage) goes only with alsoData; where the provider can’t delete it without its data, alsoData is required. Read asset.impact first. The map updates at once and Activity records what was removed.',
   input: z.object({ key: KEY, confirmName: z.string().max(200), alsoData: z.boolean().default(false) }),
   async run(ctx, i) {
     const t = target(ctx, i.key);

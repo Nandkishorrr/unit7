@@ -16,6 +16,7 @@ import { merged, envContext, isPublicKey } from './env.ts';
 import { internalHost, type ServiceConfig } from '../deploy/deployer.ts';
 import { neon, supabase, vercel } from '../connectors/clouds.ts';
 import { netlify, render, railway, heroku, fly } from '../connectors/hosts.ts';
+import { planetscale, turso, upstash } from '../connectors/services.ts';
 import { scanUnit7 } from '../discovery/scanners.ts';
 import type { Found } from '../discovery/model.ts';
 import { fid, isAgent } from './helpers.ts';
@@ -29,6 +30,8 @@ export type End =
   | { kind: 'vercel'; accountId: string; project: string; team?: string }
   | { kind: 'supabase'; accountId: string; ref: string }
   | { kind: 'neon'; accountId: string; project: string }
+  | { kind: 'planetscale' | 'turso'; accountId: string; org: string; database: string }
+  | { kind: 'upstash'; accountId: string; database: string }
   | { kind: 'netlify'; accountId: string; site: string }
   | { kind: 'render'; accountId: string; service: string }
   | { kind: 'railway'; accountId: string; project: string; environment: string; service: string }
@@ -177,6 +180,52 @@ SOURCES.neon = {
     const [reads, url] = await Promise.all([consumerReads(ctx, consumer), neon.connectionString(ctx, accountId, project)]);
     const names = reads.keys.filter((k) => /^(DATABASE_URL|POSTGRES_URL|POSTGRES_PRISMA_URL|NEON_DATABASE_URL)$/.test(k));
     return { consumer: (names.length ? names : ['DATABASE_URL']).map((key) => ({ key, value: url, secret: true })) };
+  },
+};
+
+// --- PlanetScale, Turso and Upstash, as a source --------------------------------------------------------------------------
+
+// these hand a login out once, or a new one each time they're asked: the link keeps its own, so a daily sync never makes another
+async function loginOf(ctx: Ctx, linkId: string, accountId: string, label: string, make: () => Promise<string>) {
+  const ref = makeRef('link', linkId, 'login');
+  if (!ctx.app.vault.has(ctx.orgId, ref)) ctx.app.vault.put(ctx.orgId, ref, await make(), { kind: 'connection_string', accountId, by: ctx.actor.name, meta: { label } });
+  return ctx.secret(ref);
+}
+// the names the code reads, else the usual one. Exact names only: a NEXT_PUBLIC_ or VITE_ one is compiled into the page
+const namesFor = (r: Reads, known: RegExp, usual: string) => { const k = r.keys.filter((x) => known.test(x)); return k.length ? k : [usual]; };
+
+type NamedEnd = { accountId: string; org: string; database: string };
+SOURCES.planetscale = {
+  label: async (_ctx, e) => (e as NamedEnd).database,
+  async vars(ctx, e, consumer, linkId) {
+    const p = e as NamedEnd, reads = await consumerReads(ctx, consumer);
+    // a Postgres role's name: letters, digits and _ are safe in any client
+    const url = await loginOf(ctx, linkId, p.accountId, `Login for the PlanetScale database ${p.database}`, () => planetscale.login(ctx, p.accountId, p, `unit7_${linkId.toLowerCase().replace(/[^a-z0-9]/g, '_')}`));
+    return { consumer: namesFor(reads, /^(DATABASE_URL|MYSQL_URL|POSTGRES_URL|PLANETSCALE_DATABASE_URL)$/, 'DATABASE_URL').map((key) => ({ key, value: url, secret: true })) };
+  },
+};
+SOURCES.turso = {
+  label: async (_ctx, e) => (e as NamedEnd).database,
+  async vars(ctx, e, consumer, linkId) {
+    const t = e as NamedEnd, reads = await consumerReads(ctx, consumer), host = await turso.host(ctx, t.accountId, t);
+    const token = await loginOf(ctx, linkId, t.accountId, `Token for the Turso database ${t.database}`, () => turso.token(ctx, t.accountId, t));
+    return { consumer: [
+      ...namesFor(reads, /^(TURSO_DATABASE_URL|TURSO_DB_URL|TURSO_CONNECTION_URL|TURSO_URL|LIBSQL_URL|LIBSQL_DATABASE_URL)$/, 'TURSO_DATABASE_URL').map((key) => ({ key, value: `libsql://${host}`, secret: false })),
+      ...namesFor(reads, /^(TURSO_AUTH_TOKEN|TURSO_DB_AUTH_TOKEN|TURSO_DATABASE_TOKEN|TURSO_TOKEN|LIBSQL_AUTH_TOKEN)$/, 'TURSO_AUTH_TOKEN').map((key) => ({ key, value: token, secret: true })),
+    ] };
+  },
+};
+type UpstashEnd = { accountId: string; database: string };
+SOURCES.upstash = {
+  label: (ctx, e) => upstash.name(ctx, (e as UpstashEnd).accountId, (e as UpstashEnd).database),
+  async vars(ctx, e, consumer) {
+    const u = e as UpstashEnd, reads = await consumerReads(ctx, consumer), login = await upstash.login(ctx, u.accountId, u.database);
+    const tcp = reads.keys.filter((k) => /^(REDIS_URL|KV_URL|UPSTASH_REDIS_URL)$/.test(k));
+    const rest = !tcp.length || reads.keys.some((k) => /^(UPSTASH_REDIS_REST_|KV_REST_API_)/.test(k)); // the REST pair is what @upstash/redis reads
+    return { consumer: [...tcp.map((key) => ({ key, value: login.redisUrl, secret: true })), ...(rest ? [
+      ...namesFor(reads, /^(UPSTASH_REDIS_REST_URL|KV_REST_API_URL)$/, 'UPSTASH_REDIS_REST_URL').map((key) => ({ key, value: login.restUrl, secret: false })),
+      ...namesFor(reads, /^(UPSTASH_REDIS_REST_TOKEN|KV_REST_API_TOKEN)$/, 'UPSTASH_REDIS_REST_TOKEN').map((key) => ({ key, value: login.restToken, secret: true })),
+    ] : [])] };
   },
 };
 
@@ -346,11 +395,16 @@ async function syncOrMark(ctx: Ctx, linkId: string, source: End, target: End, ap
   }
 }
 
+// a name that goes into a provider's path: it starts with a letter or digit, so it can never be .. or a slash
+export const SLUG = z.string().regex(/^[a-z0-9][\w.-]{0,63}$/i, 'a name: letters, digits and . _ -');
 const endSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('unit7'), serviceId: fid('svc') }),
   z.object({ kind: z.literal('vercel'), accountId: fid('acc'), project: z.string().min(1).max(100), team: z.string().max(100).optional() }),
   z.object({ kind: z.literal('supabase'), accountId: fid('acc'), ref: z.string().regex(/^[a-z0-9]{8,40}$/) }),
   z.object({ kind: z.literal('neon'), accountId: fid('acc'), project: z.string().min(1).max(100) }),
+  z.object({ kind: z.literal('planetscale'), accountId: fid('acc'), org: SLUG, database: SLUG }),
+  z.object({ kind: z.literal('turso'), accountId: fid('acc'), org: SLUG, database: SLUG }),
+  z.object({ kind: z.literal('upstash'), accountId: fid('acc'), database: SLUG }),
   z.object({ kind: z.literal('netlify'), accountId: fid('acc'), site: z.string().min(1).max(100) }),
   z.object({ kind: z.literal('render'), accountId: fid('acc'), service: z.string().min(1).max(100) }),
   z.object({ kind: z.literal('heroku'), accountId: fid('acc'), app: z.string().min(1).max(100) }),
@@ -358,12 +412,14 @@ const endSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('railway'), accountId: fid('acc'), project: z.string().min(1).max(100), environment: z.string().min(1).max(100), service: z.string().min(1).max(100) }),
 ]);
 
+// apply false only skips the redeploy: the login still lands in the app's settings, so these ask either way
+const LOGIN_KINDS = new Set<End['kind']>(['planetscale', 'turso', 'upstash']);
 defineTool({
   name: 'link.create', title: 'Connect two things', risk: 'write', action: 'env_write', timeoutMs: 30 * 60_000,
-  description: 'Wire one thing to another, across providers: a Supabase/Neon database to an app (Vercel or here), or an app here (an API, a CRM) to another app (here or on Vercel). Unit7 sets the right settings on both sides (URLs, keys, a generated shared secret), redeploys to apply them, and keeps them in sync.',
+  description: 'Wire one thing to another, across providers: a Supabase, Neon, PlanetScale, Turso or Upstash database to an app (Vercel or here), or an app here (an API, a CRM) to another app (here or on Vercel). Unit7 sets the right settings on both sides (URLs, keys, a generated shared secret), redeploys to apply them, and keeps them in sync. A PlanetScale, Turso or Upstash login is secret, so an AI’s link waits for a person. It goes into the app’s settings and the vault, never into a result.',
   input: z.object({ from: endSchema, to: endSchema, apply: z.boolean().default(true) }),
   // a Neon link puts a full database login where the app's code can read it, so a person says yes first
-  assess: (c, i) => (isAgent(c) && i.apply && [i.from, i.to].some((e) => e.kind === 'neon') ? { tier: 3, ask: 'This puts a database login into an app’s settings, where its code can read it.', impact: 'Wires a database to an app, with its login.' } : undefined),
+  assess: (c, i) => (isAgent(c) && [i.from, i.to].some((e) => LOGIN_KINDS.has(e.kind) || (i.apply && e.kind === 'neon')) ? { tier: 3, ask: 'This puts a database login into an app’s settings, where its code can read it.', impact: 'Wires a database to an app, with its login.' } : undefined),
   async run(ctx, i) {
     // A link copies an app's secrets to its other end. An AI may only wire an app here to an outside account that
     // environment may use (see accountAllowed), so a second account can't be made to receive production's keys.

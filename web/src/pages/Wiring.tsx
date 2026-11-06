@@ -12,7 +12,7 @@ interface Thing { end: End; name: string; provider: string; role: 'app' | 'datab
 interface Suggestion { from: End; to: End; fromName: string; toName: string; why: string; sure: boolean }
 interface Options { things: Thing[]; suggestions: Suggestion[]; problems: string[] }
 
-const WHERE: Record<string, string> = { unit7: 'here', vercel: 'Vercel', supabase: 'Supabase', neon: 'Neon', netlify: 'Netlify', render: 'Render', railway: 'Railway', heroku: 'Heroku', fly: 'Fly.io' };
+const WHERE: Record<string, string> = { unit7: 'here', vercel: 'Vercel', supabase: 'Supabase', neon: 'Neon', planetscale: 'PlanetScale', turso: 'Turso', upstash: 'Upstash', netlify: 'Netlify', render: 'Render', railway: 'Railway', heroku: 'Heroku', fly: 'Fly.io' };
 const key = (e: End) => JSON.stringify(e);
 
 export function Wiring({ human }: { human: boolean }) {

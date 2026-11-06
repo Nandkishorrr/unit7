@@ -273,6 +273,7 @@ function Facts({ a }: { a: Asset }) {
     if (a.environment) rows.push(['Environment', <span className="text-[13px]">{a.environment}</span>]);
     if (srv) rows.push(['On', <span className="flex flex-wrap items-center gap-2 text-[13px]"><button type="button" onClick={() => ctx.open(srv.id)} className="font-medium hover:underline">{srv.name}</button>{ctx.serverHref(srv) && <A href={ctx.serverHref(srv)!} className="text-[12.5px] font-medium text-blue-text hover:underline">Open the server page</A>}</span>]);
   }
+  if (a.region) rows.push(['Region', <span className="text-[13px]">{a.region}</span>]);
   if (a.status && !liveOf(a)) rows.push(['State', <span className="text-[13px]">{a.status.toLowerCase().replace(/_/g, ' ')}</span>]);
   return (
     <section>
