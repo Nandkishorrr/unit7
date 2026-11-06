@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { Resolver } from 'node:dns/promises';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { fakeApi, account, type Req } from './clouds-fakes.ts';
 import { all, get, id, json, run } from '../src/db.ts';
+import { Unit7Error } from '../src/errors.ts';
 import { getTool } from '../src/tools/runtime.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { blake3, pagesHash } from '../src/live/blake3.ts';
@@ -25,7 +26,8 @@ import { hostinger } from '../src/connectors/hostinger.ts';
 import { CATALOG } from '../src/connectors/oneclick.ts';
 import { walk } from '../src/live/source.ts';
 
-liveTiming.pollMs = 1; liveTiming.answerMs = 20;
+// a short limit, so a wait that never ends fails here instead of sitting for 25 minutes
+liveTiming.pollMs = 1; liveTiming.answerMs = 20; liveTiming.buildMs = 5_000;
 
 const site = (files: Record<string, string>) => {
   const dir = mkdtempSync(join(tmpdir(), 'site-'));
@@ -33,10 +35,16 @@ const site = (files: Record<string, string>) => {
   return dir;
 };
 const sha1 = (s: string) => createHash('sha1').update(s).digest('hex');
+// unpacked, not listed: tar -t writes odd names in escapes of its own
+const tarOf = (path: string) => {
+  const out = mkdtempSync(join(tmpdir(), 'untar-'));
+  execFileSync('tar', ['-xzf', path, '-C', out]);
+  return readdirSync(out, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(out.length + 1).normalize()).sort();
+};
 const inTar = (tgz: Buffer) => {
   const f = join(mkdtempSync(join(tmpdir(), 'tar-')), 'a.tgz');
   writeFileSync(f, tgz);
-  return execFileSync('tar', ['-tzf', f]).toString().split('\n').filter((l) => l && !l.endsWith('/')).map((l) => l.replace(/^\.\//, '')).sort();
+  return tarOf(f);
 };
 async function base() {
   const app = testApp(), org = await testOrg(app);
@@ -224,7 +232,7 @@ test('a key in built files stops the upload, and one left in the source doesn’
 
 const P = '/cf/accounts/acct1/pages/projects/shop';
 function fakeCloudflare(o: { project?: any; oldToken?: boolean; known?: string[]; stage?: { name: string; status: string }; noCreate?: boolean } = {}) {
-  const st = { project: o.project, created: [] as any[], buckets: [] as any[], upserted: [] as string[][], form: '', contentType: '', patched: [] as any[], domains: [] as string[], records: [] as any[], rollbacks: [] as string[], known: new Set(o.known) };
+  const st = { project: o.project, created: [] as any[], buckets: [] as any[], upserted: [] as string[][], form: '', contentType: '', patched: [] as any[], domains: [] as string[], records: [] as any[], rollbacks: [] as string[], known: new Set(o.known), stagePolls: 0 };
   const good = (result: unknown) => ({ success: true, errors: [], messages: [], result });
   const no = (status: number, message: string, code = 1000) => [status, { success: false, errors: [{ code, message }], messages: [], result: null }];
   return fakeApi(({ method, path, body, auth, headers }: Req) => {
@@ -251,7 +259,7 @@ function fakeCloudflare(o: { project?: any; oldToken?: boolean; known?: string[]
       st.form = body; st.contentType = String(headers['content-type']);
       return good({ id: 'dep2', url: 'https://abc.shop-x7.pages.example', latest_stage: { name: 'queued', status: 'active' } });
     }
-    if (p === `${P}/deployments/dep2`) return good({ id: 'dep2', latest_stage: o.stage ?? { name: 'deploy', status: 'success' } });
+    if (p === `${P}/deployments/dep2`) return good({ id: 'dep2', latest_stage: ++st.stagePolls === 1 ? { name: 'deploy', status: 'active' } : o.stage ?? { name: 'deploy', status: 'success' } });
     if (p === `${P}/deployments`) return good([{ id: 'dep2' }]);
     if (p === `${P}/deployments/dep2/history/logs`) return good({ total: 1, data: [{ ts: 'now', line: 'Success: Your site was deployed!' }] });
     if (p === `${P}/deployments/dep1/rollback`) { st.rollbacks.push('dep1'); return good({ id: 'dep1' }); }
@@ -276,6 +284,7 @@ test('Cloudflare Pages: the project is made, hashes go first, only what’s miss
     assert.deepEqual(s.st.created, [{ name: 'shop', production_branch: 'main' }]);
     assert.equal(out.url, 'https://shop-x7.pages.example', 'the address Cloudflare gave, which can differ from the name');
     assert.equal(out.deployment, 'dep2');
+    assert.equal(s.st.stagePolls, 2, 'it waited past a deployment still in progress');
     const sent = s.st.buckets.flat();
     assert.deepEqual(sent.map((f: any) => f.key).sort(), [pagesHash(Buffer.from('<h1>built</h1>'), 'index.html'), pagesHash(Buffer.from('built'), 'app.js')].sort());
     const page = sent.find((f: any) => f.metadata.contentType === 'text/html');
@@ -734,17 +743,18 @@ async function onServer() {
   const b = await base(), srv = id('srv');
   run(b.app.db, `INSERT INTO servers (id, org_id, name, host, key_ref, status, facts) VALUES (?, ?, 'box', '203.0.113.9', 'credential://ssh/box/private-key', 'ready', '{}')`, srv, b.org.orgId);
   const deployed: any[] = [], tool = getTool('deployment.create')!, real = tool.run;
+  const st = { fail: undefined as Unit7Error | undefined };
   tool.run = (_ctx: unknown, i: any) => {
+    if (st.fail) throw st.fail;
     deployed.push(i);
     const before = get<{ c: string | null }>(b.app.db, 'SELECT current_deployment_id c FROM services WHERE id = ?', i.serviceId)!.c, dep = id('dep');
     run(b.app.db, `INSERT INTO deployments (id, org_id, service_id, number, status, source, triggered_by) VALUES (?, ?, ?, ?, 'live', '{}', 'test')`, dep, b.org.orgId, i.serviceId, deployed.length);
     run(b.app.db, 'UPDATE services SET current_deployment_id = ? WHERE id = ?', dep, i.serviceId);
     return { deploymentId: dep, number: deployed.length, status: 'live', url: 'https://shop.203-0-113-9.sslip.example', ...(before && { previousDeploymentId: before }) };
   };
-  return { ...b, srv, deployed, close: () => { tool.run = real; } };
+  return { ...b, srv, deployed, st, close: () => { tool.run = real; } };
 }
 const pathOf = (s: { app: any }, uploadId: string) => get<{ path: string }>(s.app.db, 'SELECT path FROM uploads WHERE id = ?', uploadId)!.path;
-const tarOf = (path: string) => execFileSync('tar', ['-tzf', path]).toString().split('\n').filter((l) => l && !l.endsWith('/')).map((l) => l.replace(/^\.\//, '')).sort();
 
 test('your own server: a project, a service and a deploy, packed from the checked files, not the upload as it came', async () => {
   const s = await onServer();
@@ -772,6 +782,19 @@ test('your own server: a project, a service and a deploy, packed from the checke
   } finally { s.close(); }
 });
 
+test('your own server: a deploy that fails says why, and running it again goes on from there', async () => {
+  const s = await onServer(), dir = site(EXPRESS);
+  try {
+    s.st.fail = new Unit7Error('build_failed', 'The build stopped: npm could not find a package.', 502);
+    const r = await s.org.h('live.put', { uploadId: await s.upload(dir), to: 'server', name: 'shop' }) as any;
+    assert.equal(r.error.message, 'The build stopped: npm could not find a package.');
+    assert.equal(r.error.code, 'build_failed');
+    s.st.fail = undefined;
+    ok(await s.org.h('live.put', { uploadId: await s.upload(dir), to: 'server', name: 'shop' }));
+    assert.equal(get<{ n: number }>(s.app.db, 'SELECT count(*) n FROM services')!.n, 1);
+  } finally { s.close(); }
+});
+
 test('your own server: a step that waited for a person isn’t done twice, a live app needs update, and an update stays the new version', async () => {
   const s = await onServer(), dir = site(EXPRESS);
   try {
@@ -790,7 +813,7 @@ test('your own server: a step that waited for a person isn’t done twice, a liv
     const again = await s.org.h('live.put', { uploadId, to: 'server', name: 'shop' }) as any;
     assert.match(again.error.message, /already runs on your server/);
     const out = ok<any>(await s.org.h('live.put', { uploadId: await s.upload(site({ ...EXPRESS, 'server.js': 'version two' })), to: 'server', name: 'shop', update: true }));
-    const source = s.deployed[1].source as { uploadId: string };
+    const source = (s.deployed as any[])[1].source as { uploadId: string };
     assert.equal(json<{ source: { uploadId: string } }>(get<{ config: string }>(s.app.db, 'SELECT config FROM services WHERE id = ?', svc)!.config, {} as any).source.uploadId, source.uploadId, 'or a plain redeploy later would bring the old code back');
     assert.match(out.notes.join(' '), /deployment\.rollback with serviceId/);
   } finally { s.close(); }

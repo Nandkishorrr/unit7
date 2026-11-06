@@ -22,7 +22,7 @@ async function siteFor(ctx: Ctx, acc: string, p: Put) {
   const found = (await netlify.sites(ctx, acc).catch(refused('list your sites'))).find((s) => s.name === p.name);
   // a site with nothing live is a first try that stopped half way
   if (found?.published_deploy && !p.update) throw new Unit7Error('already_exists', `${p.name} already exists on this Netlify account. Choose another name, or say you want to update it.`, 409);
-  return found ?? rest<NetlifySite>('Netlify', `${netlifyApi()}/${p.team ? `${encodeURIComponent(p.team)}/` : ''}sites`, { headers: await auth(ctx, acc), body: { name: p.name } }).catch((e: Unit7Error) => {
+  return found ?? rest<NetlifySite>('Netlify', `${netlifyApi()}/${p.team ? `${seg(p.team)}/` : ''}sites`, { headers: await auth(ctx, acc), body: { name: p.name } }).catch((e: Unit7Error) => {
     if (/unprocessable|unique|taken/i.test(e.message)) throw new Unit7Error('name_taken', `Someone else’s Netlify site is already called ${p.name}. Choose another name.`, 409);
     return refused('create the site')(e);
   });

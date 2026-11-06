@@ -59,6 +59,7 @@ export const cloudflare = {
   addRecord: (ctx: Ctx, accountId: string, zoneId: string, r: { type: string; name: string; content?: string; data?: object; ttl?: number; priority?: number; proxied?: boolean }) =>
     cf(ctx, accountId, `/zones/${zoneId}/dns_records`, { body: { ...r, ttl: r.ttl ?? 1, proxied: r.proxied ?? false } }).catch((e: Unit7Error) => { if (!/already exists|identical record/i.test(e.message)) throw e; }),
   // the Cloudflare account a token belongs to: Pages projects live under it, not under a zone
+  // ponytail: a token's first account, as createZone does; a token spanning several would need a way to choose
   async accountOf(ctx: Ctx, accountId: string): Promise<string> {
     const [account] = await cf(ctx, accountId, '/accounts?per_page=5') as { id: string }[];
     if (!account) throw new Unit7Error('cloudflare_error', 'This Cloudflare token can’t see an account. In Connections, add a new Cloudflare key (the button pre-fills the right permissions).', 403);

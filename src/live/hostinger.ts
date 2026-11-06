@@ -33,7 +33,7 @@ const refused = (what: string, why: unknown) => new Unit7Error('hostinger_error'
 
 async function websiteOf(ctx: Ctx, acc: string, domain?: string): Promise<Website> {
   const name = domain?.replace(/^www\./, '');
-  const got = await hostingerExec(ctx, acc, 'hosting_websites_list', { per_page: 100, ...(name && { domain: name }) }).catch((e: Error) => { throw refused('list your websites', e.message); });
+  const got = await hostingerExec(ctx, acc, 'hosting_websites_list', name ? { domain: name } : {}).catch((e: Error) => { throw refused('list your websites', e.message); });
   const rows = (Array.isArray(got) ? got : []) as Website[];
   if (!name) throw new Unit7Error('which_website', rows.length ? `Hostinger hosts one site per domain. Say which of yours this goes on: ${rows.slice(0, 10).map((r) => r.domain).join(', ')}.` : 'This Hostinger account has no websites yet. Add one in hPanel (Websites → Add website), then run this again. Unit7 doesn’t buy hosting.', 400);
   // the filter matches part of a name, so shop.example also finds myshop.example
@@ -44,7 +44,7 @@ async function websiteOf(ctx: Ctx, acc: string, domain?: string): Promise<Websit
 
 // a listing Unit7 can't read counts as full: the mistake that matters is overwriting someone's site
 async function holdsSomething(ctx: Ctx, acc: string, w: Website) {
-  const got = await hostingerExec(ctx, acc, 'hosting_files_list-website-and-directories', { username: w.username, domain: w.domain, max_items: 100 }).catch(() => undefined);
+  const got = await hostingerExec(ctx, acc, 'hosting_files_list-website-and-directories', { username: w.username, domain: w.domain }).catch(() => undefined);
   const rows = Array.isArray(got) ? got : got?.items ?? got?.entries ?? got?.files;
   return !Array.isArray(rows) || rows.some((e: { name?: string; path?: string }) => !FRESH.test(String(e?.name ?? e?.path ?? e).split('/').pop()!));
 }
@@ -148,7 +148,7 @@ export const hostingerHost: Host = addHost({
     const acc = p.place.accountId!, w = await websiteOf(ctx, acc, p.domain), kept = APPS[w.website_type ?? ''];
     if (kept) throw new Unit7Error('would_replace', `${w.domain} runs ${kept}, and a deploy would wipe it with no way back. Pick another website, or remove it in hPanel first.`, 409);
     if (!p.update && await holdsSomething(ctx, acc, w)) throw new Unit7Error('already_exists', `${w.domain} already has a site on it, and a deploy overwrites it with no way back. Say you want to replace it, or pick an empty website.`, 409);
-    if (p.update && isAgent(ctx) && !ctx.approvalId) throw new Unit7Error('needs_person', `Replacing ${w.domain} can’t be undone, so a person has to agree. Run this with to: hostinger and it waits on the Approvals page.`, 403);
+    if (p.update && isAgent(ctx) && !ctx.approvalId) throw new Unit7Error('needs_person', `Replacing ${w.domain} can’t be undone, so a person has to do it or approve it.`, 403);
     let uuid: string | undefined;
     if (needsComposer(p.site)) await deployRepo(ctx, acc, w, p);
     else uuid = await deploy(ctx, acc, w, p);
