@@ -113,6 +113,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Updating packages runs the package tool on the repo’s own files in a throwaway container that holds a GitHub key. With Unit7’s GitHub App that key reaches one repo’s files for an hour. A pasted or CLI token reaches all it can, and a Yarn plugin in the repo could read it.
 
+## Home with no AI connected
+
+- With no AI connected, Home answers seven questions and offers to connect one. Other requests aren’t kept. WordPress move-in takes files up to 100 MB each.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.
