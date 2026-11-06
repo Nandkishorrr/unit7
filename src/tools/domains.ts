@@ -17,6 +17,7 @@ import { loginHint } from '../care/mail.ts';
 import { hostsOf } from '../connectors/coolify.ts';
 import { act, need, setDomains } from './coolify.ts';
 import { CHANGE_UNDO, keepChange } from './manage.ts';
+import { dnsDeps } from './clouds-dns.ts';
 import { wildcardCertificate } from './redirects.ts';
 import { githubToken, pagesDomain, parseRepo } from '../connectors/github.ts';
 import { verifiers } from './core.ts';
@@ -367,9 +368,7 @@ defineTool({
   input: z.object({ domain: z.string().min(3).max(253) }),
   async run(ctx, i) {
     const domain = i.domain.toLowerCase();
-    const { Resolver } = await import('node:dns/promises');
-    const r = new Resolver({ timeout: 4000, tries: 2 }); r.setServers(['1.1.1.1', '8.8.8.8']);
-    const [mx, existing, root] = await Promise.all([r.resolveMx(domain).then((v) => v.map((m) => `${m.priority} ${m.exchange}`), () => [] as string[]), r.resolveTxt(`_dmarc.${domain}`).then((v) => v.map((p) => p.join('')), () => [] as string[]), r.resolveTxt(domain).then((v) => v.map((p) => p.join('')), () => [] as string[])]);
+    const [mx, existing, root] = await Promise.all([dnsDeps.answers(domain, 'MX'), dnsDeps.answers(`_dmarc.${domain}`, 'TXT'), dnsDeps.answers(domain, 'TXT')]);
     if (existing.some((t) => /^v=DMARC1/i.test(t))) return { domain, dmarc: 'already set', record: existing.find((t) => /^v=DMARC1/i.test(t)) };
     const value = mx.length ? 'v=DMARC1; p=none' : 'v=DMARC1; p=reject';
     const w = await writeRecords(ctx, `_dmarc.${domain}`, [{ type: 'TXT', name: `_dmarc.${domain}`, content: value }]);

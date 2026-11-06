@@ -454,6 +454,7 @@ async function setAuthOnServer(ctx: Ctx, i: Where & AuthInput) {
     return { changed: false, rolledBack: true, why: off[0] === 'the deploy' ? 'The deploy failed, so Unit7 put the old settings back.' : `The stack’s Compose file sets ${off.join(', ')} itself, so the change never reached the auth container. Unit7 put the old settings back. To change it, edit the Compose file in Coolify (the service’s Edit Compose File).`, limits: AUTH_LIMITS };
   }
   const summary = `Changed the sign-in settings of ${p.name} on ${s.name}`;
+  await runXray(ctx, s).catch(() => undefined); // so readiness and the Check-up see the fix now, not at the next hourly look
   return { changed: true, part: p.name, ...authView(Object.fromEntries(AUTH_KEYS.filter((k) => k.run).map((k) => [k.api, sets.find((x) => x.api === k.api)?.value ?? before[k.run!]]))),
     ...(back.length && remember(ctx, `coolify:${r.uuid}`, 'supabase.auth_server', summary, { serverId: s.id, uuid: r.uuid, kind: r.kind, keys: back })),
     ...(i.smtpPass && { note: 'Undo can’t put back the old SMTP password: Unit7 never reads it.' }), limits: AUTH_LIMITS };
@@ -486,8 +487,10 @@ defineTool({
       body[k.api] = k.api === 'disable_signup' ? k.value === 'true' : k.value;
       if (k.run) before[k.api] = was[k.api] ?? null;
     }
-    const after = await sb<Record<string, unknown>>(ctx, acc, path, { method: 'PATCH', body });
-    return { changed: true, ref: i.ref, ...authView({ ...was, ...after }), ...(Object.keys(before).length && remember(ctx, `supabase:${i.ref}`, 'supabase.auth', `Changed the sign-in settings of the Supabase project ${i.ref}`, { accountId: acc, ref: i.ref, before })),
+    const after = await sb<Record<string, unknown>>(ctx, acc, path, { method: 'PATCH', body }), now = { ...was, ...after };
+    // readiness and the Check-up read this from the last sync: the fix shows now
+    run(ctx.db, `UPDATE assets SET meta = json_set(meta, '$.auth', json(?)) WHERE org_id = ? AND provider = 'supabase' AND ext_id = ?`, JSON.stringify({ smtp: !!now.smtp_host, ...(now.site_url ? { site: now.site_url } : {}) }), ctx.orgId, i.ref);
+    return { changed: true, ref: i.ref, ...authView(now), ...(Object.keys(before).length && remember(ctx, `supabase:${i.ref}`, 'supabase.auth', `Changed the sign-in settings of the Supabase project ${i.ref}`, { accountId: acc, ref: i.ref, before })),
       ...(i.smtpPass && { note: 'Undo can’t put back the old SMTP password: Supabase never shows it.' }) };
   },
 });

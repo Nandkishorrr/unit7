@@ -62,6 +62,7 @@ async function cloudflareFake(recs: any[] = []) {
     if (p === '/zones/z1/dns_records' && method === 'POST') { const r = { id: `r${st.n++}`, ...JSON.parse(body) }; st.recs.push(r); return ok(r); }
     const rec = /^\/zones\/z1\/dns_records\/(.+)$/.exec(p);
     if (rec && method === 'DELETE') { st.recs.splice(st.recs.findIndex((r) => r.id === rec[1]), 1); return ok({ id: rec[1] }); }
+    if (rec && method === 'PUT') { st.recs[st.recs.findIndex((r) => r.id === rec[1])] = { id: rec[1], ...JSON.parse(body) }; return ok({ id: rec[1] }); }
     if (p === '/zones/z1/email/routing') return ok({ id: 'z1', enabled: st.enabled, status: st.enabled ? 'ready' : 'unconfigured', name: 'example.com' });
     if (p === '/zones/z1/email/routing/dns' && method === 'GET') return ok(CF_MX);
     if (p === '/zones/z1/email/routing/dns' && method === 'POST') { st.enabled = true; st.mxWhenOn = st.recs.filter((r) => r.type === 'MX').map((r) => r.content); return ok({ id: 'z1', enabled: true, status: 'ready' }); }
@@ -129,7 +130,7 @@ test('email.check: each of SPF, DKIM and DMARC in plain words, with its fix, and
     assert.equal(r.receives.by, 'Google');
     assert.equal(r.spf.state, 'incomplete');
     assert.equal(r.spf.record, 'v=spf1 include:_spf.example.net include:_spf.google.com ~all', 'the sender already there stays');
-    assert.deepEqual(r.spf.fix, { tool: 'dns.set', input: { domain: 'example.com', name: '@', type: 'TXT', value: r.spf.record }, label: 'Set this SPF record' });
+    assert.deepEqual(r.spf.fix, { tool: 'dns.set', input: { domain: 'example.com', name: 'example.com', type: 'TXT', value: r.spf.record }, label: 'Set this SPF record' });
     assert.equal(r.dkim.state, 'waiting', 'written at an unusual name, not public yet');
     assert.deepEqual(r.dkim.waiting, ['mykey']);
     assert.equal(r.dmarc.state, 'watching');
@@ -501,9 +502,30 @@ test('bringing your own SMTP host: the password goes straight into the vault, an
     assert.equal(app.vault.resolve(o.orgId, 'credential://smtp/shop-example-com/password'), 'stored-by-a-person');
     assert.ok(!JSON.stringify(ref).includes('stored-by-a-person'));
     app.vault.put(o.orgId, 'credential://ntfy/phone/topic', 'approve-codes-go-here', { by: 'Ada' });
-    assert.match(failed(await o.a('email.setup', { ...given, smtpPassword: 'credential://ntfy/phone/topic' })).message, /one of Unit7's own keys/);
+    const fresh = { ...given, domain: 'new.example.com', spfInclude: undefined };
+    assert.match(failed(await o.a('email.setup', { ...fresh, smtpPassword: 'credential://ntfy/phone/topic' })).message, /one of Unit7's own keys/);
     const cfRef = all<{ meta: string }>(app.db, `SELECT meta FROM accounts WHERE provider = 'cloudflare'`)[0]!, token = JSON.parse(cfRef.meta).ref;
-    assert.match(failed(await o.a('email.setup', { ...given, smtpPassword: token })).message, /isn't bound to this environment/);
+    assert.match(failed(await o.a('email.setup', { ...fresh, smtpPassword: token })).message, /isn't bound to this environment/);
+    // and a login already in use is a person's to change, as any credential is
+    assert.match(failed(await o.a('email.setup', { ...given, smtpHost: 'smtp.somewhere-else.example', smtpPassword: 'credential://generic/mine/smtp' })).message, /Only a person can change it/);
+    assert.equal(ok(await o.a('email.check', { domain: 'example.com' })).sender.host, 'smtp.mailhost.example');
+  } finally { cf.close(); }
+});
+
+test('domain.protect_email says the whole SPF line, with what is there kept in it', async () => {
+  const cf = await cloudflareFake();
+  try {
+    const app = testApp(), o = await testOrg(app);
+    account(app, o.orgId, 'cloudflare', 'cf-demo-token');
+    world('cloudflare', { 'MX example.com': ['1 aspmx.l.google.com'], 'TXT example.com': ['v=spf1 include:_spf.example.net ~all'] });
+    const r = ok(await o.h('domain.protect_email', { domain: 'example.com' }));
+    assert.equal(r.dmarc, 'v=DMARC1; p=none');
+    assert.match(r.spf, /"v=spf1 include:_spf\.example\.net include:_spf\.google\.com ~all"/);
+    assert.match(r.spf, /keeps every sender already there/);
+    world('cloudflare', {});
+    assert.match(ok(await o.h('domain.protect_email', { domain: 'example.com' })).spf, /"v=spf1 -all".*sends no email/);
+    world('cloudflare', { 'TXT example.com': ['v=spf1 mx ~all'] });
+    assert.equal(ok(await o.h('domain.protect_email', { domain: 'example.com' })).spf, undefined, 'nothing to add');
   } finally { cf.close(); }
 });
 
@@ -1025,8 +1047,11 @@ test('project.readiness and the Check-up flag an app on Supabase’s built-in se
     assert.deepEqual([item.fix.tool, item.fix.input], ['email.setup', { domain: 'example.com' }]);
     assert.ok(c.checked.some((x: any) => x.id === 'mail'));
 
-    Object.assign(s.st.auth, { smtp_host: 'smtp.resend.com', site_url: 'https://shop.example.com' });
-    ok(await o.h('sync.run', { only: [acc] }).catch(() => ({ status: 'ok', output: {} }) as any));
+    // a fix ticks now, not at the next sync
+    app.vault.put(o.orgId, 'credential://smtp/example-com/password', 'a-password', { kind: 'smtp', meta: { host: 'smtp.resend.com', user: 'resend' } });
+    assert.deepEqual([item.fix.tool, c.items.length > 0], ['email.setup', true]);
+    ok(await o.h('email.connect_app', { domain: 'example.com', ref: REF }));
+    ok(await o.h('auth.urls', { ref: REF, url: 'https://shop.example.com' }));
     const fine = ok(await o.h('project.readiness', { projectId: prj.id ?? prj.projectId }));
     assert.deepEqual([key(fine, 'sender').ok, key(fine, 'login').ok], [true, true]);
     assert.ok(!ok(await o.h('checkup.run', { quick: true })).items.some((i: any) => i.id.startsWith('mail:')));
@@ -1056,9 +1081,9 @@ test('an AI trying to read the SMTP password gets nowhere, whichever way it asks
     for (const [tool, input] of [['coolify.envs', { serverId: srv, uuid: 'shopapp01', op: 'reveal', key: 'SMTP_PASS' }], ['coolify.running_value', { serverId: srv, uuid: 'shopapp01', key: 'SMTP_PASS' }], ['vault.set', { ref, value: 'x' }], ['vault.restore', { ref, version: 1 }]] as const) {
       assert.equal((await o.a(tool, input)).status, 'denied', tool);
     }
-    // a result can't carry it either: anything that echoes it comes back masked
-    const echo = await o.a('email.setup', { domain: 'example.com', smtpHost: 'smtp.mailhost.example', smtpUser: 'mailer', smtpPassword: ref });
-    assert.ok(!JSON.stringify(echo).includes(PASSWORD));
+    // copying it to a login of its own shows nothing either, and the copy is as locked as the first
+    const copy = await o.a('email.setup', { domain: 'shop.example.com', smtpHost: 'smtp.mailhost.example', smtpUser: 'mailer', smtpPassword: ref });
+    assert.ok(!JSON.stringify(copy).includes(PASSWORD));
     assert.equal(c.seen.deploys, 0);
     // no output of any of this is kept with the value in it
     assert.ok(!everywhere(app).includes(PASSWORD));
