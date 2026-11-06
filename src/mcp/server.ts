@@ -67,7 +67,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 47. DNS records: dns_list, then dns_set; domain_redirect for redirects; client_subdomain gives a client an address. Mail records wait for a person. domain_point and domain_launch take a Coolify app in one step.
 48. Coolify: coolify_auto_deploy (deploy on push), coolify_previews, coolify_storage, coolify_scale. project_list and graph_get show its projects with an ast_ id, which project_readiness, project_passport and client_assign accept.
 49. Server care: server_snapshot, server_open_port, server_ssh_keys, server_users, server_resize, server_move_plan. Buying, plan changes and deleting are people only: send the person to the server’s Advanced tab.
-50. live_put also takes netlify, cloudflare-pages, github-pages, hostinger and server. On hostinger, domain picks the website.`;
+50. live_put also takes netlify, cloudflare-pages, github-pages, hostinger and server. On hostinger, domain picks the website.
+51. A live_options place with costs is for a person to start: tell them, don’t retry.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).

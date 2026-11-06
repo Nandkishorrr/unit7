@@ -830,7 +830,7 @@ test('your own server: a repo stays a repo, a domain is routed to the app, and a
     await pushFolder(walk(site(EXPRESS)), { owner: 'demo', name: 'shop' }, undefined, { branch: 'main', message: 'Code', existing: false });
     const out = ok<any>(await s.org.h('live.put', { repo: 'demo/shop', to: 'server', name: 'shop', domain: 'www.shop.example' }));
     const svc = get<{ id: string; config: string }>(s.app.db, 'SELECT id, config FROM services')!;
-    assert.deepEqual(json<{ source: unknown }>(svc.config, {} as any).source, { type: 'git', repo: 'demo/shop' });
+    assert.deepEqual(json<{ source: unknown }>(svc.config, {} as any).source, { type: 'git', repo: 'demo/shop', branch: 'main' });
     assert.equal(out.autoDeploy, true);
     assert.deepEqual(pointed, [{ hostname: 'www.shop.example', serviceId: svc.id }], 'routed to the app, not just an address for the server');
 

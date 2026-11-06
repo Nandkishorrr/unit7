@@ -59,6 +59,8 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Netlify, Cloudflare Pages and GitHub Pages take finished files only. One-click Hostinger accounts can’t upload, so add a token. Unit7’s GitHub App can’t create repos or turn on Pages. Hostinger settings change all together. Cloudflare uses a token’s first account.
 
+- Fly needs a ready image or a copy of an app. Cloud Run needs a gcloud sign-in and uses us-central1. Render, Railway, DigitalOcean and Amplify builds need their GitHub app connected once in a browser.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

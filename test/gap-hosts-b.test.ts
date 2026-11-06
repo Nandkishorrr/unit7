@@ -720,7 +720,7 @@ test('an AI never starts a host that can cost money, a person says yes first, an
     assert.equal(ai.status, 'denied');
     assert.equal(hk.apps.shop, undefined);
     const options = ok<any>(await w.org.a('live.options', { uploadId }));
-    assert.deepEqual(options.places.map((p: any) => p.to), ['render', 'heroku']);
+    assert.deepEqual(options.places.filter((p: any) => p.ok).map((p: any) => p.to), ['render', 'heroku']);
     assert.match(options.places[1].costs, /no free apps/);
     assert.equal(options.places[0].costs, undefined);
     const free = ok<any>(await w.org.a('live.put', { uploadId, name: 'shop' }));
