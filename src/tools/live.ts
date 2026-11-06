@@ -7,7 +7,7 @@ import { fid, isAgent } from './helpers.ts';
 import { Unit7Error } from '../errors.ts';
 import { assertReachable } from '../netguard.ts';
 import { openSource, type Site } from '../live/source.ts';
-import { allHosts, hostOf, type Fit, type Place } from '../live/hosts.ts';
+import { allHosts, hostOf, type Fit, type Host, type Place, type Placed } from '../live/hosts.ts';
 import { step } from '../live/coolify.ts';
 import { liveTiming } from '../live/vercel.ts';
 import '../live/netlify.ts';
@@ -15,6 +15,15 @@ import '../live/cloudflare.ts';
 import '../live/github-pages.ts';
 import '../live/hostinger.ts';
 import '../live/server.ts';
+import '../live/render.ts';
+import '../live/railway.ts';
+import '../live/fly.ts';
+import '../live/digitalocean.ts';
+import '../live/firebase.ts';
+import '../live/heroku.ts';
+import '../live/cloudrun.ts';
+import '../live/amplify.ts';
+import '../live/azure.ts';
 import { createRepo, githubToken, parseRepo, pushFolder, repoExists } from '../connectors/github.ts';
 
 const NAME = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,51}$/, 'lowercase letters, digits and dashes, up to 52');
@@ -22,14 +31,27 @@ const SOURCE = {
   folder: z.string().trim().min(1).max(1024).optional().describe('A folder on this computer. People only: an AI uses uploadId or repo.'),
   uploadId: fid('upl').or(z.string().regex(/^upl_[\w-]{10,24}$/)).optional(), repo: z.string().trim().max(300).optional().describe('A GitHub repo: owner/name.'),
   branch: z.string().regex(/^[\w./-]{1,100}$/).optional(),
+  image: z.string().regex(/^[a-z0-9][a-z0-9._/:@-]{1,250}$/).optional().describe('A ready image, like registry.fly.io/shop:v2. Fly.io only: it can’t build code.'),
+  copyOf: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional().describe('An app already on this host: a second app starts from what it runs, without its settings. Fly.io and Heroku.'),
 };
-const oneSource = (i: { folder?: string; uploadId?: string; repo?: string }) => [i.folder, i.uploadId, i.repo].filter(Boolean).length === 1;
+const oneSource = (i: { folder?: string; uploadId?: string; repo?: string; image?: string; copyOf?: string }) => [i.folder, i.uploadId, i.repo, i.image, i.copyOf].filter(Boolean).length === 1;
+const ONE_SOURCE = 'Give one of folder, uploadId, repo, image or copyOf.';
 const needsPerson = (i: { folder?: string }) => !!i.folder;
 const WHERE = { to: z.string().regex(/^[a-z-]{2,30}$/).optional().describe('A host from live.options: vercel, coolify, netlify, cloudflare-pages, github-pages, hostinger, server…'), accountId: fid('acc').optional(), serverId: fid('srv').optional() };
+const costs = (i: { to?: string }) => !!(i.to && hostOf(i.to)?.costs);
 
 const facts = (s: Site) => ({ name: s.name, stack: s.detection.stack, runtime: s.detection.runtime ?? null, files: s.files.length, mb: +(s.bytes / 1024 / 1024).toFixed(1), needs: s.detection.needs, settings: s.detection.envKeys.slice(0, 40) });
-const placesFor = (ctx: Ctx, site: Site) => allHosts().flatMap((h) => { const fit = h.fit(site); return h.places(ctx).map((place) => ({ place, fit, host: h })); });
+// a sign-in that can only read is refused here, before anything is made, and the reason is its fit
+const placesFor = (ctx: Ctx, site: Site) => Promise.all(allHosts().flatMap((h) => {
+  const fit: Fit = !site.files.length && !h.noCode ? { ok: false, why: `${h.name} needs code or files, not a ready image or a copy of an app.` } : h.fit(site);
+  return h.places(ctx).map(async (place) => {
+    const lacks = fit.ok && h.rights ? await h.rights(ctx, place).catch(() => undefined) : undefined;
+    return { place, fit: lacks ? { ok: false, why: lacks } : fit, host: h };
+  });
+}));
 const rank = (f: Fit) => (f.best ? 2 : f.ok ? 1 : 0);
+// the best fit first, and of two the same, the one that can't cost money
+const best = (a: { fit: Fit; host: Host }, b: { fit: Fit; host: Host }) => rank(b.fit) - rank(a.fit) || +!!a.host.costs - +!!b.host.costs;
 
 // A key in a plain website is on the internet for anyone to read. On a host that builds, it's still in your code, so it's said.
 function secretWarning(site: Site) {
@@ -51,40 +73,42 @@ const answers = (url: string) => Promise.race<number | false>([
 defineTool({
   name: 'live.options', title: 'Where could this go live', risk: 'read', action: 'read', timeoutMs: 180_000, peopleOnly: needsPerson,
   description: 'For a site (uploadId, or repo owner/name; a person can give a folder): what it is, which settings its code reads, any keys that shouldn’t be published, and every connected place it could go, best first, with why. Call this before live.put when the person hasn’t said where.',
-  input: z.object({ ...SOURCE }).refine(oneSource, 'Give one of folder, uploadId or repo.'),
+  input: z.object({ ...SOURCE }).refine(oneSource, ONE_SOURCE),
   async run(ctx, i) {
     const site = await openSource(ctx, i);
     try {
-      const places = placesFor(ctx, site).sort((a, b) => rank(b.fit) - rank(a.fit)).map(({ place, fit, host }) => ({ to: host.id, label: place.label, accountId: place.accountId, serverId: place.serverId, ok: fit.ok, why: fit.why, recommended: !!fit.best }));
+      const places = (await placesFor(ctx, site)).sort(best).map(({ place, fit, host }) => ({ to: host.id, label: place.label, accountId: place.accountId, serverId: place.serverId, ok: fit.ok, why: fit.why, recommended: !!fit.best, ...(host.costs && { costs: host.costs }) }));
       const usable = places.filter((p) => p.ok), w = secretWarning(site);
       return { site: facts(site), places, ...(w && { keysFound: w.list, publishRefused: w.stop }),
-        next: usable.length ? 'Show the first place as the recommendation, then call live.put.' : 'Nothing connected can host this. Say which host would, and offer to connect it in Connections.' };
+        next: usable.length ? 'Show the first place as the recommendation, then call live.put. A place with costs is for a person to start: an AI can’t.' : 'Nothing connected can host this. Say which host would, and offer to connect it in Connections.' };
     } finally { site.done(); }
   },
 });
 
 defineTool({
   // replacing a Hostinger website has no way back, so an AI waits for a person there
-  name: 'live.put', title: 'Put this live', risk: (i) => (i.update && i.to === 'hostinger' ? 'destructive' : 'write'), action: 'deploy', timeoutMs: 40 * 60_000, sensitive: ['env'], peopleOnly: needsPerson,
+  // a host that can cost money is a purchase: only a person, and they say yes first
+  name: 'live.put', title: 'Put this live', risk: (i) => (i.update && i.to === 'hostinger' ? 'destructive' : 'write'), action: (i) => (costs(i) ? 'provider_purchase' : 'deploy'), timeoutMs: 40 * 60_000, sensitive: ['env'], peopleOnly: (i) => needsPerson(i) || costs(i),
   // a brand-new project only creates: nothing that exists changes
-  green: (i) => !i.update,
-  description: 'Create a project and put a site live from an upload or a GitHub repo, on any connected host (see live.options), then check it answers. Builds it where the host can. name is the project’s name. domain points your domain at it; on Hostinger web hosting it picks which of your websites this goes on. env sets settings: a value may be a credential:// reference. update: true replaces what’s live on an existing project. Keys found in a plain website stop it.',
-  input: z.object({ ...SOURCE, ...WHERE, name: NAME.optional(), domain: z.string().trim().toLowerCase().regex(/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/).optional(), env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,200}$/), z.string().max(65_536)).optional(), update: z.boolean().default(false), team: z.string().max(100).optional() }).refine(oneSource, 'Give one of folder, uploadId or repo.'),
+  green: (i) => !i.update && !costs(i),
+  description: 'Create a project and put a site live from an upload or a GitHub repo, on any connected host (see live.options), then check it answers. Builds it where the host can. name is the project’s name. domain points your domain at it; on Hostinger web hosting it picks which of your websites this goes on. env sets settings: a value may be a credential:// reference. update: true replaces what’s live on an existing project. Keys found in a plain website stop it. team picks where, when the account has several: a Vercel team, Render workspace, Railway workspace, Fly.io organisation, Google project, AWS region or Azure subscription. On Fly.io, a ready image, with port if it isn’t 8080. On Fly.io and Heroku, copyOf starts a second app from what one runs. Hosts that can cost money are for a person to start, naming the host with to: an AI can’t.',
+  input: z.object({ ...SOURCE, ...WHERE, name: NAME.optional(), domain: z.string().trim().toLowerCase().regex(/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/).optional(), env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,200}$/), z.string().max(65_536)).optional(), update: z.boolean().default(false), team: z.string().max(100).optional(), port: z.number().int().min(1).max(65535).optional() }).refine(oneSource, ONE_SOURCE),
   async run(ctx, i) {
     const site = await openSource(ctx, i, i.name);
     try {
       const w = secretWarning(site);
       if (w?.stop) throw new Unit7Error('keys_in_site', `Stopped: these files would put secret keys on the internet: ${w.list}. Take them out, then run this again.`, 400);
-      const options = placesFor(ctx, site).filter(({ place, host }) => (!i.to || host.id === i.to) && (!i.accountId || place.accountId === i.accountId) && (!i.serverId || place.serverId === i.serverId)).sort((a, b) => rank(b.fit) - rank(a.fit));
+      const options = (await placesFor(ctx, site)).filter(({ place, host }) => (!i.to || host.id === i.to) && (!i.accountId || place.accountId === i.accountId) && (!i.serverId || place.serverId === i.serverId)).sort(best);
       const chosen = options.find((o) => o.fit.ok) ?? options[0];
       if (!chosen) throw new Unit7Error('no_host', i.to ? `${i.to} isn’t connected. Connect it in Connections, then run this again.` : 'Nothing is connected that can host this. Connect Vercel, GitHub or a server in Connections.', 400);
       if (!chosen.fit.ok) throw new Unit7Error('wrong_host', `${chosen.host.name} can’t host this: ${chosen.fit.why}`, 400);
+      if (chosen.host.costs && !i.to) throw new Unit7Error('costs_money', `The place for this is ${chosen.host.name}, and it can cost money. ${chosen.host.costs} A person has to choose it, with to: "${chosen.host.id}".`, 400);
       const env = Object.entries(i.env ?? {}).map(([key, v]) => settingOf(ctx, key, v));
       const name = i.name ?? site.name;
-      const placed = await chosen.host.put(ctx, { name, site, place: chosen.place, env, domain: i.domain, update: i.update, team: i.team });
+      const placed = await chosen.host.put(ctx, { name, site, place: chosen.place, env, domain: i.domain, update: i.update, team: i.team, port: i.port });
       ctx.emit('live.placed', `${name} is live on ${chosen.host.name}: ${placed.url}`, { severity: 'success', resource: placed.project, data: { host: chosen.host.id, url: placed.url } });
       const answered = placed.url ? await answers(placed.url) : false;
-      const domain = i.domain && placed.point !== false ? await pointDomain(ctx, i.domain, chosen.place, name, i.team, placed.point).catch((e: Error) => ({ error: e.message })) : undefined;
+      const domain = i.domain && placed.point !== false ? await pointDomain(ctx, i.domain, chosen.place, name, placed, i.team).catch((e: Error) => ({ error: e.message })) : undefined;
       return { url: placed.url, name, host: chosen.host.id, project: placed.project, deployment: placed.deployment, verified: answered !== false, status: answered || undefined, autoDeploy: !!placed.autoDeploy, site: facts(site),
         ...(domain && { domain }), notes: [...(placed.notes ?? []), ...(w ? [`These files hold keys, so they shouldn’t be in the code: ${w.list}.`] : []), ...(site.detection.envKeys.length && !i.env && chosen.host.env ? [`The code reads ${site.detection.envKeys.length} setting${site.detection.envKeys.length === 1 ? '' : 's'}. Set them with live.env or the site may not work: ${site.detection.envKeys.slice(0, 12).join(', ')}.`] : [])],
         next: answered === false ? 'It says it’s live but didn’t answer yet. Check again in a minute with live.status.' : undefined };
@@ -92,8 +116,9 @@ defineTool({
   },
 });
 
-function pointDomain(ctx: Ctx, hostname: string, p: Place, name: string, team?: string, target?: Record<string, unknown>) {
-  if (target) return step(ctx, 'domain.point', { hostname, ...target });
+function pointDomain(ctx: Ctx, hostname: string, p: Place, name: string, placed: Placed, team?: string) {
+  if (typeof placed.point === 'string') return Promise.resolve({ error: placed.point });
+  if (placed.point) return step(ctx, 'domain.point', { hostname, ...placed.point });
   if (p.host === 'vercel') return step(ctx, 'domain.point', { hostname, vercel: { accountId: p.accountId, project: name, team } });
   if (p.serverId) return step(ctx, 'domain.point', { hostname, server: { serverId: p.serverId } });
   return step(ctx, 'domain.point', { hostname, [p.host]: { accountId: p.accountId, ...(p.host === 'netlify' ? { site: name } : { service: name }) } });
@@ -125,7 +150,7 @@ defineTool({
     const { host, ref } = refOf(ctx, i);
     if (!host.env) throw new Unit7Error('no_settings', `Unit7 can’t change settings on ${host.name} yet. They’re on its own dashboard.`, 400);
     const set = i.op === 'set' ? [settingOf(ctx, i.key!, i.value!)] : undefined;
-    return { settings: await host.env(ctx, ref, { set, unset: i.op === 'unset' ? [i.key!] : undefined }), ...(i.op !== 'list' && { next: 'A new value applies on the next build: redeploy it to use it.' }) };
+    return { settings: await host.env(ctx, ref, { set, unset: i.op === 'unset' ? [i.key!] : undefined }), ...(i.op !== 'list' && { next: host.envNow ? 'It applies now: the app restarts with it.' : 'A new value applies on the next build: redeploy it to use it.' }) };
   },
 });
 

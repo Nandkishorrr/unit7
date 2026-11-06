@@ -4,12 +4,12 @@ import { randomBytes } from 'node:crypto';
 import { run } from '../src/db.ts';
 import type { App } from '../src/app.ts';
 
-export type Req = { method: string; path: string; auth: string; body: string; headers: Record<string, string | string[] | undefined> };
+export type Req = { method: string; path: string; auth: string; body: string; raw: Buffer; headers: Record<string, string | string[] | undefined> };
 export async function fakeApi(handler: (r: Req) => unknown) {
   const calls: Req[] = [];
   const server = createServer(async (req: IncomingMessage, res) => {
-    let body = ''; for await (const c of req) body += c;
-    const r = { method: req.method!, path: req.url!, auth: String(req.headers.authorization ?? ''), body, headers: req.headers };
+    const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer);
+    const raw = Buffer.concat(chunks), r = { method: req.method!, path: req.url!, auth: String(req.headers.authorization ?? ''), body: raw.toString(), raw, headers: req.headers };
     calls.push(r);
     const out = handler(r);
     const [status, data] = Array.isArray(out) && typeof out[0] === 'number' ? out as [number, unknown] : out === undefined ? [404, { error: { code: 404, message: 'Not found.' } }] : [200, out];

@@ -529,7 +529,7 @@ const sizing: Record<string, (ctx: Ctx, acc: string, dbs: Found[]) => Promise<vo
     await pool(dbs, 3, async (d) => {
       const v = num(await dbSize(`render:${d.extId}`, async () => {
         const end = new Date(), start = new Date(end.getTime() - 3600_000);
-        const r = await rest<{ unit?: string; values?: { value: number }[] }[]>('Render', `${RENDER_API}/metrics/disk-usage?resource=${d.extId}&startTime=${start.toISOString()}&endTime=${end.toISOString()}&resolutionSeconds=600`, { headers: await renderAuth(ctx, acc) });
+        const r = await rest<{ unit?: string; values?: { value: number }[] }[]>('Render', `${RENDER_API()}/metrics/disk-usage?resource=${d.extId}&startTime=${start.toISOString()}&endTime=${end.toISOString()}&resolutionSeconds=600`, { headers: await renderAuth(ctx, acc) });
         const s = r[0], last = s?.values?.at(-1)?.value, unit = UNIT[(s?.unit ?? 'bytes').toLowerCase()];
         return last !== undefined && unit ? String(Math.round(last * unit)) : '';
       }));

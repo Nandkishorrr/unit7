@@ -60,13 +60,13 @@ export const netlify = {
 };
 
 // --- Render ------------------------------------------------------------------------------------------
-const RENDER = 'https://api.render.com/v1';
+const RENDER = () => process.env.UNIT7_RENDER_API ?? 'https://api.render.com/v1'; // overridable for offline tests, like the others here
 const rn = async (ctx: Ctx, acc: string) => ({ authorization: `Bearer ${await bearerFor(ctx, 'render', acc)}` });
 async function renderList<T>(ctx: Ctx, acc: string, path: string, field: string): Promise<T[]> {
   const out: T[] = [];
   let cursor: string | undefined;
   for (let i = 0; i < 50; i++) {
-    const page = await rest<({ cursor: string } & Record<string, T>)[]>('Render', `${RENDER}${path}${path.includes('?') ? '&' : '?'}limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { headers: await rn(ctx, acc) });
+    const page = await rest<({ cursor: string } & Record<string, T>)[]>('Render', `${RENDER()}${path}${path.includes('?') ? '&' : '?'}limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { headers: await rn(ctx, acc) });
     out.push(...page.map((x) => x[field]!));
     if (page.length < 100) break;
     cursor = page.at(-1)!.cursor;
@@ -76,19 +76,19 @@ async function renderList<T>(ctx: Ctx, acc: string, path: string, field: string)
 export interface RenderService { id: string; name: string; type: string; ownerId?: string; suspended?: string; serviceDetails?: { url?: string } }
 export const render = {
   services: (ctx: Ctx, acc: string) => renderList<RenderService>(ctx, acc, '/services?includePreviews=false', 'service'),
-  service: async (ctx: Ctx, acc: string, id: string) => rest<RenderService>('Render', `${RENDER}/services/${id}`, { headers: await rn(ctx, acc) }),
+  service: async (ctx: Ctx, acc: string, id: string) => rest<RenderService>('Render', `${RENDER()}/services/${id}`, { headers: await rn(ctx, acc) }),
   env: async (ctx: Ctx, acc: string, id: string) => Object.fromEntries((await renderList<{ key: string; value: string }>(ctx, acc, `/services/${id}/env-vars`, 'envVar')).map((v) => [v.key, v.value])),
   domains: (ctx: Ctx, acc: string, id: string) => renderList<{ name: string; verificationStatus: string }>(ctx, acc, `/services/${id}/custom-domains`, 'customDomain'),
   postgres: (ctx: Ctx, acc: string) => renderList<{ id: string; name: string; status?: string }>(ctx, acc, '/postgres', 'postgres'),
   // the database's hosts, read out of its connection strings (the strings themselves aren't kept)
   postgresHosts: async (ctx: Ctx, acc: string, id: string) => {
-    const c = await rest<{ internalConnectionString?: string; externalConnectionString?: string }>('Render', `${RENDER}/postgres/${id}/connection-info`, { headers: await rn(ctx, acc) });
+    const c = await rest<{ internalConnectionString?: string; externalConnectionString?: string }>('Render', `${RENDER()}/postgres/${id}/connection-info`, { headers: await rn(ctx, acc) });
     return [c.internalConnectionString, c.externalConnectionString].map((s) => (s ? /@([^:/?]+)/.exec(s)?.[1]?.toLowerCase() : undefined)).filter(Boolean) as string[];
   },
   async setEnv(ctx: Ctx, acc: string, id: string, vars: { key: string; value: string }[]) {
-    for (const v of vars) await rest('Render', `${RENDER}/services/${id}/env-vars/${encodeURIComponent(v.key)}`, { method: 'PUT', headers: await rn(ctx, acc), body: { value: v.value } }); // one key at a time: never the replace-all call
+    for (const v of vars) await rest('Render', `${RENDER()}/services/${id}/env-vars/${encodeURIComponent(v.key)}`, { method: 'PUT', headers: await rn(ctx, acc), body: { value: v.value } }); // one key at a time: never the replace-all call
   },
-  deploy: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER}/services/${id}/deploys`, { method: 'POST', headers: await rn(ctx, acc), body: {} }),
+  deploy: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER()}/services/${id}/deploys`, { method: 'POST', headers: await rn(ctx, acc), body: {} }),
   // error-level log lines since a moment (Render filters by level itself)
   async errorLines(ctx: Ctx, acc: string, id: string, since: Date) {
     const owner = (await render.service(ctx, acc, id)).ownerId;
@@ -97,7 +97,7 @@ export const render = {
     let start = since.toISOString(), end = new Date().toISOString();
     for (let page = 0; page < 3; page++) {
       const q = new URLSearchParams({ ownerId: owner, resource: id, startTime: start, endTime: end, level: 'error', direction: 'forward', limit: '100' });
-      const r = await rest<{ hasMore: boolean; nextStartTime?: string; nextEndTime?: string; logs: { message: string; timestamp: string }[] }>('Render', `${RENDER}/logs?${q}`, { headers: await rn(ctx, acc) });
+      const r = await rest<{ hasMore: boolean; nextStartTime?: string; nextEndTime?: string; logs: { message: string; timestamp: string }[] }>('Render', `${RENDER()}/logs?${q}`, { headers: await rn(ctx, acc) });
       out.push(...r.logs.map((l) => ({ at: l.timestamp, text: l.message })));
       if (!r.hasMore || !r.nextStartTime) break;
       start = r.nextStartTime; end = r.nextEndTime ?? end;
@@ -105,16 +105,16 @@ export const render = {
     return out;
   },
   async addDomain(ctx: Ctx, acc: string, id: string, domain: string): Promise<DnsRec[]> {
-    await rest('Render', `${RENDER}/services/${id}/custom-domains`, { method: 'POST', headers: await rn(ctx, acc), body: { name: domain } }).catch((e: Unit7Error) => { if (!/exist|already/i.test(e.message)) throw e; });
+    await rest('Render', `${RENDER()}/services/${id}/custom-domains`, { method: 'POST', headers: await rn(ctx, acc), body: { name: domain } }).catch((e: Unit7Error) => { if (!/exist|already/i.test(e.message)) throw e; });
     const host = hostOf((await render.service(ctx, acc, id)).serviceDetails?.url);
     if (!host) throw new Unit7Error('unsupported', 'That Render service has no web address (a worker or cron job can’t take a domain).', 400);
     return [await isApex(domain) ? { type: 'A', name: domain, content: '216.24.57.1' } : { type: 'CNAME', name: domain, content: host }];
   },
-  verify: async (ctx: Ctx, acc: string, id: string, domain: string) => { await rest('Render', `${RENDER}/services/${id}/custom-domains/${encodeURIComponent(domain)}/verify`, { method: 'POST', headers: await rn(ctx, acc), body: {} }).catch(() => undefined); },
+  verify: async (ctx: Ctx, acc: string, id: string, domain: string) => { await rest('Render', `${RENDER()}/services/${id}/custom-domains/${encodeURIComponent(domain)}/verify`, { method: 'POST', headers: await rn(ctx, acc), body: {} }).catch(() => undefined); },
 };
 
 // --- Railway (GraphQL) -------------------------------------------------------------------------------
-const RAILWAY = 'https://backboard.railway.com/graphql/v2';
+const RAILWAY = () => process.env.UNIT7_RAILWAY_API ?? 'https://backboard.railway.com/graphql/v2';
 // Railway has three kinds of token: an account token (or a one-click sign-in) sees everything; a
 // workspace token sees one workspace and can't ask "who am I"; a project token sees one environment of
 // one project and goes in its own header. Unit7 works out which it was given, once, and remembers.
@@ -125,7 +125,7 @@ async function railwayKind(ctx: Ctx, acc: string): Promise<{ kind: RailwayKind; 
   const headersFor = (k: RailwayKind): Record<string, string> => (k === 'project' ? { 'project-access-token': token } : { authorization: `Bearer ${token}` });
   const known = json<{ railway?: RailwayKind }>(account.meta, {}).railway ?? (isOAuthAccount(account.meta) ? 'account' : undefined);
   if (known) return { kind: known, headers: headersFor(known) };
-  const works = (k: RailwayKind, query: string) => rest<{ errors?: unknown[] }>('Railway', RAILWAY, { headers: headersFor(k), body: { query } }).then((r) => !r.errors?.length, () => false);
+  const works = (k: RailwayKind, query: string) => rest<{ errors?: unknown[] }>('Railway', RAILWAY(), { headers: headersFor(k), body: { query } }).then((r) => !r.errors?.length, () => false);
   const kind: RailwayKind | undefined = await works('account', '{ me { id } }') ? 'account'
     : await works('workspace', '{ projects(first: 1) { edges { node { id } } } }') ? 'workspace'
     : await works('project', '{ projectToken { projectId } }') ? 'project' : undefined;
@@ -135,7 +135,7 @@ async function railwayKind(ctx: Ctx, acc: string): Promise<{ kind: RailwayKind; 
 }
 
 async function rw<T = any>(ctx: Ctx, acc: string, query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const r = await rest<{ data?: T; errors?: { message: string }[] }>('Railway', RAILWAY, { headers: (await railwayKind(ctx, acc)).headers, body: { query, variables } });
+  const r = await rest<{ data?: T; errors?: { message: string }[] }>('Railway', RAILWAY(), { headers: (await railwayKind(ctx, acc)).headers, body: { query, variables } });
   if (r.errors?.length) throw new Unit7Error('railway_error', `Railway: ${r.errors[0]!.message}`, /authori/i.test(r.errors[0]!.message) ? 403 : 502);
   return r.data!;
 }
@@ -215,23 +215,23 @@ export const railway = {
 };
 
 // --- Heroku (Platform API) ------------------------------------------------------------------------------
-const HEROKU = 'https://api.heroku.com';
+const HEROKU = () => process.env.UNIT7_HEROKU_API ?? 'https://api.heroku.com';
 const hk = async (ctx: Ctx, acc: string) => ({ authorization: `Bearer ${await bearerFor(ctx, 'heroku', acc)}`, accept: 'application/vnd.heroku+json; version=3' });
 export interface HerokuApp { id: string; name: string; web_url?: string; maintenance?: boolean }
 export const heroku = {
   // ponytail: Heroku pages long lists with a Range header; 1000 apps per call covers nearly everyone
-  apps: async (ctx: Ctx, acc: string) => rest<HerokuApp[]>('Heroku', `${HEROKU}/apps`, { headers: { ...(await hk(ctx, acc)), range: 'id ..; max=1000' } }),
-  app: async (ctx: Ctx, acc: string, app: string) => rest<HerokuApp>('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}`, { headers: await hk(ctx, acc) }),
-  domains: async (ctx: Ctx, acc: string, app: string) => rest<{ hostname: string; kind: 'heroku' | 'custom'; cname: string | null }[]>('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}/domains`, { headers: await hk(ctx, acc) }),
-  env: async (ctx: Ctx, acc: string, app: string) => rest<Record<string, string>>('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}/config-vars`, { headers: await hk(ctx, acc) }),
-  addons: async (ctx: Ctx, acc: string, app: string) => rest<{ id: string; name: string; addon_service: { name: string }; config_vars: string[]; state?: string }[]>('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}/addons`, { headers: await hk(ctx, acc) }),
+  apps: async (ctx: Ctx, acc: string) => rest<HerokuApp[]>('Heroku', `${HEROKU()}/apps`, { headers: { ...(await hk(ctx, acc)), range: 'id ..; max=1000' } }),
+  app: async (ctx: Ctx, acc: string, app: string) => rest<HerokuApp>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}`, { headers: await hk(ctx, acc) }),
+  domains: async (ctx: Ctx, acc: string, app: string) => rest<{ hostname: string; kind: 'heroku' | 'custom'; cname: string | null }[]>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/domains`, { headers: await hk(ctx, acc) }),
+  env: async (ctx: Ctx, acc: string, app: string) => rest<Record<string, string>>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/config-vars`, { headers: await hk(ctx, acc) }),
+  addons: async (ctx: Ctx, acc: string, app: string) => rest<{ id: string; name: string; addon_service: { name: string }; config_vars: string[]; state?: string }[]>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/addons`, { headers: await hk(ctx, acc) }),
   // Heroku makes a new release and restarts the app by itself when settings change
   setEnv: async (ctx: Ctx, acc: string, app: string, vars: { key: string; value: string }[]) =>
-    rest('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}/config-vars`, { method: 'PATCH', headers: await hk(ctx, acc), body: Object.fromEntries(vars.map((v) => [v.key, v.value])) }),
+    rest('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/config-vars`, { method: 'PATCH', headers: await hk(ctx, acc), body: Object.fromEntries(vars.map((v) => [v.key, v.value])) }),
   // Heroku has no month-to-date figure: the latest invoice stands in for a month
-  lastInvoice: async (ctx: Ctx, acc: string) => (await rest<{ total: number; period_end: string }[]>('Heroku', `${HEROKU}/account/invoices`, { headers: await hk(ctx, acc) }).catch(() => [])).at(-1),
+  lastInvoice: async (ctx: Ctx, acc: string) => (await rest<{ total: number; period_end: string }[]>('Heroku', `${HEROKU()}/account/invoices`, { headers: await hk(ctx, acc) }).catch(() => [])).at(-1),
   async recentLines(ctx: Ctx, acc: string, app: string, since: Date) {
-    const s = await rest<{ logplex_url: string }>('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}/log-sessions`, { headers: await hk(ctx, acc), body: { lines: 1500, source: 'app', tail: false } });
+    const s = await rest<{ logplex_url: string }>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/log-sessions`, { headers: await hk(ctx, acc), body: { lines: 1500, source: 'app', tail: false } });
     const res = await fetch(s.logplex_url, { signal: AbortSignal.timeout(20_000) });
     const text = await res.text();
     // plain lines or Server-Sent Events ("data: …"); each line starts with its timestamp
@@ -241,8 +241,8 @@ export const heroku = {
   async addDomain(ctx: Ctx, acc: string, app: string, domain: string): Promise<DnsRec[]> {
     const headers = await hk(ctx, acc);
     const existing = (await heroku.domains(ctx, acc, app)).find((d) => d.hostname === domain);
-    const d = existing ?? await rest<{ cname: string | null }>('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}/domains`, { headers, body: { hostname: domain, sni_endpoint: null } });
-    await rest('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}/acm`, { method: 'POST', headers, body: {} }).catch(() => undefined); // free automatic HTTPS
+    const d = existing ?? await rest<{ cname: string | null }>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/domains`, { headers, body: { hostname: domain, sni_endpoint: null } });
+    await rest('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/acm`, { method: 'POST', headers, body: {} }).catch(() => undefined); // free automatic HTTPS
     if (!d.cname) throw new Unit7Error('heroku_error', 'Heroku didn\u2019t say where the domain should point yet. Try again in a minute.', 409);
     // a bare domain needs a flattened CNAME (Cloudflare does it) or ALIAS; a subdomain is a plain CNAME
     return [{ type: await isApex(domain) ? 'ALIAS' : 'CNAME', name: domain, content: d.cname.replace(/\.$/, '') }];
@@ -250,14 +250,14 @@ export const heroku = {
 };
 
 // --- Fly.io: GraphQL to list apps, the Machines API to set secrets, roll machines and add domains --------
-const FLY_GQL = 'https://api.fly.io/graphql', FLY_API = 'https://api.machines.dev/v1';
+const FLY_HOST = () => process.env.UNIT7_FLY_HOST ?? 'https://api.fly.io', FLY_GQL = () => `${FLY_HOST()}/graphql`, FLY_API = () => process.env.UNIT7_FLY_API ?? 'https://api.machines.dev/v1';
 // flyctl's rule: tokens made of fm1r_/fm2_ parts go as "FlyV1 …", anything else as a Bearer token
 const flyAuth = async (ctx: Ctx, acc: string) => {
   const t = (await bearerFor(ctx, 'fly', acc)).trim().replace(/^FlyV1\s+/, '');
   return { authorization: t.split(',').some((part) => /^fm(1r|2)_/.test(part.trim())) ? `FlyV1 ${t}` : `Bearer ${t}` };
 };
 async function flyGql<T = any>(ctx: Ctx, acc: string, query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const r = await rest<{ data?: T; errors?: { message: string }[] }>('Fly.io', FLY_GQL, { headers: await flyAuth(ctx, acc), body: { query, variables } });
+  const r = await rest<{ data?: T; errors?: { message: string }[] }>('Fly.io', FLY_GQL(), { headers: await flyAuth(ctx, acc), body: { query, variables } });
   if (r.errors?.length) throw new Unit7Error('fly_error', `Fly.io: ${r.errors[0]!.message}`, 502);
   return r.data!;
 }
@@ -281,20 +281,20 @@ export const fly = {
   app: async (ctx: Ctx, acc: string, name: string) => (await fly.apps(ctx, acc)).find((a) => a.name === name),
   // secrets don't restart anything on Fly: each machine is then updated to require the new secrets version
   async setSecrets(ctx: Ctx, acc: string, app: string, vars: { key: string; value: string }[]) {
-    const r = await rest<{ version: number }>('Fly.io', `${FLY_API}/apps/${encodeURIComponent(app)}/secrets`, { headers: await flyAuth(ctx, acc), body: { values: Object.fromEntries(vars.map((v) => [v.key, v.value])) } });
+    const r = await rest<{ version: number }>('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/secrets`, { headers: await flyAuth(ctx, acc), body: { values: Object.fromEntries(vars.map((v) => [v.key, v.value])) } });
     return r.version;
   },
   async roll(ctx: Ctx, acc: string, app: string, secretsVersion?: number) {
     const headers = await flyAuth(ctx, acc);
-    const machines = await rest<{ id: string; config: object }[]>('Fly.io', `${FLY_API}/apps/${encodeURIComponent(app)}/machines`, { headers });
+    const machines = await rest<{ id: string; config: object }[]>('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/machines`, { headers });
     for (const m of machines) {
-      await rest('Fly.io', `${FLY_API}/apps/${encodeURIComponent(app)}/machines/${m.id}`, { headers, body: { config: m.config, ...(secretsVersion !== undefined && { min_secrets_version: secretsVersion }) } });
+      await rest('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/machines/${m.id}`, { headers, body: { config: m.config, ...(secretsVersion !== undefined && { min_secrets_version: secretsVersion }) } });
       await new Promise((r) => setTimeout(r, 1100)); // Fly allows about one update a second
     }
     return machines.length;
   },
   async addDomain(ctx: Ctx, acc: string, app: string, domain: string): Promise<DnsRec[]> {
-    const r = await rest<{ dns_requirements?: { a?: string[]; cname?: string; ownership?: { name: string; app_value: string } } }>('Fly.io', `${FLY_API}/apps/${encodeURIComponent(app)}/certificates/acme`, { headers: await flyAuth(ctx, acc), body: { hostname: domain } });
+    const r = await rest<{ dns_requirements?: { a?: string[]; cname?: string; ownership?: { name: string; app_value: string } } }>('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/certificates/acme`, { headers: await flyAuth(ctx, acc), body: { hostname: domain } });
     const req = r.dns_requirements ?? {};
     const apex = await isApex(domain);
     // ponytail: the IPv4 record only; an AAAA to the app's v6 address would also work, add it when Unit7's checks speak IPv6
@@ -309,14 +309,14 @@ export const fly = {
     const out: { at: string; text: string; level?: string }[] = [];
     let token = String(BigInt(since.getTime()) * 1_000_000n);
     for (let page = 0; page < 5; page++) {
-      const r = await rest<{ data: { attributes: { timestamp: string; message: string; level?: string } }[]; meta?: { next_token?: string } }>('Fly.io', `https://api.fly.io/api/v1/apps/${encodeURIComponent(app)}/logs?next_token=${token}`, { headers: await flyAuth(ctx, acc) });
+      const r = await rest<{ data: { attributes: { timestamp: string; message: string; level?: string } }[]; meta?: { next_token?: string } }>('Fly.io', `${FLY_HOST()}/api/v1/apps/${encodeURIComponent(app)}/logs?next_token=${token}`, { headers: await flyAuth(ctx, acc) });
       out.push(...r.data.map((d) => ({ at: d.attributes.timestamp, text: d.attributes.message, level: d.attributes.level })));
       if (!r.data.length || !r.meta?.next_token || r.meta.next_token === token) break;
       token = r.meta.next_token;
     }
     return out;
   },
-  check: async (ctx: Ctx, acc: string, app: string, domain: string) => { await rest('Fly.io', `${FLY_API}/apps/${encodeURIComponent(app)}/certificates/${encodeURIComponent(domain)}/check`, { method: 'POST', headers: await flyAuth(ctx, acc), body: {} }).catch(() => undefined); },
+  check: async (ctx: Ctx, acc: string, app: string, domain: string) => { await rest('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/certificates/${encodeURIComponent(domain)}/check`, { method: 'POST', headers: await flyAuth(ctx, acc), body: {} }).catch(() => undefined); },
 };
 
 // --- DigitalOcean listings ---------------------------------------------------------------------------
@@ -362,9 +362,9 @@ export { hostOf };
 // delete would take data with it (Fly volumes, Heroku add-ons, a Render disk), so Unit7 can say so before.
 export const hostRemoval = {
   netlifySite: async (ctx: Ctx, acc: string, site: string) => rest('Netlify', `${NETLIFY_API()}/sites/${encodeURIComponent(site)}`, { method: 'DELETE', headers: await nl(ctx, acc) }),
-  renderService: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER}/services/${encodeURIComponent(id)}`, { method: 'DELETE', headers: await rn(ctx, acc) }),
-  renderPostgres: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER}/postgres/${encodeURIComponent(id)}`, { method: 'DELETE', headers: await rn(ctx, acc) }),
-  renderDisk: async (ctx: Ctx, acc: string, id: string) => (await rest<{ serviceDetails?: { disk?: { name?: string; sizeGB?: number } } }>('Render', `${RENDER}/services/${encodeURIComponent(id)}`, { headers: await rn(ctx, acc) })).serviceDetails?.disk,
+  renderService: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER()}/services/${encodeURIComponent(id)}`, { method: 'DELETE', headers: await rn(ctx, acc) }),
+  renderPostgres: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER()}/postgres/${encodeURIComponent(id)}`, { method: 'DELETE', headers: await rn(ctx, acc) }),
+  renderDisk: async (ctx: Ctx, acc: string, id: string) => (await rest<{ serviceDetails?: { disk?: { name?: string; sizeGB?: number } } }>('Render', `${RENDER()}/services/${encodeURIComponent(id)}`, { headers: await rn(ctx, acc) })).serviceDetails?.disk,
   // serviceDelete(id, environmentId) removes it from one environment; projectDelete takes the whole project with its volumes
   railwayService: (ctx: Ctx, acc: string, service: string, environment: string) => rw<{ serviceDelete: boolean }>(ctx, acc, 'mutation($id: String!, $e: String) { serviceDelete(id: $id, environmentId: $e) }', { id: service, e: environment }),
   railwayProject: (ctx: Ctx, acc: string, project: string) => rw<{ projectDelete: boolean }>(ctx, acc, 'mutation($id: String!) { projectDelete(id: $id) }', { id: project }),
@@ -380,15 +380,15 @@ export const hostRemoval = {
     };
   },
   // DELETE /apps/{app} (200) destroys the add-ons the app owns, Heroku Postgres included
-  herokuApp: async (ctx: Ctx, acc: string, app: string) => rest('Heroku', `${HEROKU}/apps/${encodeURIComponent(app)}`, { method: 'DELETE', headers: await hk(ctx, acc) }),
+  herokuApp: async (ctx: Ctx, acc: string, app: string) => rest('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}`, { method: 'DELETE', headers: await hk(ctx, acc) }),
   // DELETE /v1/apps/{app}?force=true (202): its machines, volumes and their snapshots, addresses and secrets. Forced only
   // when the person also chose to delete its data; otherwise Fly.io's own checks stay in the way
-  flyApp: async (ctx: Ctx, acc: string, app: string, force = false) => rest('Fly.io', `${FLY_API}/apps/${encodeURIComponent(app)}${force ? '?force=true' : ''}`, { method: 'DELETE', headers: await flyAuth(ctx, acc) }),
-  flyVolumes: async (ctx: Ctx, acc: string, app: string) => rest<{ id: string; name: string; size_gb?: number; state?: string }[]>('Fly.io', `${FLY_API}/apps/${encodeURIComponent(app)}/volumes`, { headers: await flyAuth(ctx, acc) }),
+  flyApp: async (ctx: Ctx, acc: string, app: string, force = false) => rest('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}${force ? '?force=true' : ''}`, { method: 'DELETE', headers: await flyAuth(ctx, acc) }),
+  flyVolumes: async (ctx: Ctx, acc: string, app: string) => rest<{ id: string; name: string; size_gb?: number; state?: string }[]>('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/volumes`, { headers: await flyAuth(ctx, acc) }),
 };
 
 // for the scanners' database sizes (discovery/scanners.ts): Railway's GraphQL with this account's own headers, Render's REST
-export { rw as railwayQuery, RENDER as RENDER_API, rn as renderAuth };
+export { rw as railwayQuery, railwayKind, RENDER as RENDER_API, rn as renderAuth, HEROKU as HEROKU_API, hk as herokuAuth, FLY_API, flyAuth };
 
 // --- deploy history, restore / rollback and a new build (cloud.redeploy) ------------------------------------------
 // Netlify, checked against its OpenAPI spec (open-api.netlify.com/swagger.json), 2026-10-08:
@@ -402,7 +402,6 @@ export { rw as railwayQuery, RENDER as RENDER_API, rn as renderAuth };
 //   GET  /services/{id}/deploys/{deployId}    status: live, deactivated (was live), build_failed, … (retrieve-deploy)
 //   POST /services/{id}/rollback { deployId } (201) the deploy's build again; auto-deploys stay on (rollback-deploy)
 //   POST /services/{id}/deploys               (201 the deploy, or 202 queued) a new build of the latest commit (create-deploy)
-const RENDER_DEPLOY_API = () => process.env.UNIT7_RENDER_API ?? RENDER;
 export interface NetlifyDeploy { id: string; state?: string; context?: string; published_at?: string | null; error_message?: string | null; required?: string[] }
 export const netlifyDeploys = {
   live: async (ctx: Ctx, acc: string, site: string) => (await rest<NetlifySite>('Netlify', `${NETLIFY_API()}/sites/${encodeURIComponent(site)}`, { headers: await nl(ctx, acc) })).published_deploy?.id,
@@ -413,8 +412,8 @@ export const netlifyDeploys = {
 };
 export interface RenderDeploy { id: string; status?: string; createdAt?: string; finishedAt?: string | null }
 export const renderDeploys = {
-  list: async (ctx: Ctx, acc: string, id: string) => (await rest<{ deploy: RenderDeploy }[]>('Render', `${RENDER_DEPLOY_API()}/services/${encodeURIComponent(id)}/deploys?limit=20`, { headers: await rn(ctx, acc) })).map((d) => d.deploy),
-  get: async (ctx: Ctx, acc: string, id: string, deploy: string) => rest<RenderDeploy>('Render', `${RENDER_DEPLOY_API()}/services/${encodeURIComponent(id)}/deploys/${encodeURIComponent(deploy)}`, { headers: await rn(ctx, acc) }),
-  rollback: async (ctx: Ctx, acc: string, id: string, deploy: string) => rest<RenderDeploy>('Render', `${RENDER_DEPLOY_API()}/services/${encodeURIComponent(id)}/rollback`, { method: 'POST', headers: await rn(ctx, acc), body: { deployId: deploy } }),
-  deploy: async (ctx: Ctx, acc: string, id: string) => rest<Partial<RenderDeploy>>('Render', `${RENDER_DEPLOY_API()}/services/${encodeURIComponent(id)}/deploys`, { method: 'POST', headers: await rn(ctx, acc), body: {} }),
+  list: async (ctx: Ctx, acc: string, id: string) => (await rest<{ deploy: RenderDeploy }[]>('Render', `${RENDER()}/services/${encodeURIComponent(id)}/deploys?limit=20`, { headers: await rn(ctx, acc) })).map((d) => d.deploy),
+  get: async (ctx: Ctx, acc: string, id: string, deploy: string) => rest<RenderDeploy>('Render', `${RENDER()}/services/${encodeURIComponent(id)}/deploys/${encodeURIComponent(deploy)}`, { headers: await rn(ctx, acc) }),
+  rollback: async (ctx: Ctx, acc: string, id: string, deploy: string) => rest<RenderDeploy>('Render', `${RENDER()}/services/${encodeURIComponent(id)}/rollback`, { method: 'POST', headers: await rn(ctx, acc), body: { deployId: deploy } }),
+  deploy: async (ctx: Ctx, acc: string, id: string) => rest<Partial<RenderDeploy>>('Render', `${RENDER()}/services/${encodeURIComponent(id)}/deploys`, { method: 'POST', headers: await rn(ctx, acc), body: {} }),
 };

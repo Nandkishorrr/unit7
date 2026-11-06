@@ -121,6 +121,13 @@ export async function gsend<T = any>(ctx: Ctx, acc: string, url: string, o: { me
   return call<T>('Google Cloud', url, { method: o.method ?? 'POST', body: o.body, headers: { authorization: `Bearer ${await googleToken(ctx, acc)}`, ...(o.quotaProject && { 'x-goog-user-project': o.quotaProject }) } });
 }
 export const gread = gget;
+export const googleApi = G;
+// which of these a sign-in may not do in a project, from Google itself (asking takes no rights of its own)
+// https://docs.cloud.google.com/resource-manager/reference/rest/v1/projects/testIamPermissions
+export async function googleLacks(ctx: Ctx, acc: string, project: string, wanted: string[]) {
+  const r = await gsend<{ permissions?: string[] }>(ctx, acc, `${G('cloudresourcemanager')}/v1/projects/${project}:testIamPermissions`, { body: { permissions: wanted } });
+  return wanted.filter((w) => !r.permissions?.includes(w));
+}
 
 export interface GBudget { displayName: string; amount: { specifiedAmount: { currencyCode?: string; units: string } }; thresholdRules: { thresholdPercent: number; spendBasis?: string }[]; budgetFilter?: { projects?: string[]; calendarPeriod?: string }; notificationsRule?: { pubsubTopic?: string; schemaVersion?: string; disableDefaultIamRecipients?: boolean } }
 export const googleBilling = {

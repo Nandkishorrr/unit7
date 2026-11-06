@@ -19,6 +19,7 @@ export interface SiteFile { path: string; abs: string; size: number }
 export interface Site {
   dir: string; name: string; detection: Detection; files: SiteFile[]; bytes: number;
   secrets: { file: string; kinds: string[] }[]; repo?: Repo; branch?: string; uploadId?: string;
+  image?: string; copyOf?: string; // no code: a ready image, or a copy of an app already on the host
   done(): void; // removes what Unit7 unpacked; a person's own folder is left alone
 }
 
@@ -65,8 +66,9 @@ function open(dir: string, name: string, done: () => void, extra: Partial<Site> 
   } catch (e) { done(); throw e; }
 }
 
-export interface SourceInput { folder?: string; uploadId?: string; repo?: string; branch?: string }
+export interface SourceInput { folder?: string; uploadId?: string; repo?: string; branch?: string; image?: string; copyOf?: string }
 export async function openSource(ctx: Pick<Ctx, 'app' | 'db' | 'orgId' | 'signal'> & Partial<Ctx>, i: SourceInput, name?: string): Promise<Site> {
+  if (i.image || i.copyOf) return { dir: '', name: siteName(name ?? (i.copyOf ? `${i.copyOf}-copy` : basename(i.image!).split(/[:@]/)[0]!)), detection: detect({ files: [], manifests: {} }), files: [], bytes: 0, secrets: [], image: i.image, copyOf: i.copyOf, done: () => undefined };
   if (i.folder) { const dir = checkFolder(i.folder, ctx.app.home); return open(dir, name ?? basename(dir), () => undefined); }
   const tmp = mkdtempSync(join(tmpdir(), 'unit7-live-')), done = () => rmSync(tmp, { recursive: true, force: true });
   try {
@@ -82,6 +84,7 @@ export async function openSource(ctx: Pick<Ctx, 'app' | 'db' | 'orgId' | 'signal
     const args = ['clone', '--depth', '1', ...(i.branch ? ['--branch', i.branch] : []), '--', cloneUrl(repo), tmp];
     await exec(sysBin('git'), args, { timeout: 180_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(token && githubBase().startsWith('https://') ? githubAuthEnv(token) : {}) } })
       .catch((e: Error) => { throw new Unit7Error('git_unreachable', `Unit7 couldn’t read ${repo.owner}/${repo.name}. Check the repo’s name and that your GitHub connection can reach it.${token ? '' : ' GitHub isn’t connected.'} ${e.message.replaceAll(token ?? '\u0000', '***').slice(0, 160)}`, 502); });
-    return open(tmp, name ?? repo.name, done, { repo, branch: i.branch });
+    // the branch it really is: a repo's default isn't always main
+    return open(tmp, name ?? repo.name, done, { repo, branch: i.branch ?? (await exec(sysBin('git'), ['-C', tmp, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim() });
   } catch (e) { done(); throw e; }
 }

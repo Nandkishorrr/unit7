@@ -6,11 +6,11 @@
 // FAKE_AWS_PROFILES, FAKE_AZ_USERS (each defaults to one: sam@example.com, or the "default" profile). A browser
 // sign-in (`gcloud auth login`) adds FAKE_GCLOUD_LOGIN, kept in the FAKE_CLOUD_STATE file between calls; without
 // --no-activate it refuses, since that would switch which account gcloud uses.
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 
 const a = process.argv.slice(2);
 const cmd = a.join(' ');
-const tool = a[0] === 'auth' ? 'gcloud' : /^[a-z]+:[a-z:]+$/.test(a[0] ?? '') ? 'firebase' : a[0] === 'configure' ? 'aws' : a[0] === 'account' ? 'az' : 'unknown';
+const tool = a[0] === 'auth' || a[0] === 'run' ? 'gcloud' : /^[a-z]+:[a-z:]+$/.test(a[0] ?? '') ? 'firebase' : a[0] === 'configure' ? 'aws' : a[0] === 'account' ? 'az' : 'unknown';
 if (process.env.FAKE_CLOUD_LOG) appendFileSync(process.env.FAKE_CLOUD_LOG, `${tool} ${cmd}\n`);
 // one answer per call; written with a callback so a pipe never loses the end of it
 let answered = false;
@@ -28,6 +28,12 @@ const gAccounts = [...listOf(process.env.FAKE_GCLOUD_ACCOUNTS, 'sam@example.com'
 const flag = (name) => { const i = a.findIndex((x) => x === name || x.startsWith(`${name}=`)); return i < 0 ? undefined : a[i].includes('=') ? a[i].split('=').slice(1).join('=') : a[i + 1]; };
 const gToken = (who) => (who === 'sam@example.com' ? 'ya29.from-gcloud' : `ya29.for-${who}`);
 
+// `gcloud run deploy`: says in the log what it would send, and FAKE_RUN_FAIL is the line it dies with
+if (tool === 'gcloud' && a[1] === 'deploy') {
+  const env = flag('--env-vars-file');
+  if (process.env.FAKE_CLOUD_LOG) appendFileSync(process.env.FAKE_CLOUD_LOG, `sent ${readdirSync(flag('--source'), { recursive: true }).sort().join(',')}\nenv ${env ? readFileSync(env, 'utf8') : ''}\n`);
+  if (process.env.FAKE_RUN_FAIL) fail(process.env.FAKE_RUN_FAIL); else out({ metadata: { name: a[2] } });
+}
 if (tool === 'gcloud' && a[1] === 'list') out(cmd.includes('--format=json') ? gAccounts.map((account, i) => ({ account, status: i === 0 ? 'ACTIVE' : '' })) : `${gAccounts[0] ?? ''}\n`);
 if (tool === 'gcloud' && a[1] === 'print-access-token') {
   const who = flag('--account') ?? (a[2] && !a[2].startsWith('-') ? a[2] : gAccounts[0]);

@@ -8,16 +8,24 @@ import type { Site, SiteFile } from './source.ts';
 
 export interface Place { host: string; accountId?: string; serverId?: string; label: string }
 export interface Fit { ok: boolean; why: string; best?: boolean }
-export interface Put { name: string; site: Site; place: Place; env: { key: string; value: string; secret: boolean }[]; domain?: string; update: boolean; team?: string }
-// point: what domain.point needs to reach this site, or false when the domain is already the site itself
-export interface Placed { url: string; project: string; deployment?: string; dashboard?: string; notes?: string[]; autoDeploy?: boolean; point?: Record<string, unknown> | false }
+export interface Put { name: string; site: Site; place: Place; env: { key: string; value: string; secret: boolean }[]; domain?: string; update: boolean; team?: string; port?: number }
+// point: what domain.point takes for this app, in words what to do instead, or false when the domain is already the site itself
+export interface Placed { url: string; project: string; deployment?: string; dashboard?: string; notes?: string[]; autoDeploy?: boolean; point?: Record<string, unknown> | string | false }
 export interface Ref { place: Place; project: string; deployment?: string }
 export interface Host {
   id: string; name: string;
   // takes finished files as they are, or builds them there
   builds: boolean;
+  // starts from a ready image or a copy of an app of its own, with no code
+  noCode?: boolean;
+  // going live here can cost money, in words: an AI never starts these, and a person names them
+  costs?: string;
+  // a new setting reaches the running app by itself, with no build
+  envNow?: boolean;
   places(ctx: Pick<Ctx, 'db' | 'orgId'>): Place[];
   fit(site: Site): Fit;
+  // what this sign-in lacks to create here, in words; nothing when it can, or when that can't be told
+  rights?(ctx: Ctx, place: Place): Promise<string | undefined>;
   put(ctx: Ctx, p: Put): Promise<Placed>;
   logs?(ctx: Ctx, r: Ref): Promise<string[]>;
   env?(ctx: Ctx, r: Ref, op: { set?: { key: string; value: string; secret: boolean }[]; unset?: string[] }): Promise<{ key: string }[]>;

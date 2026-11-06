@@ -17,7 +17,7 @@ export async function step<T = any>(ctx: Ctx, tool: string, input: Record<string
 export async function repoFor(ctx: Ctx, p: Put): Promise<{ repo: Repo; branch: string }> {
   if (p.site.repo) return { repo: p.site.repo, branch: p.site.branch ?? 'main' };
   const token = await githubToken(ctx);
-  if (!token) throw new Unit7Error('no_account', 'Your server builds from a GitHub repo, and GitHub isn’t connected yet. Connect it in Connections, then run this again.', 400);
+  if (!token) throw new Unit7Error('no_account', 'This host builds from a GitHub repo, and GitHub isn’t connected yet. Connect it in Connections, then run this again.', 400);
   ctx.progress('Saving your code in a private GitHub repo…');
   const had = p.update ? await repoExists(token, p.name) : undefined;
   const repo = had ?? await createRepo(token, p.name, { private: true });

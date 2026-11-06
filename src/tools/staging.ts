@@ -390,13 +390,13 @@ async function coolifyPlan(ctx: Ctx, serverId: string, app: string, c: Choices) 
 }
 
 // --- other hosts: what's possible, in words (their own preview and branch deploys) --------------------------------------
-const HOSTS: Record<string, { name: string; possible: string[] }> = {
+const HOSTS: Record<string, { name: string; possible: string[]; unit7?: string }> = {
   vercel: { name: 'Vercel', possible: ['Vercel makes a preview for every branch and pull request: push a staging branch and it gets its own address.', 'Give the preview its own keys in Vercel: Settings → Environment Variables → Preview, with test keys.'] },
   netlify: { name: 'Netlify', possible: ['Turn on branch deploys for a staging branch (Site configuration → Build & deploy → Branches); it gets its own address.', 'Set test keys for that branch’s deploy context in Netlify’s environment variables.'] },
   render: { name: 'Render', possible: ['Render’s preview environments make a copy for each pull request (from a render.yaml Blueprint).', 'Or add a second service that deploys a staging branch, with its own test keys.'] },
   railway: { name: 'Railway', possible: ['Railway has environments: add a staging environment from the project’s environment menu; it copies the services.', 'Give it its own variables and a fresh database there.'] },
-  fly: { name: 'Fly.io', possible: ['Run a second app from the same code: fly launch --copy-config --name <app>-staging, then fly deploy.', 'Give it its own secrets with fly secrets set (test keys).'] },
-  heroku: { name: 'Heroku', possible: ['Add a staging app to the app’s pipeline, deploy to it first and promote to production.', 'Give it its own config vars (test keys) and its own add-ons.'] },
+  fly: { name: 'Fly.io', unit7: 'A person can have Unit7 make this copy, because Fly.io charges for it.', possible: ['Start a second app from what this one runs: live.put with to: "fly", copyOf: "<app>" and name: "<app>-staging". It takes the image and shape, never the settings or volumes.', 'Give it its own test keys with live.env.'] },
+  heroku: { name: 'Heroku', unit7: 'A person can have Unit7 make this copy, because Heroku charges for it.', possible: ['Start a second app from what this one runs: live.put with to: "heroku", copyOf: "<app>" and name: "<app>-staging". It takes the built version, never the settings or add-ons.', 'Give it its own test keys with live.env, and its own add-ons on Heroku.'] },
 };
 
 // --- tools --------------------------------------------------------------------------------------------------------
@@ -419,7 +419,7 @@ defineTool({
   description: 'What “make a test copy of my app” would do, changing nothing: for a Unit7 project (projectId) a Staging environment with the same apps, fresh databases, settings, a copy of production’s data (from a fresh backup, never over production; names, emails and phones replaced in Postgres and MySQL, with the columns listed) and a deploy on a free test address; for a Coolify app (serverId + app) the same through a staging environment in its Coolify project; for Vercel, Netlify, Render, Railway, Fly.io or Heroku (host) what they offer. Lists live-looking settings (sk_live_, rzp_live_, “live” in the name, the live site, a live database) that are left out unless the person chooses, the room needed on the server and how to undo it. Then staging.create with the same target and the person’s choices.',
   input: z.object({ ...TARGET, ...CHOICES }).refine(oneTarget, 'Give one target: projectId, serverId with app, or host.'),
   async run(ctx, i) {
-    if (i.host) return { kind: 'host', host: i.host, name: HOSTS[i.host]!.name, possible: HOSTS[i.host]!.possible, steps: [], note: `Unit7 doesn’t make ${HOSTS[i.host]!.name} copies itself yet; this is what ${HOSTS[i.host]!.name} offers.` };
+    if (i.host) return { kind: 'host', host: i.host, name: HOSTS[i.host]!.name, possible: HOSTS[i.host]!.possible, steps: [], note: HOSTS[i.host]!.unit7 ?? `Unit7 doesn’t make ${HOSTS[i.host]!.name} copies itself yet; this is what ${HOSTS[i.host]!.name} offers.` };
     const p = await planFor(ctx, i);
     return { ...showPlan(p), confirm: confirmMode(ctx, p.to) };
   },
