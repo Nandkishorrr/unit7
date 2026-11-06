@@ -52,10 +52,13 @@ function Picked({ part, serverId }: { part: XPart; serverId: string }) {
   const [db, setDb] = useState('');
   const [picked, setPicked] = useState<Row | null>(null);
   const [sql, setSql] = useState('');
-  const database = db ? { database: db } : {};
+  // MongoDB's rows name their database as schema: a collection is only its own name, and it goes with that database
+  const mongo = engine === 'mongo' && picked;
+  const database = mongo ? { database: picked.schema } : db ? { database: db } : {};
+  const table = mongo ? picked.name : picked && tableOf(picked);
   const load = async () => {
     setErr('');
-    const r = await call('part.tables', { ...base, ...database });
+    const r = await call('part.tables', { ...base, ...(db && { database: db }) });
     if (r.status === 'ok') setT(r.output as Tables); else { setT(null); setErr(said(r)); }
   };
   useEffect(() => { void load(); }, [db]);
@@ -81,8 +84,8 @@ function Picked({ part, serverId }: { part: XPart; serverId: string }) {
       <div className="min-w-0 space-y-4 lg:col-span-7">
         <QueryBox part={part} input={{ ...base, ...database }} sql={sql} onSql={setSql} />
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <ImportCard input={{ ...base, ...database }} table={picked && tableOf(picked)} engine={engine} onDone={load} />
-          <ExportCard input={{ ...base, ...database }} table={picked && tableOf(picked)} engine={engine} />
+          <ImportCard input={{ ...base, ...database }} table={table || null} engine={engine} onDone={load} />
+          <ExportCard input={{ ...base, ...database }} table={table || null} engine={engine} />
         </div>
       </div>
     </div>
@@ -146,9 +149,10 @@ function ImportCard({ input, table, engine, onDone }: { input: Record<string, un
   const csv = !!file && /\.csv(\.gz)?$/i.test(file.name), target = name.trim() || table || '';
   useEffect(() => { setName(''); }, [table]);
   if (engine === 'redis') return <Card className="min-w-0 p-5"><CardHeader icon={<Upload size={19} />} title="Load a file" sub="Redis has no tables. Bring a backup back from Health." /></Card>;
-  const go = async (e: FormEvent) => {
+  const go = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!file) return;
+    const form = e.currentTarget;
     setBusy(true);
     try {
       const { uploadId } = await upload(file);
@@ -157,7 +161,7 @@ function ImportCard({ input, table, engine, onDone }: { input: Record<string, un
       if (r.status !== 'ok') { toast('bad', 'That didn’t load', said(r)); return; }
       const o = r.output as { next?: string; undo?: string; rows?: number };
       toast('ok', o.rows !== undefined ? `Loaded ${o.rows.toLocaleString()} rows` : 'Loaded', tidy(o.next ?? o.undo ?? ''));
-      setFile(null); onDone();
+      form.reset(); setFile(null); onDone();
     } catch (x) { toast('bad', 'That didn’t upload', (x as Error).message); } finally { setBusy(false); }
   };
   return (

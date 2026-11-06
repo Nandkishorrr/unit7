@@ -510,7 +510,7 @@ defineTool({
 // one table out to a file, and put it away. Nothing here touches the live database, and these only ever act on a container
 // Unit7 made as a copy, known by its label and its name. Nothing removes one by itself: an app may run on it by now. After
 // two days a person is reminded, once.
-export const OPEN_COPY = /^[a-z0-9][a-z0-9_.-]*-copy-\d{8}-[a-z0-9]{4}$/;
+const OPEN_COPY = /^[a-z0-9][a-z0-9_.-]*-copy-\d{8}-[a-z0-9]{4}$/;
 const COPY_REF = z.string().regex(OPEN_COPY, 'a copy’s name, from part.copies');
 const COPY_DAYS = 2;
 const copyLine = (l: string) => { const [name = '', of = '', at = ''] = l.split('|'); return { name, of, at: new Date(at.replace(/ [A-Z]+$/, '').replace(' ', 'T').replace(' ', '')).toISOString() }; };
