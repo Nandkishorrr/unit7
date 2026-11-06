@@ -36,7 +36,7 @@ import { HELP } from '../help.ts';
 import { agentList, connectAgent, disconnectAgent } from '../agents/connect.ts';
 import { suggestions } from '../suggestions.ts';
 import { finishOAuth } from '../connectors/mcp-oauth.ts';
-import { MANIFEST_SCRIPT_HASH, connections, connectGithubCli, githubCliReady, cloudClis, connectCloudCli, cliSignIns, addCliSignIn, setupNtfy, startConnect, finishOpenRouter, githubManifestPage, githubCreated, githubInstalled, provider as catalogProvider } from '../connectors/oneclick.ts';
+import { MANIFEST_SCRIPT_HASH, connections, connectGithubCli, githubCliReady, cloudClis, connectCloudCli, cliSignIns, addCliSignIn, setupNtfy, startConnect, finishOpenRouter, githubManifestPage, githubCreated, githubInstalled, githubSignIn, githubAuthorized, provider as catalogProvider } from '../connectors/oneclick.ts';
 import { handleMcp } from '../mcp/server.ts';
 import { answerAsk, optionsFor } from '../agent/asks.ts';
 import { chooseFolder, inspectFolder } from '../connectors/folder.ts';
@@ -104,7 +104,7 @@ export function createHttp(app: App) {
   // Callback pages providers send the browser to: a navigation can't carry the session header, and each is
   // tied to its own one-time state instead.
   // (A download is a navigation too: its name nobody can guess is the state, and it works once.)
-  const NAVIGATION = /^\/api\/(oauth\/callback|connect\/[a-z0-9-]+\/done\/|connect\/github\/(created|installed|form\/)|exports\/)/;
+  const NAVIGATION = /^\/api\/(oauth\/callback|connect\/[a-z0-9-]+\/done\/|connect\/github\/(created|installed|authorized|authorize\/|form\/)|exports\/)/;
 
   // who is calling: a session cookie (browser) or a bearer token (CLI, MCP, CI)
   http.use('/api/*', async (c, next) => {
@@ -530,12 +530,13 @@ export function createHttp(app: App) {
     if (r.status !== 'ok') throw new Unit7Error(r.status === 'error' ? r.error.code : r.status, r.status === 'error' ? r.error.message : 'That key could not be saved.', 400);
     return c.json(r.output);
   });
-  const signedIn = async (c: Context, what: () => Promise<string>): Promise<Response> => {
+  const signedIn = async (c: Context, what: () => Promise<string | { go: string }>): Promise<Response> => {
     const p = c.get('principal');
     if (c.req.query('error')) return done(c, { oauth_error: c.req.query('error_description') ?? c.req.query('error') ?? 'cancelled' });
     if (!p) return done(c, { oauth_error: 'Sign in to Unit7 first, then click Connect again.' });
     try {
       const name = await what();
+      if (typeof name !== 'string') return c.redirect(name.go); // one more stop on the provider's side
       authAudit({ orgId: p.org.id, userId: p.user.id, name: p.user.name }, 'account.oauth_connected', 'success', { account: name });
       return done(c, { connected: name });
     } catch (e) { return done(c, { oauth_error: (e as Error).message }); }
@@ -554,7 +555,10 @@ export function createHttp(app: App) {
     try { return c.redirect(await githubCreated(app, c.req.query('state') ?? '', c.req.query('code') ?? '', p.user.id)); }
     catch (e) { return done(c, { oauth_error: (e as Error).message }); }
   });
-  http.get('/api/connect/github/installed', (c) => signedIn(c, async () => githubInstalled(app, c.req.query('state'), c.req.query('installation_id') ?? '', c.get('principal')!.user.id)));
+  http.get('/api/connect/github/installed', (c) => signedIn(c, async () => { const r = githubInstalled(app, c.req.query('state'), c.req.query('installation_id') ?? '', c.get('principal')!.user.id); return r.next ? { go: r.next } : r.name; }));
+  // the person's own yes (a repo on a personal account takes their token), at the end of connecting or from the link an error gives
+  http.get('/api/connect/github/authorize/:account', (c) => signedIn(c, async () => { const p = connector(c); return { go: githubSignIn(app, p.org.id, p.user.id, c.req.param('account')) }; }));
+  http.get('/api/connect/github/authorized', (c) => signedIn(c, () => githubAuthorized(app, c.req.query('state') ?? '', c.req.query('code') ?? '', c.get('principal')!.user.id)));
 
   // what Warden suggests right now (one-click fixes, most urgent first)
   // Autopilot: the kill switch, each environment's level, and what Unit7 did on its own (with undo)

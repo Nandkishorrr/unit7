@@ -14,7 +14,7 @@ import { get, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { dnsHost } from './dnsinfo.ts';
 import { assertReachable } from '../netguard.ts';
-import { githubAppToken } from './oneclick.ts';
+import { fromGithubApp, githubAppToken, githubHome, githubRefused, githubRepoMaker } from './oneclick.ts';
 import { sysBin } from './shell.ts';
 
 export interface Repo { owner: string; name: string }
@@ -66,7 +66,7 @@ export async function githubApi<T>(token: string | undefined, path: string, init
   });
   if (!r.ok) {
     const why = (await r.json().catch(() => ({})) as { message?: string }).message;
-    throw new Unit7Error('github_api', `GitHub said ${r.status} for ${path}${why ? `: ${why}` : ''}`, 502, { status: r.status, why });
+    throw await githubRefused(token, r.status, why) ?? new Unit7Error('github_api', `GitHub said ${r.status} for ${path}${why ? `: ${why}` : ''}`, 502, { status: r.status, why });
   }
   return r.status === 204 ? (undefined as T) : r.json() as Promise<T>;
 }
@@ -75,7 +75,8 @@ const api = githubApi;
 // Files that mention a term, for "where to look". Code search needs a token, and it indexes the default branch.
 export const searchCode = (repo: Repo, term: string, token: string) => api<{ items?: { path: string }[] }>(token, `/search/code?q=${encodeURIComponent(`${term} repo:${repo.owner}/${repo.name}`)}&per_page=5`).then((r) => (r.items ?? []).map((x) => x.path));
 export const repoIsPrivate = (repo: Repo, token: string) => api<{ private: boolean }>(token, `/repos/${repo.owner}/${repo.name}`).then((r) => r.private === true);
-export const repoAccess = (repo: Repo, token: string) => api<{ private: boolean; default_branch?: string; permissions?: { admin?: boolean } }>(token, `/repos/${repo.owner}/${repo.name}`);
+// an App's answer says what the App may do, not the person: the route that adds a key says yes or no for itself
+export const repoAccess = (repo: Repo, token: string) => api<{ private: boolean; default_branch?: string; permissions?: { admin?: boolean } }>(token, `/repos/${repo.owner}/${repo.name}`).then((r) => (fromGithubApp(token) ? { ...r, permissions: undefined } : r));
 // a read-only key on one repo, for a server that clones it
 export const addDeployKey = (repo: Repo, o: { title: string; key: string }, token: string) => api<{ id: number }>(token, `/repos/${repo.owner}/${repo.name}/keys`, { method: 'POST', body: { ...o, read_only: true } });
 export const removeDeployKey = (repo: Repo, id: number, token: string) => api(token, `/repos/${repo.owner}/${repo.name}/keys/${id}`, { method: 'DELETE' });
@@ -160,8 +161,13 @@ export async function commitFiles(repo: Repo, o: { base: string; branch: string;
 
 // A repo for a person's site: new and private unless they say otherwise. A name the account already has is an answer, not a failure.
 export async function createRepo(token: string, name: string, o: { private: boolean; org?: string; description?: string }): Promise<Repo> {
-  const r = await api<{ owner: { login: string }; name: string }>(token, o.org ? `/orgs/${encodeURIComponent(o.org)}/repos` : '/user/repos', { method: 'POST', body: { name, private: o.private, ...(o.description && { description: o.description }) } })
-    .catch((e: Unit7Error) => { throw /422/.test(e.message) ? new Unit7Error('already_exists', `You already have a repo called ${name}. Choose another name, or say you want to update it.`, 409) : e; });
+  const by = await githubRepoMaker(token, o.org);
+  const r = await api<{ owner: { login: string }; name: string }>(by.token, by.org ? `/orgs/${encodeURIComponent(by.org)}/repos` : '/user/repos', { method: 'POST', body: { name, private: o.private, ...(o.description && { description: o.description }) } })
+    .catch((e: Unit7Error) => {
+      if (/422/.test(e.message)) throw new Unit7Error('already_exists', `You already have a repo called ${name}. Choose another name, or say you want to update it.`, 409);
+      if (/said 403/.test(e.message)) throw new Unit7Error('github_rights', 'GitHub won’t let this connection create repos. In Connections, connect GitHub with a new token (Generate token, with repo ticked), then run this again. A fine-grained token needs Administration, read and write, on all your repos.', 403, e.detail);
+      throw e;
+    });
   return { owner: r.owner.login, name: r.name };
 }
 // GitHub Pages on a domain: GitHub is told the name, then DNS points at the owner's github.io
@@ -171,8 +177,8 @@ export async function pagesDomain(repo: Repo, domain: string, token: string | un
   return [(await dnsHost(domain)).zone === domain ? { type: 'A', name: domain, content: '185.199.108.153' } : { type: 'CNAME', name: domain, content: `${repo.owner.toLowerCase()}.github.io` }];
 }
 export async function repoExists(token: string, name: string): Promise<Repo | undefined> {
-  const me = await api<{ login: string }>(token, '/user');
-  return api<{ owner: { login: string }; name: string }>(token, `/repos/${encodeURIComponent(me.login)}/${encodeURIComponent(name)}`).then((r) => ({ owner: r.owner.login, name: r.name }), () => undefined);
+  const login = await githubHome(token) ?? (await api<{ login: string }>(token, '/user')).login;
+  return api<{ owner: { login: string }; name: string }>(token, `/repos/${encodeURIComponent(login)}/${encodeURIComponent(name)}`).then((r) => ({ owner: r.owner.login, name: r.name }), () => undefined);
 }
 // These files as one commit, from a throwaway folder so a person's own .git is never touched. Never a force push: on an
 // existing repo it's a normal commit on top, so every earlier version stays and can be gone back to.
@@ -180,9 +186,14 @@ export async function pushFolder(files: { path: string; abs: string }[], repo: R
   const exec = promisify(execFile), tmp = mkdtempSync(join(tmpdir(), 'unit7-push-'));
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(token && GH().startsWith('https://') ? githubAuthEnv(token) : {}) };
   const git = (...args: string[]) => exec(sysBin('git'), ['-c', 'user.name=Unit7', '-c', 'user.email=unit7@users.noreply.github.com', ...args], { cwd: tmp, env, timeout: 300_000, maxBuffer: 1 << 24 })
-    .catch((e: Error) => { throw new Unit7Error('git_failed', `git ${args[0]} failed for ${repo.owner}/${repo.name}: ${e.message.replaceAll(token ?? '\u0000', '***').slice(-240)}`, 502); });
+    .catch(async (e: Error) => {
+      // git's words for what the API calls not allowed: a repo the App can't reach, or a workflow file it has no right to push
+      const no = fromGithubApp(token) && /Repository not found|not granted|error: 403|workflows?`? permission/i.test(e.message);
+      throw (no && await githubRefused(token, 403, 'not accessible')) || new Unit7Error('git_failed', `git ${args[0]} failed for ${repo.owner}/${repo.name}: ${e.message.replaceAll(token ?? '\u0000', '***').slice(-240)}`, 502);
+    });
   try {
-    if (o.existing) {
+    // a repo left empty by a push that failed has no branch to clone yet
+    if (o.existing && await headSha(repo, o.branch, token).catch(() => 'unknown')) {
       await git('clone', '--depth', '1', '--branch', o.branch, '--', cloneUrl(repo), '.');
       for (const name of readdirSync(tmp)) if (name !== '.git') rmSync(join(tmp, name), { recursive: true, force: true });
     } else {

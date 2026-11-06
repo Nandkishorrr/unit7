@@ -70,7 +70,7 @@ test('one-click connections', async (t) => {
     assert.equal(json<any>(acc.meta, {}).pending, 'install');
 
     const installed = await call('GET', `/api/connect/github/installed?installation_id=42&setup_action=install&state=${state}`);
-    assert.equal(installed.location, '/connections?connected=GitHub+%28ada%29');
+    assert.match(installed.location, /^https:\/\/github\.com\/login\/oauth\/authorize\?client_id=Iv1\.x&/, 'then the person’s own yes');
     const meta = json<any>(get<{ meta: string }>(app.db, 'SELECT meta FROM accounts WHERE id = ?', acc.id)!.meta, {});
     assert.equal(meta.installationId, 42);
     assert.equal(meta.pending, undefined);

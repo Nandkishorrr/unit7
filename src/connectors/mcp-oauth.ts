@@ -66,7 +66,7 @@ export async function startOAuth(o: { provider: OAuthProvider; name: string; org
   return url.toString();
 }
 
-async function tokenRequest(endpoint: string, client: Client, params: Record<string, string>) {
+export async function tokenRequest(endpoint: string, client: Client, params: Record<string, string>) {
   const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
   const body = new URLSearchParams({ ...params, client_id: client.id });
   if (client.secret && client.method === 'client_secret_basic') headers.authorization = `Basic ${Buffer.from(`${encodeURIComponent(client.id)}:${encodeURIComponent(client.secret)}`).toString('base64')}`;
@@ -74,7 +74,7 @@ async function tokenRequest(endpoint: string, client: Client, params: Record<str
   const res = await fetch(endpoint, { method: 'POST', headers, body, signal: AbortSignal.timeout(20_000) });
   const j = await res.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; error_description?: string; error?: string };
   // a refused grant is final (the person signs in again); anything else may pass
-  if (!res.ok || !j.access_token) throw new Unit7Error('oauth_token', `The provider didn't issue a token: ${[j.error ?? res.status, j.error_description].filter(Boolean).join(' — ')}`, /^(invalid_grant|invalid_client|unauthorized_client)$/.test(j.error ?? '') ? 401 : 502);
+  if (!res.ok || !j.access_token) throw new Unit7Error('oauth_token', `The provider didn't issue a token: ${[j.error ?? res.status, j.error_description].filter(Boolean).join(' — ')}`, /^(invalid_grant|invalid_client|unauthorized_client|bad_refresh_token)$/.test(j.error ?? '') ? 401 : 502);
   return j;
 }
 
@@ -110,7 +110,7 @@ export async function accessToken(key: string, read: () => string, store: (s: OA
       const s = JSON.parse(read()) as OAuthSecret; // read again: a refresh that just finished already stored a new one
       if (s.expires_at - Date.now() > skewMs) return s.access_token;
       if (!s.refresh_token) throw new Unit7Error('oauth_expired', 'The sign-in expired. Reconnect the account in the Vault.', 401);
-      const t = await tokenRequest(s.token_endpoint, { id: s.client_id, secret: s.client_secret, method: s.auth_method }, { grant_type: 'refresh_token', refresh_token: s.refresh_token, resource: s.resource });
+      const t = await tokenRequest(s.token_endpoint, { id: s.client_id, secret: s.client_secret, method: s.auth_method }, { grant_type: 'refresh_token', refresh_token: s.refresh_token, ...(s.resource && { resource: s.resource }) });
       const next: OAuthSecret = { ...s, access_token: t.access_token!, refresh_token: t.refresh_token ?? s.refresh_token, expires_at: Date.now() + (t.expires_in ?? 1200) * 1000 };
       store(next);
       return next.access_token;

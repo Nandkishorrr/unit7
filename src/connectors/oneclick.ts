@@ -1,6 +1,6 @@
 // One click per connection. Every provider Unit7 knows, and the single way to connect each:
 //   mcp         the provider's hosted MCP with standard sign-in: its own page, Allow, back, connected
-//   github-app  Unit7 creates a private GitHub App in your account from a manifest, you pick repos, done
+//   github-app  Unit7 creates a private GitHub App in your account from a manifest, you pick repos, say yes once, done
 //   openrouter  OpenRouter's sign-in hands back an API key for every model (Claude, Gemini, GPT…)
 //   key         no sign-in for local apps: the button opens the provider's key page pre-filled, and the
 //               key is picked up the moment you paste it on Unit7's page
@@ -12,7 +12,7 @@ import type { App } from '../app.ts';
 import { all, get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { makeRef } from '../vault.ts';
-import { accountName, HOSTED_MCP, startOAuth, type OAuthProvider } from './mcp-oauth.ts';
+import { accessToken, accountName, HOSTED_MCP, startOAuth, tokenRequest, type OAuthProvider, type OAuthSecret } from './mcp-oauth.ts';
 import { alertState, ensureReplies, newTopic } from '../sentinel/phone.ts';
 import { addGoogleSignIn, cliFor, forgetSignedIn, signInsFor, TOOLS_FOR, TOOL_LABEL } from './cloudcli.ts';
 
@@ -43,7 +43,7 @@ export const CATALOG: Provider[] = [
   { id: 'porkbun', name: 'Porkbun', group: 'Servers & domains', what: 'DNS for domains on Porkbun.', method: { kind: 'key', keyUrl: 'https://porkbun.com/account/api', hint: 'Create an API key, then paste it as KEY:SECRET (both parts, colon between). Also switch on API Access for each domain.', pattern: '^pk1_[^:]+:sk1_' } },
   { id: 'namecom', name: 'Name.com', group: 'Servers & domains', what: 'DNS for domains on Name.com.', method: { kind: 'key', keyUrl: 'https://www.name.com/account/settings/api', hint: 'Create a token, then paste it as USERNAME:TOKEN. With 2FA on, also switch on API access under Security.', pattern: '^[^:]+:.+' } },
   { id: 'github', name: 'GitHub', group: 'Code', what: 'Deploy straight from your repos, private ones too.', method: { kind: 'github-app' },
-    alt: { kind: 'key', keyUrl: 'https://github.com/settings/tokens/new?scopes=repo,workflow&description=Unit7', hint: 'Keep repo and workflow ticked: Actions logs, re-runs and secrets need them. Click Generate token, then paste it here. A fine-grained token needs Contents, Actions and Secrets, read and write.', pattern: '^(gh[pousr]_|github_pat_)' } },
+    alt: { kind: 'key', keyUrl: 'https://github.com/settings/tokens/new?scopes=repo,workflow&description=Unit7', hint: 'Keep repo and workflow ticked: new repos, Pages, Actions logs, re-runs and secrets need them. Click Generate token, then paste it here. A fine-grained token needs Administration, Contents, Pages, Webhooks, Workflows, Actions and Secrets, read and write, on all your repos.', pattern: '^(gh[pousr]_|github_pat_)' } },
   { id: 'openrouter', name: 'OpenRouter', group: 'AI models', what: 'Every model (Claude, Gemini, GPT) with one sign-in. Powers Unit7’s own AI box.', method: { kind: 'openrouter' } },
   { id: 'anthropic', name: 'Anthropic API', group: 'AI models', what: 'Claude models for Unit7’s AI box, billed to your API account (not your Claude subscription).', method: { kind: 'key', keyUrl: 'https://platform.claude.com/settings/keys', hint: 'Click Create Key, then paste it here.', pattern: '^sk-ant-' } },
   { id: 'google', name: 'Google Gemini', group: 'AI models', what: 'Gemini models for Unit7’s AI box. Has a free tier.', method: { kind: 'key', keyUrl: 'https://aistudio.google.com/apikey', hint: 'Click Create API key, then paste it here.', pattern: '^AIza' } },
@@ -116,7 +116,7 @@ export function connections(app: App, orgId: string, extra: { ollama?: boolean; 
 
 // --- start: the URL the Connect button sends the browser to ---------------------------------------
 
-const pending = new Map<string, { kind: string; orgId: string; userId: string; at: number; verifier?: string; accountId?: string }>();
+const pending = new Map<string, { kind: string; orgId: string; userId: string; at: number; verifier?: string; accountId?: string; origin?: string }>();
 const fresh = (state: string, userId: string) => {
   for (const [k, v] of pending) if (Date.now() - v.at > 15 * 60_000) pending.delete(k);
   const p = pending.get(state);
@@ -138,7 +138,7 @@ export async function startConnect(app: App, o: { providerId: string; orgId: str
     return 'https://openrouter.ai/auth?' + new URLSearchParams({ callback_url: `${o.origin}/api/connect/openrouter/done/${state}`, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', key_label: 'Unit7' });
   }
   if (p.method.kind === 'github-app') {
-    pending.set(state, { kind: 'github', orgId: o.orgId, userId: o.userId, at: Date.now() });
+    pending.set(state, { kind: 'github', orgId: o.orgId, userId: o.userId, at: Date.now(), origin: o.origin });
     return `${o.origin}/api/connect/github/form/${state}`; // a tiny page that posts the manifest to GitHub
   }
   if (p.method.kind === 'key') return p.method.keyUrl;
@@ -181,8 +181,15 @@ export async function connectGithubCli(app: App, orgId: string) {
 }
 
 // --- GitHub: a private GitHub App made from a manifest (how Coolify and Dokploy do it) --------------
-// Click 1 on GitHub: "Create GitHub App". Click 2: "Install" on the repos you choose. Unit7 then mints
-// one-hour install tokens itself; there is no long-lived personal token anywhere.
+// Click 1 on GitHub: "Create GitHub App". Click 2: "Install" on the repos you choose. Click 3: "Authorize", for the one
+// thing an install token can't do. Unit7 then mints one-hour install tokens itself and uses those for everything else.
+
+const API = () => process.env.UNIT7_GITHUB_API ?? 'https://api.github.com';
+const LOGIN = () => process.env.UNIT7_GITHUB_LOGIN ?? 'https://github.com/login/oauth';
+const callbackOf = (origin: string) => `${origin}/api/connect/github/authorized`;
+// administration makes repos and adds deploy keys, pages turns on Pages, repository_hooks adds webhooks, and workflows lets a
+// push carry a .github/workflows file (GitHub turns such a push down without it)
+const RIGHTS: Record<string, string> = { contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'write', deployments: 'write', actions: 'write', secrets: 'write', workflows: 'write', administration: 'write', pages: 'write', repository_hooks: 'write' };
 
 export function githubManifestPage(state: string, userId: string, origin: string): string {
   fresh(state, userId);
@@ -192,8 +199,9 @@ export function githubManifestPage(state: string, userId: string, origin: string
     redirect_url: `${origin}/api/connect/github/created`,
     setup_url: `${origin}/api/connect/github/installed`,
     setup_on_update: true,
+    callback_urls: [callbackOf(origin)],
     public: false,
-    default_permissions: { contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'write', deployments: 'write', actions: 'write', secrets: 'write' },
+    default_permissions: RIGHTS,
     default_events: [],
   };
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -209,35 +217,73 @@ export const MANIFEST_SCRIPT_HASH = `sha256-${createHash('sha256').update(SUBMIT
 // GitHub sent us back with a code: turn it into the app's credentials, then send the person to install it.
 export async function githubCreated(app: App, state: string, code: string, userId: string): Promise<string> {
   const p = fresh(state, userId);
-  const r = await fetch(`https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`, { method: 'POST', headers: { accept: 'application/vnd.github+json', 'user-agent': 'Unit7' }, signal: AbortSignal.timeout(20_000) });
+  const r = await fetch(`${API()}/app-manifests/${encodeURIComponent(code)}/conversions`, { method: 'POST', headers: { accept: 'application/vnd.github+json', 'user-agent': 'Unit7' }, signal: AbortSignal.timeout(20_000) });
   const j = await r.json().catch(() => ({})) as { id?: number; slug?: string; pem?: string; client_id?: string; client_secret?: string; owner?: { login?: string }; message?: string };
   if (!r.ok || !j.id || !j.pem || !j.slug) throw new Unit7Error('github_app', `GitHub didn't finish creating the app: ${j.message ?? r.status}`, 502);
   const { accountId } = saveAccount(app, p.orgId, 'github', j.owner?.login ? `GitHub (${j.owner.login})` : 'GitHub',
     JSON.stringify({ app_id: j.id, pem: j.pem, client_id: j.client_id, client_secret: j.client_secret }),
-    { auth: 'github-app', appId: j.id, slug: j.slug, owner: j.owner?.login, pending: 'install' }, 'github_app');
+    { auth: 'github-app', appId: j.id, slug: j.slug, owner: j.owner?.login, pending: 'install', ...(p.origin && { callback: callbackOf(p.origin) }) }, 'github_app');
   p.accountId = accountId; p.at = Date.now();
   return `https://github.com/apps/${j.slug}/installations/new?state=${encodeURIComponent(state)}`;
 }
 
-export function githubInstalled(app: App, state: string | undefined, installationId: string, userId: string): string {
+export function githubInstalled(app: App, state: string | undefined, installationId: string, userId: string): { name: string; next?: string } {
   const p = state ? fresh(state, userId) : undefined;
   if (state) pending.delete(state);
   // without our state (installed later from GitHub's side), the token code finds the install itself
   if (p?.accountId && /^\d+$/.test(installationId)) run(app.db, `UPDATE accounts SET meta = json_remove(json_set(meta, '$.installationId', ?), '$.pending') WHERE id = ? AND org_id = ?`, Number(installationId), p.accountId, p.orgId);
-  return get<{ name: string }>(app.db, 'SELECT name FROM accounts WHERE id = ?', p?.accountId ?? '')?.name ?? 'GitHub';
+  const name = get<{ name: string }>(app.db, 'SELECT name FROM accounts WHERE id = ?', p?.accountId ?? '')?.name ?? 'GitHub';
+  return { name, next: p?.accountId ? githubSignIn(app, p.orgId, userId, p.accountId) : undefined };
 }
 
-// A one-hour install token for a GitHub App account (cached until five minutes before it expires).
-const ghTokens = new Map<string, { token: string; until: number }>();
-export async function githubAppToken(app: App, orgId: string, account: { id: string; meta: string }, secret: string): Promise<string> {
-  const hit = ghTokens.get(account.id);
-  if (hit && hit.until > Date.now()) return hit.token;
+// The Authorize page, for the person's own token. No redirect_uri: GitHub uses the callback the App was made with.
+export function githubSignIn(app: App, orgId: string, userId: string, accountId: string): string {
+  const acc = get<{ meta: string }>(app.db, `SELECT meta FROM accounts WHERE id = ? AND org_id = ? AND provider = 'github'`, accountId, orgId);
+  const m = json<{ ref?: string; auth?: string }>(acc?.meta ?? '{}', {});
+  if (m.auth !== 'github-app' || !m.ref) throw new Unit7Error('not_found', 'That GitHub connection isn’t here any more. Click Connect GitHub in Connections.', 404);
+  const { client_id } = JSON.parse(app.vault.resolve(orgId, m.ref)) as { client_id: string };
+  const state = randomBytes(24).toString('base64url'), verifier = randomBytes(32).toString('base64url');
+  pending.set(state, { kind: 'github-user', orgId, userId, at: Date.now(), verifier, accountId });
+  return `${LOGIN()}/authorize?${new URLSearchParams({ client_id, state, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' })}`;
+}
+
+// The person's token sits next to the App's own secret in the vault, and no tool ever hands it out. It lasts eight hours and its
+// refresh token works once: accessToken refreshes it, one at a time. An App with expiring tokens turned off gets one with no end.
+const userRef = (ref: string) => ref.replace(/[^/]+$/, 'user');
+export async function githubAuthorized(app: App, state: string, code: string, userId: string): Promise<string> {
+  const p = fresh(state, userId);
+  pending.delete(state);
+  const acc = p.kind === 'github-user' ? get<{ name: string; meta: string }>(app.db, 'SELECT name, meta FROM accounts WHERE id = ? AND org_id = ?', p.accountId ?? '', p.orgId) : undefined;
+  if (!acc) throw new Unit7Error('oauth_state', 'That sign-in link expired. Click Connect again.', 400);
+  const { ref } = json<{ ref: string }>(acc.meta, { ref: '' });
+  const { client_id, client_secret } = JSON.parse(app.vault.resolve(p.orgId, ref)) as { client_id: string; client_secret: string };
+  const token_endpoint = `${LOGIN()}/access_token`;
+  const t = await tokenRequest(token_endpoint, { id: client_id, secret: client_secret }, { code, code_verifier: p.verifier! });
+  const secret: OAuthSecret = { access_token: t.access_token!, refresh_token: t.refresh_token, expires_at: t.expires_in ? Date.now() + t.expires_in * 1000 : Number.MAX_SAFE_INTEGER, client_id, client_secret, token_endpoint, mcp_url: '', resource: '' };
+  app.vault.put(p.orgId, userRef(ref), JSON.stringify(secret), { kind: 'oauth', accountId: p.accountId, by: 'one-click sign-in' });
+  return acc.name;
+}
+
+// What GitHub is asked as the App itself, signed with its private key
+function asApp(secret: string) {
   const s = JSON.parse(secret) as { app_id: number; pem: string };
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
   const now = Math.floor(Date.now() / 1000);
   const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iat: now - 60, exp: now + 540, iss: String(s.app_id) })}`;
   const jwt = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(s.pem).toString('base64url')}`;
-  const gh = (path: string, method = 'GET') => fetch(`https://api.github.com${path}`, { method, headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'user-agent': 'Unit7' }, signal: AbortSignal.timeout(20_000) });
+  return (path: string, method = 'GET') => fetch(`${API()}${path}`, { method, headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'user-agent': 'Unit7' }, signal: AbortSignal.timeout(20_000) });
+}
+
+// A one-hour install token for a GitHub App account (cached until five minutes before it expires). Kept with where it came
+// from, so a token handed around as a plain string can still be traced back to its App (held) when GitHub says no.
+interface Held { token: string; until: number; app: App; orgId: string; accountId: string; inst: number; user?: string }
+const ghTokens = new Map<string, Held>();
+const held = (token?: string) => (token ? [...ghTokens.values()].find((t) => t.token === token || t.user === token) : undefined);
+export const fromGithubApp = (token?: string) => !!held(token);
+export async function githubAppToken(app: App, orgId: string, account: { id: string; meta: string }, secret: string): Promise<string> {
+  const hit = ghTokens.get(account.id);
+  if (hit && hit.until > Date.now()) return hit.token;
+  const gh = asApp(secret);
   let inst = json<{ installationId?: number }>(account.meta, {}).installationId;
   if (!inst) {
     const list = await (await gh('/app/installations')).json() as { id: number }[];
@@ -248,8 +294,70 @@ export async function githubAppToken(app: App, orgId: string, account: { id: str
   const r = await gh(`/app/installations/${inst}/access_tokens`, 'POST');
   const j = await r.json().catch(() => ({})) as { token?: string; expires_at?: string; message?: string };
   if (!r.ok || !j.token) throw new Unit7Error('github_token', `GitHub refused an install token: ${j.message ?? r.status}`, 502);
-  ghTokens.set(account.id, { token: j.token, until: Date.parse(j.expires_at ?? '') - 5 * 60_000 || Date.now() + 50 * 60_000 });
+  ghTokens.set(account.id, { token: j.token, until: Date.parse(j.expires_at ?? '') - 5 * 60_000 || Date.now() + 50 * 60_000, app, orgId, accountId: account.id, inst });
   return j.token;
+}
+
+const metaOf = (t: Held) => json<{ ref: string; slug?: string; callback?: string }>(get<{ meta: string }>(t.app.db, 'SELECT meta FROM accounts WHERE id = ?', t.accountId)?.meta ?? '{}', { ref: '' });
+interface Install { account: { login: string; type?: string }; permissions?: Record<string, string>; html_url: string }
+async function installOf(t: Held): Promise<Install> {
+  const r = await asApp(t.app.vault.resolve(t.orgId, metaOf(t).ref))(`/app/installations/${t.inst}`);
+  if (!r.ok) throw new Unit7Error('github_api', `GitHub said ${r.status} when Unit7 asked about its GitHub App.`, 502, { status: r.status });
+  return r.json() as Promise<Install>;
+}
+const label = (k: string) => ({ repository_hooks: 'Webhooks', statuses: 'Commit statuses' } as Record<string, string>)[k] ?? `${k[0]!.toUpperCase()}${k.slice(1).replace('_', ' ')}`;
+const lacking = (i: Install) => Object.keys(RIGHTS).filter((k) => i.permissions?.[k] !== RIGHTS[k] && i.permissions?.[k] !== 'write').map(label);
+
+// What the App's owner has to do, as exact links. A manifest only counts when an App is made and GitHub has no route to change one
+// afterwards, so an App made before a right was added gets it by hand: on the App, then accepted on the install.
+function refusal(t: Held, i: Install, signIn: boolean, detail?: object) {
+  ghTokens.delete(t.accountId); // the next try needs a token made after the owner said yes
+  const m = metaOf(t), lack = lacking(i), mine = `https://github.com/settings/apps/${m.slug}`;
+  const here = m.callback ? new URL(m.callback).origin : process.env.UNIT7_URL ?? `http://localhost:${(t.app.services.listen as { port?: number } | undefined)?.port ?? 4800}`;
+  const steps = [
+    ...(lack.length ? [`Open ${mine}/permissions, set ${new Intl.ListFormat('en').format(lack)} to Read and write, then click Save changes.`] : []),
+    ...(signIn && !m.callback ? [`Open ${mine}, put ${callbackOf(here)} under Callback URL, then click Save changes.`] : []),
+    ...(lack.length ? [`Open ${i.html_url}, click Review request, then Accept new permissions.`] : []),
+    ...(signIn ? [`Open ${here}/api/connect/github/authorize/${t.accountId} and click Authorize.`] : []),
+  ];
+  const first = lack.length || !m.callback ? 'Unit7’s GitHub App was made before it could do this, and only you can change that on GitHub:' : 'GitHub only lets a person create a repo on a personal account, so Unit7 needs your OK once:';
+  return new Unit7Error('github_rights', `${first}\n${steps.length > 1 ? steps.map((x, n) => `${n + 1}. ${x}`).join('\n') : steps[0]}\nThen run this again.`, 403, detail);
+}
+
+// An App's "not allowed", in plain words. Undefined for any other token, or when it's about something else (a rate limit, an archived repo).
+export async function githubRefused(token: string | undefined, status: number, why = ''): Promise<Unit7Error | undefined> {
+  const t = held(token), detail = { status, why };
+  if (status === 401 && t && t.user === token) return refusal(t, await installOf(t), true, detail); // the person took back their OK on GitHub
+  if (!t || status !== 403 || !/not accessible/i.test(why)) return undefined;
+  const i = await installOf(t).catch(() => undefined);
+  if (!i) return undefined;
+  if (lacking(i).length) return refusal(t, i, false, detail);
+  ghTokens.delete(t.accountId);
+  return new Unit7Error('github_rights', `GitHub still said no, though Unit7’s GitHub App has the rights. Open ${i.html_url} and, under Repository access, choose All repositories or tick this repo. If you only just accepted new rights, run this again.`, 403, detail);
+}
+
+async function userToken(t: Held) {
+  const ref = userRef(metaOf(t).ref);
+  if (!t.app.vault.has(t.orgId, ref)) return undefined;
+  const token = await accessToken(`${t.orgId}:${ref}`, () => t.app.vault.resolve(t.orgId, ref), (x) => t.app.vault.put(t.orgId, ref, JSON.stringify(x), { kind: 'oauth', accountId: t.accountId, by: 'token refresh' }))
+    .catch((e: Unit7Error) => { if (e.status === 401) return undefined; throw e; }); // refused for good: the person says yes again
+  t.user = token;
+  return token;
+}
+
+// The account a GitHub App is installed on: an install token has no user behind it, so GET /user turns it down
+export const githubHome = async (token: string) => { const t = held(token); return t && (await installOf(t)).account.login; };
+
+// Who makes a new repo. Anything but an App token does it itself. An App on an organisation uses its install token. On a personal
+// account it takes the person's own token: GitHub's docs list POST /user/repos for install tokens, but it answers 403 to them.
+export async function githubRepoMaker(token: string, org?: string): Promise<{ token: string; org?: string }> {
+  const t = held(token);
+  if (!t) return { token, org };
+  const i = await installOf(t), home = i.account.login, onOrg = i.account.type === 'Organization';
+  if (org && org.toLowerCase() !== home.toLowerCase()) throw new Unit7Error('github_rights', `Unit7’s GitHub App is on ${home}, so it can’t reach ${org}. To make repos in ${org}, connect GitHub with a token in Connections.`, 403);
+  const user = onOrg ? undefined : await userToken(t);
+  if (i.permissions?.administration !== 'write' || (!onOrg && !user)) throw refusal(t, i, !onOrg && !user);
+  return onOrg ? { token, org: home } : { token: user! };
 }
 
 // Phone alerts: a private random ntfy topic for the alerts and a second one for the phone's answers, both kept in the

@@ -730,6 +730,7 @@ async function deployKey(ctx: Ctx, api: Coolify, s: ServerRow, repo: Repo, app: 
   const dropCoolify = () => api.call('DELETE', `/security/keys/${enc(uuid)}`).catch(() => undefined);
   const github = await addDeployKey(repo, { title: `Coolify on ${s.name} (Unit7)`, key: publicKey }, token).catch(async (e: Error) => {
     await dropCoolify();
+    if ((e as Unit7Error).code === 'github_rights') throw e;
     throw new Unit7Error('deploy_key', `GitHub didn’t take the deploy key for ${full} (${e.message}). The connected account may not be allowed to add keys there.`, 502);
   });
   return { uuid, githubId: github.id, branch: r.default_branch, drop: async () => { await removeDeployKey(repo, github.id, token).catch(() => undefined); await dropCoolify(); } };

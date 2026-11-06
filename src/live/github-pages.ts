@@ -20,7 +20,7 @@ const at = (r: Repo) => `/repos/${seg(r.owner)}/${seg(r.name)}/pages`;
 // what GitHub's refusals mean for a person
 function plain(e: Error) {
   if (!(e instanceof Unit7Error) || e.code !== 'github_api') return e;
-  if (/said 40[13]/.test(e.message)) return new Unit7Error('github_rights', 'GitHub won’t let this connection create repos or turn on Pages, which Unit7’s GitHub App can’t do. In Connections, connect GitHub with a token instead (Generate token, with repo ticked), then run this again.', 403);
+  if (/said 40[13]/.test(e.message)) return new Unit7Error('github_rights', 'GitHub won’t let this connection create repos or turn on Pages. In Connections, connect GitHub with a token instead (Generate token, with repo ticked), then run this again.', 403);
   const why = e.message.split(': ').slice(1).join(': ');
   if (/said 422/.test(e.message) && /\/pages/.test(e.message)) return new Unit7Error('pages_refused', `GitHub refused to turn on Pages: ${why}. Pages on a private repo needs a paid plan: make the repo public, or upload the finished files so Unit7 puts them in a new public repo.`, 409);
   return new Unit7Error('github_api', `GitHub refused: ${why || e.message}`, e.status);

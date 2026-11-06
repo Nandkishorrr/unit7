@@ -34,7 +34,9 @@ async function hearsGitHub(ctx: Ctx, s: ServerRow, api: Coolify, app: Record<str
   if (!base) return { next: `Unit7 doesn’t know Coolify’s address, so it can’t add the webhook Coolify needs: ${by}` };
   if (!token) return { next: `GitHub isn’t connected, so Unit7 can’t add the webhook Coolify needs. Connect GitHub and run this again, or: ${by}` };
   const path = '/webhooks/source/github/events/manual', mine = `${path}?app=${enc(String(app.uuid))}`;
-  const hooks = await repoHooks(repo, token).catch(() => undefined);
+  let rights = '';
+  const hooks = await repoHooks(repo, token).catch((e: Unit7Error) => { if (e.code === 'github_rights') rights = e.message; });
+  if (rights) return { next: rights };
   if (!hooks) return { next: `The connected GitHub account can’t see ${repo.owner}/${repo.name}’s webhooks (that takes admin rights), so Unit7 didn’t add one: ${by}` };
   if (hooks.some((h) => h.config?.url?.endsWith(path) || h.config?.url?.endsWith(mine))) return { hears: 'The repo’s webhook is already there.' };
   const secret = randomBytes(24).toString('hex');
