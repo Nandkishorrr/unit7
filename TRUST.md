@@ -80,3 +80,4 @@ See [SECURITY.md](SECURITY.md).
 - The person’s own GitHub token, from the Authorize step, stays in the vault and is used only to create repos. Its App can also delete repos, and Unit7 never calls that.
 - Logins from PlanetScale, Turso and Upstash go only to the vault and the app’s settings, and an AI’s link waits for a person.
 - Client secrets for Google and GitHub sign-in arrive by reference, go to Supabase, and are never read back. domain.move_dns always asks a person, even on full autopilot.
+- An AI waits for a person before a Hostinger database password reaches an app.

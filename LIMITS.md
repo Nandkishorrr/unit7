@@ -97,6 +97,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Google and GitHub sign-in clients can’t be created by API: Unit7 gives the steps and the callback address. Supabase’s built-in sender stays at two emails an hour, so real use needs your own sender. Forwarding needs Cloudflare DNS, and undoing a subdomain forward leaves Cloudflare’s records. Subdomain forwarding hasn’t been tried on a real zone.
 
+## Hostinger and Firebase
+
+- A Hostinger plan with no website yet can’t be seen, so Unit7 can’t make the first website on an empty plan. Hostinger is retiring the website route Unit7 uses, and its replacement is an order route. Firebase logs are visitor requests only, once Cloud Logging is linked.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.
