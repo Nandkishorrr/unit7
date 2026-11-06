@@ -3,6 +3,7 @@
 // a fake hosted MCP that speaks JSON-RPC, and virtual time for the long call.
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,10 @@ import { perMonth, subCost } from '../src/tools/budget.ts';
 import { autopilotView } from '../src/tools/autopilot.ts';
 import { costRadar } from '../src/care/radar.ts';
 import { githubManifestPage, provider, startConnect } from '../src/connectors/oneclick.ts';
+import { blocks, issuesFrom } from '../src/connectors/services.ts';
+import { ssh, type ExecOptions } from '../src/connectors/ssh.ts';
+import { targets } from '../src/sentinel/watch.ts';
+import { webhookFindings } from '../src/tools/reach.ts';
 
 type Tool = { name: string; description?: string; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean }; inputSchema?: object };
 // a hosted MCP: JSON-RPC over POST, the tools it was given, each answered by reply()
@@ -419,4 +424,293 @@ test('Unit7’s GitHub pages ask for the rights these need', async () => {
   const app = testApp(), o = await testOrg(app), origin = 'http://localhost:4800';
   const state = (await startConnect(app, { providerId: 'github', orgId: o.orgId, userId: o.userId, origin })).split('/').pop()!;
   assert.match(githubManifestPage(state, o.userId, origin), /actions&quot;:&quot;write&quot;,&quot;secrets&quot;:&quot;write/);
+});
+
+// --- what six more services hold --------------------------------------------------------------------------------------------
+const NOW = Math.floor(Date.now() / 1000);
+const envs = ['UNIT7_STRIPE_API', 'UNIT7_RESEND_API', 'UNIT7_SENTRY_API', 'UNIT7_TURSO_API', 'UNIT7_UPSTASH_API'];
+function fakeServices() {
+  const st = { issues: [] as object[], hooks: { sk_live_mapkey123456789012: [{ id: 'we_1', url: 'https://shop.example.com/api/stripe?token=abc', status: 'enabled', enabled_events: ['*'] }] } as Record<string, object[]>, refused: new Set<string>() };
+  return fakeApi(({ path, auth }: Req) => {
+    const u = new URL(path, 'http://x'), p = u.pathname, token = auth.replace(/^Bearer /, '');
+    if (st.refused.has(token)) return [401, { error: { message: 'Invalid API Key provided' } }];
+    if (p === '/stripe/account') return { id: 'acct_1', settings: { dashboard: { display_name: 'Shop' } } };
+    if (p === '/stripe/webhook_endpoints') return { data: st.hooks[token] ?? [], has_more: false };
+    if (p === '/stripe/products') return { data: [{ id: 'prod_1' }, { id: 'prod_2' }], has_more: false };
+    if (p === '/stripe/events') return { data: [], has_more: false };
+    if (p === '/resend/domains') return { object: 'list', data: [{ id: 'd1', name: 'mail.example.com', status: 'verified', region: 'us-east-1' }] };
+    if (p === '/sentry/organizations/') return [{ slug: 'acme', links: { regionUrl: 'https://us.sentry.io' } }];
+    if (p === '/sentry/organizations/acme/projects/') return [{ slug: 'shop-web', name: 'Shop web' }];
+    if (p === '/sentry/organizations/acme/issues/') return st.issues;
+    if (p === '/turso/organizations') return [{ slug: 'acme' }];
+    if (p === '/turso/organizations/acme/databases') return { databases: [{ Name: 'orders', DbId: 'db-1', Hostname: 'orders-acme.turso.io' }] };
+    if (p === '/upstash/redis/databases') return [{ database_id: 'r1', database_name: 'cache', endpoint: 'calm-fox-1234', state: 'active', password: 'redis-password-do-not-keep', rest_token: 'rest-token-do-not-keep' }];
+    return undefined;
+  }).then((api) => {
+    for (const [e, path] of envs.map((n) => [n, n.replace(/^UNIT7_|_API$/g, '').toLowerCase()] as const)) process.env[e] = `${api.base}/${path}`;
+    return Object.assign(api, { st, close: () => { for (const e of envs) delete process.env[e]; api.close(); } });
+  });
+}
+const assetsOf = (app: App) => all<{ provider: string; kind: string; ext_id: string; name: string; url: string | null; meta: string }>(app.db, `SELECT provider, kind, ext_id, name, url, meta FROM assets WHERE provider IN ('stripe', 'resend', 'sentry', 'planetscale', 'turso', 'upstash') ORDER BY provider, name`);
+
+test('a pasted key shows what each account holds, with lines to what uses it, and keeps no password', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeServices();
+  try {
+    const stripe = ok(await o.h('account.connect', { provider: 'stripe', token: 'sk_live_mapkey123456789012' }));
+    assert.equal(stripe.status, 'verified', 'a pasted Stripe key now does something');
+    assert.equal(get<{ name: string }>(app.db, 'SELECT name FROM accounts WHERE id = ?', stripe.accountId)!.name, 'Stripe · live');
+    for (const [provider, token] of [['resend', 're_mapkey_123456789012'], ['sentry', 'sntryu_mapkey12345678'], ['turso', 'turso-token-123456'], ['upstash', 'ada@example.com:upstash-key-123']] as const) assert.equal(ok(await o.h('account.connect', { provider, token })).status, 'verified', provider);
+    assert.match(api.calls.find((c) => c.path.startsWith('/upstash/'))!.auth, /^Basic /);
+    assert.equal(Buffer.from(api.calls.find((c) => c.path.startsWith('/upstash/'))!.auth.slice(6), 'base64').toString(), 'ada@example.com:upstash-key-123');
+
+    // an app the Stripe webhook calls
+    const { projectId } = ok(await o.h('project.create', { name: 'Shop' }));
+    const env = get<{ id: string }>(app.db, 'SELECT id FROM environments WHERE project_id = ? LIMIT 1', projectId)!.id, svc = id('svc');
+    run(app.db, `INSERT INTO services (id, org_id, project_id, environment_id, name, slug, kind, config) VALUES (?, ?, ?, ?, 'web', 'web', 'app', '{}')`, svc, o.orgId, projectId, env);
+    run(app.db, `INSERT INTO domains (id, org_id, service_id, hostname) VALUES (?, ?, ?, 'shop.example.com')`, id('dom'), o.orgId, svc);
+
+    ok(await o.h('sync.run'));
+    const found = assetsOf(app);
+    assert.deepEqual(found.map((a) => [a.provider, a.kind, a.name]), [['resend', 'service', 'mail.example.com'], ['sentry', 'service', 'Shop web'], ['stripe', 'service', 'Stripe live · Shop'], ['turso', 'database', 'orders'], ['upstash', 'database', 'cache']]);
+    assert.equal(JSON.parse(found[2]!.meta).status, '2 products, 1 webhook');
+    assert.equal(found.find((a) => a.provider === 'sentry')!.ext_id, 'acme/shop-web');
+    assert.deepEqual(JSON.parse(found[4]!.meta).hosts, ['calm-fox-1234.upstash.io'], 'a setting holding that address draws the line');
+    assert.deepEqual(JSON.parse(found[3]!.meta).hosts, ['orders-acme.turso.io']);
+    assert.doesNotMatch(JSON.stringify(found), /do-not-keep/);
+    const edges = all<{ via: string }>(app.db, `SELECT via FROM edges WHERE kind = 'env'`);
+    assert.deepEqual(edges.map((e) => e.via), ['live webhook']);
+    assert.equal(targets(app, o.orgId).filter((t) => /stripe|sentry|resend/.test(t.host)).length, 0, 'a dashboard is not a site to watch');
+  } finally { api.close(); }
+});
+
+test('a refused key fails that account’s scan out loud, and keeps its last good look', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeServices();
+  try {
+    const acc = account(app, o.orgId, 'stripe', 'sk_live_mapkey123456789012', 'Stripe');
+    ok(await o.h('sync.run'));
+    assert.equal(assetsOf(app).length, 1);
+    api.st.refused.add('sk_live_mapkey123456789012');
+    const r = ok(await o.h('sync.run'));
+    assert.equal(r.accounts.find((a: { id: string }) => a.id === acc).ok, false);
+    assert.match(r.accounts.find((a: { id: string }) => a.id === acc).note, /Stripe refused Unit7/);
+    assert.equal(assetsOf(app).length, 1, 'the map doesn’t forget it');
+    assert.equal(get<{ status: string }>(app.db, 'SELECT status FROM accounts WHERE id = ?', acc)!.status, 'failing');
+  } finally { api.close(); }
+});
+
+test('a stray character in a pasted key says so in plain words', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeServices();
+  try {
+    const r = ok(await o.h('account.connect', { provider: 'resend', token: 're_“curly”_key_123456' }));
+    assert.equal(r.status, 'failing');
+    assert.match(r.problem, /stray character/);
+  } finally { api.close(); }
+});
+
+test('a one-click sign-in reads through the hosted read tools, whatever shape they answer in', async () => {
+  const app = testApp(), o = await testOrg(app);
+  const api = await fakeMcp([
+    { name: 'planetscale_list_organizations', annotations: READS }, { name: 'planetscale_list_databases', annotations: READS, inputSchema: { type: 'object', properties: { organization: { type: 'string' } } } },
+    { name: 'list_databases', annotations: READS }, { name: 'redis_database_list_databases', annotations: READS }, { name: 'list-domains', annotations: READS },
+    { name: 'find_organizations', annotations: READS }, { name: 'find_projects', annotations: READS }, { name: 'list_available_accounts_or_orgs', annotations: READS }, { name: 'stripe_api_read', annotations: READS },
+  ], (name, args) => {
+    if (name === 'planetscale_list_organizations') return { data: [{ name: 'acme' }] };
+    if (name === 'planetscale_list_databases') { assert.deepEqual(args, { organization: 'acme' }, 'only the arguments it takes'); return { data: [{ name: 'shop', state: 'ready', kind: 'postgresql', html_url: 'https://app.planetscale.com/acme/shop' }] }; }
+    if (name === 'list_databases') return { databases: [{ name: 'orders', id: 'db-2', hostname: 'orders.turso.io' }] };
+    if (name === 'redis_database_list_databases') return [{ id: 'r2', name: 'cache' }];
+    if (name === 'list-domains') return 'Found 2 domains:\n\nName: mail.example.com\nID: d1\nStatus: verified\n\nName: news.example.com\nID: d2\nStatus: failed\n';
+    if (name === 'find_organizations') return '# Organizations\n\n## **acme**\n\n**Web URL:** https://acme.sentry.io\n';
+    if (name === 'find_projects') return '# Projects in **acme**\n\n- **shop-web**\n- **api**\n';
+    if (name === 'list_available_accounts_or_orgs') return { accounts: [{ stripe_context: 'acct_live', livemode: true, display_name: 'Shop' }, { stripe_context: 'acct_sand', livemode: false, display_name: 'Sandbox' }] };
+    if (name === 'stripe_api_read') return { data: args.stripe_api_operation_id === 'GetWebhookEndpoints' ? [{ id: `we_${args.stripe_context}`, url: 'https://shop.example.com/hook', status: 'enabled' }] : [] };
+    return {};
+  });
+  try {
+    for (const p of ['planetscale', 'turso', 'upstash', 'resend', 'sentry', 'stripe']) signedIn(app, o.orgId, p, api.base, p);
+    ok(await o.h('sync.run'));
+    const by = (p: string) => assetsOf(app).filter((a) => a.provider === p);
+    assert.equal(JSON.parse(by('planetscale')[0]!.meta).engine, 'postgres');
+    assert.equal(by('planetscale')[0]!.ext_id, 'acme/shop');
+    assert.deepEqual(JSON.parse(by('turso')[0]!.meta).hosts, ['orders.turso.io']);
+    assert.equal(by('upstash')[0]!.ext_id, 'r2');
+    assert.deepEqual(by('resend').map((a) => [a.name, JSON.parse(a.meta).status]), [['mail.example.com', 'verified'], ['news.example.com', 'failed']]);
+    assert.deepEqual(by('sentry').map((a) => a.ext_id).sort(), ['acme/api', 'acme/shop-web']);
+    assert.deepEqual(by('stripe').map((a) => a.name), ['Stripe live · Shop', 'Stripe test · Sandbox']);
+    assert.equal(JSON.parse(by('stripe')[0]!.meta).status, '0 products, 1 webhook');
+  } finally { api.close(); }
+});
+
+test('blocks and issuesFrom read the prose hosted servers answer in', () => {
+  assert.deepEqual(blocks('- **Name**: a\n- **Status**: ok\n\nName: b'), [{ name: 'a', status: 'ok' }, { name: 'b' }]);
+  assert.deepEqual(issuesFrom('# Issues in **acme**\n\n## 1. [SHOP-1](https://acme.sentry.io/issues/1)\n\n**TypeError: boom**\n\n- **Events**: 1,204\n- **Culprit**: `checkout in cart.ts`\n- **Last seen**: 2026-11-06T10:00:00Z\n\n## SHOP-2\n\n**Description**: Other\n**Occurrences**: 3\n'),
+    [{ title: 'TypeError: boom', culprit: 'checkout in cart.ts', count: 1204, lastSeen: '2026-11-06T10:00:00Z', url: undefined }, { title: 'Other', culprit: undefined, count: 3, lastSeen: undefined, url: undefined }]);
+});
+
+test('a Sentry connection feeds the error view: new issues, not the old ones twice, with what its own count adds', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeServices();
+  const issue = (over: object) => ({ title: 'TypeError: Cannot read id', culprit: 'checkout in cart.ts', count: '40', lastSeen: new Date().toISOString(), permalink: 'https://acme.sentry.io/issues/1', metadata: { type: 'TypeError', value: 'Cannot read id of sk_live_abcdefghijklmnop1234' }, ...over });
+  try {
+    account(app, o.orgId, 'sentry', 'sntryu_mapkey12345678', 'Sentry');
+    ok(await o.h('sync.run'));
+    api.st.issues = [issue({})];
+    const first = ok(await o.h('errors.scan_hosts'));
+    assert.equal(first.apps, 1);
+    assert.equal(first.report[0].added, 40);
+    const view = async () => ok(await o.h('errors.hosts'));
+    const seen = await view();
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].provider, 'sentry');
+    assert.equal(seen[0].kind, 'TypeError');
+    assert.equal(seen[0].frame, 'checkout in cart.ts');
+    assert.equal(seen[0].count, 40);
+    assert.doesNotMatch(seen[0].message, /sk_live/, 'scrubbed like any log');
+    assert.match(api.calls.find((c) => c.path.includes('/issues/'))!.path, /project=shop-web.*sort=date/);
+
+    // 5 more of the same: 5 are added, not 45
+    api.st.issues = [issue({ count: '45' })];
+    assert.equal(ok(await o.h('errors.scan_hosts')).report[0].added, 5);
+    assert.equal((await view())[0].count, 45);
+    // seen an hour ago and quiet since: nothing new
+    api.st.issues = [issue({ count: '45', lastSeen: new Date(Date.now() - 3600_000).toISOString() })];
+    assert.equal(ok(await o.h('errors.scan_hosts')).report.length, 0);
+    assert.ok(all(app.db, `SELECT 1 FROM events WHERE type = 'app.errors'`).length >= 1, 'a new error that keeps happening alerts');
+  } finally { api.close(); }
+});
+
+// --- Stripe webhooks -------------------------------------------------------------------------------------------------------
+const hook = (mode: 'test' | 'live', url: string, status = 'enabled') => ({ mode, url, host: new URL(url).hostname, status, events: 1, account: 'Stripe' });
+test('webhookFindings: each usual failure, and quiet when it’s right', () => {
+  const live = { key: 'STRIPE_SECRET_KEY', target: 'production', value: 'sk_live_a' }, test_ = { key: 'STRIPE_SECRET_KEY', target: 'preview', value: 'sk_test_a' };
+  const sign = (target: string, value: string, key = 'STRIPE_WEBHOOK_SECRET') => ({ key, target, value });
+  const go = (o: Partial<Parameters<typeof webhookFindings>[0]>) => webhookFindings({ endpoints: [], compared: ['test', 'live'], undelivered: {}, ...o });
+  const url = 'https://shop.example.com/hook';
+  assert.deepEqual(go({ endpoints: [hook('live', url), hook('test', 'https://test.example.com/hook')], hosts: ['shop.example.com', 'test.example.com'], settings: [live, test_, sign('production', 'whsec_live'), sign('preview', 'whsec_test')] }), []);
+  const same = go({ endpoints: [hook('live', url)], hosts: ['shop.example.com'], settings: [live, test_, sign('production', 'whsec_same'), sign('preview', 'whsec_same')] });
+  assert.equal(same[0]!.severity, 'critical');
+  assert.match(same[0]!.text, /STRIPE_WEBHOOK_SECRET \(production\) and STRIPE_WEBHOOK_SECRET \(preview\) hold the same signing secret/);
+  // named settings on one target say their own mode
+  assert.match(go({ settings: [{ ...live, target: 'all' }, sign('all', 'whsec_x', 'STRIPE_WEBHOOK_SECRET_TEST'), sign('all', 'whsec_x', 'STRIPE_WEBHOOK_SECRET_LIVE')] })[0]!.text, /same signing secret/);
+  assert.match(go({ endpoints: [hook('live', url), hook('test', url)], hosts: ['shop.example.com'], settings: [live, sign('production', 'whsec_one')] })[0]!.text, /gets both test and live events, and this site holds one signing secret/);
+  assert.match(go({ endpoints: [hook('test', url)], hosts: ['shop.example.com'], settings: [live, sign('production', 'whsec_one')] })[0]!.text, /runs on a live key, but only a test webhook/);
+  assert.deepEqual(go({ endpoints: [hook('test', url)], hosts: ['shop.example.com'], settings: [live, sign('production', 'whsec_one')], compared: ['test'] }), [], 'live wasn’t read: no guess');
+  assert.match(go({ settings: [live, { key: 'NEXT_PUBLIC_STRIPE_KEY', target: 'production', value: 'pk_test_x' }] })[0]!.text, /mix a live secret key with a test publishable key/);
+  assert.match(go({ endpoints: [hook('live', url)], hosts: ['shop.example.com'], settings: [live] })[0]!.text, /holds no signing secret/);
+  assert.match(go({ endpoints: [hook('live', url, 'disabled')] })[0]!.text, /Stripe switched off the live webhook/);
+  assert.match(go({ undelivered: { live: 3 } })[0]!.text, /3 live events from the last week didn’t reach a webhook/);
+  assert.match(go({ endpoints: [hook('live', url), hook('test', url)], hosts: ['shop.example.com'] })[0]!.text, /couldn’t read this site’s settings/);
+});
+
+async function stripeWorld() {
+  const st = { hooks: {} as Record<string, object[]>, events: {} as Record<string, object[]> };
+  const api = await fakeApi(({ path, auth }: Req) => {
+    const u = new URL(path, 'http://x'), p = u.pathname, key = auth.replace(/^Bearer /, '');
+    if (p === '/stripe/account') return [403, { error: { message: 'The provided key does not have the required permissions' } }];
+    if (p === '/stripe/webhook_endpoints') return { data: st.hooks[key] ?? [], has_more: false };
+    if (p === '/stripe/events') return { data: st.events[key] ?? [], has_more: false };
+    if (p === '/vercel/v10/projects/prj_shop/env') {
+      assert.equal(u.searchParams.get('decrypt'), 'true');
+      return { envs: [
+        { key: 'STRIPE_SECRET_KEY', value: 'sk_live_sitekey123456789', target: ['production'] }, { key: 'STRIPE_SECRET_KEY', value: 'sk_test_sitekey123456789', target: ['preview', 'development'] },
+        { key: 'STRIPE_WEBHOOK_SECRET', value: 'whsec_samesamesamesamesame123456', target: ['production', 'preview'] }, { key: 'DATABASE_URL', value: 'postgres://a:b@db.example.com/x', target: ['production'] },
+      ] };
+    }
+    return undefined;
+  });
+  process.env.UNIT7_STRIPE_API = `${api.base}/stripe`; process.env.UNIT7_VERCEL_API = `${api.base}/vercel`;
+  return Object.assign(api, { st, close: () => { delete process.env.UNIT7_STRIPE_API; delete process.env.UNIT7_VERCEL_API; api.close(); } });
+}
+const site = (app: App, orgId: string, acc: string) => run(app.db, `INSERT INTO assets (id, org_id, account_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES ('ast_shop', ?, ?, 'vercel', 'app', 'prj_shop', 'shop', 'https://shop.example.com', ?, '2026-11-06')`, orgId, acc, JSON.stringify({ hosts: ['shop.example.com', 'shop.vercel.app'], envKeys: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'], end: { kind: 'vercel', accountId: acc, project: 'prj_shop' } }));
+
+test('stripe.webhooks: a site’s test and live endpoints, the same signing secret under both, and never a value', async () => {
+  const app = testApp(), o = await testOrg(app), api = await stripeWorld();
+  try {
+    account(app, o.orgId, 'stripe', 'rk_live_unit7readkey12345', 'Stripe live');
+    account(app, o.orgId, 'stripe', 'rk_test_unit7readkey12345', 'Stripe test');
+    site(app, o.orgId, account(app, o.orgId, 'vercel', 'vercel-token-123456'));
+    api.st.hooks.rk_live_unit7readkey12345 = [{ id: 'we_l', url: 'https://shop.example.com/api/hook?key=abc123', status: 'enabled', enabled_events: ['checkout.session.completed'] }, { id: 'we_o', url: 'https://other.example.com/hook', status: 'enabled' }];
+    api.st.hooks.rk_test_unit7readkey12345 = [{ id: 'we_t', url: 'https://shop.example.com/api/hook', status: 'enabled' }];
+    api.st.events.rk_live_unit7readkey12345 = [{ id: 'evt_1', created: NOW - 7200, data: { object: { email: 'customer@example.com' } } }, { id: 'evt_2', created: NOW - 60 }, { id: 'evt_3', created: NOW - 30 * 86400 }];
+
+    const r = ok(await o.a('stripe.webhooks', { site: 'shop' }));
+    assert.equal(r.site, 'shop');
+    assert.deepEqual(r.endpoints.map((e: { mode: string; url: string }) => [e.mode, e.url]), [['live', 'https://shop.example.com/api/hook'], ['test', 'https://shop.example.com/api/hook']], 'only this site’s, and never a query string');
+    assert.deepEqual(r.settings.map((s: { key: string; target: string; kind: string; mode: string }) => [s.key, s.target, s.kind, s.mode]), [
+      ['STRIPE_SECRET_KEY', 'production', 'secret key', 'live'], ['STRIPE_SECRET_KEY', 'preview', 'secret key', 'test'], ['STRIPE_SECRET_KEY', 'development', 'secret key', 'test'],
+      ['STRIPE_WEBHOOK_SECRET', 'production', 'signing secret', 'live'], ['STRIPE_WEBHOOK_SECRET', 'preview', 'signing secret', 'test']]);
+    assert.equal(r.findings[0].severity, 'warning');
+    assert.match(r.findings[0].text, /1 live event from the last week didn’t reach a webhook/);
+    assert.match(r.findings[1].text, /hold the same signing secret, under test and under live/);
+    assert.deepEqual(r.compared.sort(), ['live', 'test']);
+    assert.equal(r.missing, undefined);
+    assert.doesNotMatch(JSON.stringify(r), /whsec_|sk_live|sk_test|customer@example|abc123/, 'names and modes only');
+    assert.match(r.note, /shows a signing secret only once/);
+    assert.match(r.untrusted, /not instructions/);
+
+    // no site: every endpoint on every account
+    assert.equal(ok(await o.a('stripe.webhooks')).endpoints.length, 3);
+    // by address
+    assert.equal(ok(await o.a('stripe.webhooks', { site: 'https://shop.vercel.app/' })).site, 'shop');
+    const none = await o.a('stripe.webhooks', { site: 'nothing-here.example' });
+    assert.match((none as { error: { message: string } }).error.message, /doesn’t know a site called/);
+  } finally { api.close(); }
+});
+
+test('stripe.webhooks with one mode connected says what it couldn’t compare; a key that can’t read events still shows the rest', async () => {
+  const app = testApp(), o = await testOrg(app), api = await stripeWorld();
+  try {
+    account(app, o.orgId, 'stripe', 'rk_live_unit7readkey12345', 'Stripe');
+    api.st.hooks.rk_live_unit7readkey12345 = [{ id: 'we_l', url: 'https://shop.example.com/api/hook', status: 'disabled' }];
+    api.st.events = new Proxy({}, { get: () => { throw new Error('events refused'); } }) as never;
+    const r = ok(await o.a('stripe.webhooks'));
+    assert.equal(r.endpoints[0].status, 'disabled');
+    assert.match(r.missing, /test mode isn’t connected.*Add a test key/);
+    assert.match(r.findings[0].text, /switched off/);
+  } finally { api.close(); }
+});
+
+test('stripe.webhooks reads a Coolify app’s settings, a Unit7 app’s too, and says so when it can’t', async () => {
+  const app = testApp(), o = await testOrg(app), api = await stripeWorld();
+  const coolify = createServer((req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(/\/applications\/app1\/envs$/.test(req.url!) ? [{ key: 'STRIPE_SECRET_KEY', real_value: 'sk_live_cool123456789012', is_preview: false }, { key: 'STRIPE_WEBHOOK_SECRET', real_value: 'whsec_coolcoolcoolcoolcool123456', is_preview: false }] : [])));
+  await new Promise<void>((r) => coolify.listen(0, '127.0.0.1', r));
+  ssh(app).exec = (_s, _c, x: ExecOptions = {}) => new Promise((resolve) => {
+    const p = spawn('curl', ['-K', '-']);
+    let stdout = '', stderr = '';
+    p.stdout.on('data', (d) => { stdout += d; }); p.stderr.on('data', (d) => { stderr += d; });
+    p.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr, truncated: false }));
+    p.stdin.end(String(x.stdin ?? '').replace('http://127.0.0.1:8000/', `http://127.0.0.1:${(coolify.address() as { port: number }).port}/`));
+  });
+  try {
+    account(app, o.orgId, 'stripe', 'rk_live_unit7readkey12345', 'Stripe');
+    api.st.hooks.rk_live_unit7readkey12345 = [{ id: 'we_l', url: 'https://shop.example.com/hook', status: 'enabled' }];
+    const srv = id('srv');
+    run(app.db, `INSERT INTO servers (id, org_id, name, host, username, key_ref, status, facts) VALUES (?, ?, 'box', '203.0.113.9', 'root', 'credential://ssh/box/private-key', 'ready', '{}')`, srv, o.orgId);
+    const acc = account(app, o.orgId, 'coolify', '3|coolifytoken123456', 'Coolify');
+    run(app.db, `UPDATE accounts SET meta = json_set(meta, '$.serverId', ?) WHERE id = ?`, srv, acc);
+    run(app.db, `INSERT INTO assets (id, org_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES ('ast_cool', ?, 'coolify', 'app', ?, 'shop', 'https://shop.example.com', ?, '2026-11-06')`, o.orgId, `${srv}/coolify:app1`, JSON.stringify({ hosts: ['shop.example.com'], owner: 'coolify' }));
+    const r = ok(await o.a('stripe.webhooks', { site: 'shop' }));
+    assert.deepEqual(r.settings.map((s: { key: string; target: string; mode: string }) => [s.key, s.target, s.mode]), [['STRIPE_SECRET_KEY', 'production', 'live'], ['STRIPE_WEBHOOK_SECRET', 'production', 'live']]);
+    assert.deepEqual(r.findings, []);
+
+    // an X-ray part Coolify doesn't run: the endpoints still show, with an open word about the settings
+    run(app.db, `UPDATE assets SET provider = 'compose', ext_id = ? WHERE id = 'ast_cool'`, `${srv}/c:shop`);
+    const u = ok(await o.a('stripe.webhooks', { site: 'shop' }));
+    assert.equal(u.settings, undefined);
+    assert.equal(u.endpoints.length, 1);
+  } finally { coolify.close(); api.close(); }
+});
+
+test('stripe.webhooks through a sign-in reads every place it holds, live and sandbox', async () => {
+  const app = testApp(), o = await testOrg(app);
+  const api = await fakeMcp([{ name: 'list_available_accounts_or_orgs', annotations: READS }, { name: 'stripe_api_read', annotations: READS }], (name, args) => {
+    if (name === 'list_available_accounts_or_orgs') return [{ stripe_context: 'acct_l', livemode: true }, { stripe_context: 'acct_s', livemode: false }];
+    if (args.stripe_api_operation_id === 'GetEvents') return { data: [] };
+    assert.equal(args.livemode, args.stripe_context === 'acct_l');
+    return { data: [{ id: 'we', url: `https://${args.livemode ? 'shop' : 'dev'}.example.com/hook`, status: 'enabled' }] };
+  });
+  try {
+    signedIn(app, o.orgId, 'stripe', api.base, 'Stripe');
+    const r = ok(await o.a('stripe.webhooks'));
+    assert.deepEqual(r.endpoints.map((e: { mode: string; host: string }) => [e.mode, e.host]), [['live', 'shop.example.com'], ['test', 'dev.example.com']]);
+    assert.deepEqual(r.compared.sort(), ['live', 'test']);
+  } finally { api.close(); }
 });

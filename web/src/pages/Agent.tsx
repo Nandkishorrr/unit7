@@ -62,7 +62,7 @@ export function useChat() {
       if (!e.type.startsWith('agent.') || e.data?.conversationId !== convId) return;
       if (e.type === 'agent.message') { live.current.add(e.data.message.id); if (loaded) setMessages((m) => upsert(m, e.data.message)); else early.push(e.data.message); }
       if (e.type === 'agent.done') setRunning(false);
-      if (e.type === 'agent.claimed') status.reload();
+      if (e.type === 'agent.claimed') { status.reload(); setRunning(true); } // your AI just picked up what was waiting
     });
     return () => { alive = false; off(); };
   }, [convId, connected, tries]);
@@ -77,7 +77,6 @@ export function useChat() {
     setNonce((n) => n + 1);
     try {
       const r = await api<{ conversationId: string; via: string; watching?: boolean }>('/api/agent/conversations', { body: { message, conversationId: convId ?? undefined, ...(context.length && { context: bare(context) }) } });
-      if (r.via === 'your-ai' && !r.watching) toast('info', 'No AI picked yet', 'Choose one in the box: your Claude subscription, your Google account, or an API key.');
       if (r.conversationId !== convId) { streamLoad.current = true; setConvId(r.conversationId); urlFor(r.conversationId); }
       return true;
     } catch (err) {
@@ -98,9 +97,10 @@ export function useChat() {
   };
   const lastAsk = [...messages].reverse().find((m) => m.role === 'user')?.content.text as string | undefined;
   const st = status.data;
-  // nothing can answer yet (no AI picked, your Claude Code isn't listening): the request just waits, nothing runs
-  const stalled = running && !!st && !st.ready && !st.bridge?.watching;
-  const working = stalled ? 'Pick who answers to finish this' : st && !st.ready ? 'Your Claude Code is on it…'
+  // nothing can answer yet (no AI picked, your Claude Code isn't listening): the last word in the thread says what to connect
+  const said = messages[messages.length - 1];
+  const stalled = !!st && !st.ready && !st.bridge?.watching && said?.role === 'status' && !!said.content.brain;
+  const working = st && !st.ready ? (st.bridge?.watching ? 'Your Claude Code is on it…' : 'Looking…')
     : st?.brain ? `${st.brain === 'claude' ? 'Claude' : 'Gemini'} is working…` : 'Unit7 is working…';
   return {
     convId, messages, running, stalled, failed, nonce, connected, status: st, reloadStatus: status.reload, working, lastAsk,
@@ -321,7 +321,7 @@ export function Composer({ chat, items = [], starters = STARTERS, next = [] }: {
         <span className={cx('hidden text-[12px] text-faint transition-opacity', !starting && 'md:block', text ? 'opacity-100' : 'opacity-0')}>Enter to send · Shift+Enter for a new line</span>
         {chat.running && !chat.stalled && !flying
           ? <Button type="button" size="md" variant="dark" className="animate-pop" onClick={chat.stop} title="Stop (Esc)" icon={<Square size={12} fill="currentColor" />}>Stop</Button>
-          : <button disabled={(!text.trim() || chat.running) && !flying} aria-label="Send" title={chat.stalled ? 'Pick who answers first' : 'Send (Enter)'}
+          : <button disabled={(!text.trim() || chat.running) && !flying} aria-label="Send" title="Send (Enter)"
               className={cx('grid size-11 place-items-center overflow-hidden rounded-full bg-blue text-white shadow-[0_8px_20px_-8px_var(--blue)] transition hover:brightness-110 active:scale-95 disabled:bg-sunken disabled:text-faint disabled:shadow-none', flying && 'send-fly pointer-events-none')}><ArrowUp size={20} strokeWidth={2.3} /></button>}
       </div>
     </form>

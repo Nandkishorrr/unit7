@@ -4,7 +4,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowDown, Check, ChevronRight, CircleAlert, Info, Loader2, RotateCcw, ShieldAlert, TriangleAlert, X } from 'lucide-react';
 import { api } from '../../lib/api';
-import { Button, CopyButton, cx, toast, StatusMark, askAction, ErrorLine } from '../../ui';
+import { A, Button, CopyButton, cx, toast, StatusMark, askAction, ErrorLine } from '../../ui';
 import { rawWords, tidy, toolWords } from '../../lib/words';
 import { toolCard } from './cards';
 import { AskCard } from './asks';
@@ -72,7 +72,7 @@ type Item = { kind: 'one'; m: ChatMsg; card?: ReactNode } | { kind: 'steps'; lis
 
 export function Thread({ messages, conversationId, running, stalled, working, fresh, approvals, onRetry }: {
   messages: ChatMsg[]; conversationId: string; running: boolean; working: string;
-  stalled?: boolean;                                    // it's waiting with nothing to answer it: say what to do, don't look busy
+  stalled?: boolean;                                    // nothing can answer yet: offer to set one up
   fresh: (id: string) => boolean;                       // arrived live in this visit: animate it in, stream its words
   approvals: Map<string, string>;                       // approval id → its status now: pending, approved, done, failed, rejected, expired
   onRetry?: () => void;
@@ -124,20 +124,19 @@ export function Thread({ messages, conversationId, running, stalled, working, fr
       })}
       {running && !busyStep && (
         <div className="relative flex min-h-7 items-center gap-2.5 text-[13px] text-muted animate-rise sm:pl-10" role="status">
-          {tail?.role === 'user' && <AiMark live={!stalled} />}
-          {stalled ? <><ArrowDown size={14} aria-hidden className="text-[#f59e0b]" /><span className="font-medium text-ink-2">{working}</span></>
-            : <><TypingDots /><Working text={waitingAsk ? 'Waiting for your answer above' : working} since={tail?.id ?? ''} /></>}
+          {tail?.role === 'user' && <AiMark live />}
+          <TypingDots /><Working text={waitingAsk ? 'Waiting for your answer above' : working} since={tail?.id ?? ''} />
         </div>
       )}
       {/* nothing can answer yet: set one up right in the box below */}
-      {running && stalled && <div className="animate-rise sm:pl-10"><Choices id="brain" label="Who answers" choices={BRAIN} onPick={(c) => (c.key === 'brain' ? (focusBrains(), true) : false)} /></div>}
+      {stalled && <div className="animate-rise sm:pl-10"><Choices id="brain" label="Who answers" choices={BRAIN} onPick={(c) => (c.key === 'brain' ? (focusBrains(), true) : false)} /></div>}
     </div>
   );
 }
 
 // no AI picked yet: "Set it up" goes to the two accounts in the ask box (Install / Sign in there), or an API key
 const BRAIN: Choice[] = [
-  { key: 'brain', label: 'Set it up', setup: { kind: 'brain' }, recommended: true, why: 'nothing can answer yet; your own Claude or Google account works, no API key needed' },
+  { key: 'brain', label: 'Set it up', setup: { kind: 'brain' }, recommended: true, why: 'nothing can answer yet; your own Claude works, no API key needed' },
   { key: 'key', label: 'Add an API key', href: '/connections#ai' },
 ];
 const focusBrains = () => {
@@ -389,7 +388,7 @@ function blocks(text: string): ReactNode[] {
   flush();
   return out;
 }
-const INLINE = /(\*\*[^*]+(?:\*\*|$)|(?<![\w*])[*_][^*_\s][^*_\n]*(?<!\s)[*_](?![\w*])|`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
+const INLINE = /(\*\*[^*]+(?:\*\*|$)|(?<![\w*])[*_][^*_\s][^*_\n]*(?<!\s)[*_](?![\w*])|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|\/(?!\/))[^)\s]+\)|https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 function inline(text: string, strong = false): ReactNode {
   const nodes = text.split(INLINE).map((p, i) => {
     if (i % 2 === 0) return p;
@@ -398,6 +397,7 @@ function inline(text: string, strong = false): ReactNode {
     if (p.startsWith('`')) return <code key={i} className="rounded-md bg-raised px-1.5 py-0.5 font-mono text-[0.86em] text-ink">{p.slice(1, -1)}</code>;
     const md = /^\[([^\]]+)\]\((.+)\)$/.exec(p);
     const href = md ? md[2]! : p;
+    if (href.startsWith('/')) return <A key={i} href={href} className="font-medium text-blue-text underline decoration-blue-text/30 underline-offset-2 hover:decoration-blue-text">{md![1]}</A>; // a page of Unit7's own
     return <a key={i} href={href} target="_blank" rel="noreferrer noopener" className="font-medium text-blue-text underline decoration-blue-text/30 underline-offset-2 hover:decoration-blue-text">{md ? md[1] : p.replace(/^https?:\/\//, '')}</a>;
   });
   return strong ? <strong className="font-semibold text-ink">{nodes}</strong> : nodes;
