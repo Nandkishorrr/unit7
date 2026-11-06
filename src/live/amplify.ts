@@ -8,7 +8,7 @@ import { Unit7Error } from '../errors.ts';
 import type { Ctx } from '../tools/runtime.ts';
 import { repoFor } from './coolify.ts';
 import { accountsOf, addHost, type Host, type Put } from './hosts.ts';
-import { finished, keptIn, parts, send, taken, textOf, until, zipOf } from './kit.ts';
+import { finished, keptIn, parts, publicFiles, send, taken, textOf, until, zipOf } from './kit.ts';
 
 const NEEDS = ['amplify:CreateApp', 'amplify:CreateBranch', 'amplify:CreateDeployment', 'amplify:StartDeployment', 'amplify:StartJob', 'amplify:GetJob'];
 const FRAMEWORK: Record<string, string> = { next: 'Next.js - SSR', nuxt: 'Nuxt', vite: 'Web', react: 'React', angular: 'Angular', astro: 'Astro' };
@@ -37,11 +37,11 @@ const wait = (ctx: Ctx, acc: string, region: string, app: string, branch: string
 
 // a person's file-only app: its files as a .zip with index.html at the top
 async function sendZip(ctx: Ctx, acc: string, region: string, app: string, branch: string, p: Put) {
-  const dep = await am<{ jobId: string; zipUploadUrl: string }>(ctx, acc, region, `/apps/${app}/branches/${branch}/deployments`, {});
+  const dep = await am<{ jobId: string; zipUploadUrl: string }>(ctx, acc, region, `/apps/${app}/branches/${encodeURIComponent(branch)}/deployments`, {});
   ctx.progress('Sending the files to Amplify…');
-  const up = await send(dep.zipUploadUrl, { method: 'PUT', raw: zipOf(finished(p.site)!) });
+  const up = await send(dep.zipUploadUrl, { method: 'PUT', raw: zipOf(publicFiles(p.site)) });
   if (up.status >= 400) throw new Unit7Error('provider_error', `Amplify’s storage wouldn’t take the files (${up.status}). Run this again.`, 502);
-  await am(ctx, acc, region, `/apps/${app}/branches/${branch}/deployments/start`, { jobId: dep.jobId });
+  await am(ctx, acc, region, `/apps/${app}/branches/${encodeURIComponent(branch)}/deployments/start`, { jobId: dep.jobId });
   return dep.jobId;
 }
 
@@ -72,6 +72,7 @@ export const amplifyHost: Host = addHost({
     const linked = !!app && !!(await awsOps.amplifyApp(ctx, acc, region, app)).repository, plain = !!files && !linked;
     if (plain && p.env.length) throw new Unit7Error('no_settings', 'These are finished files, so settings can’t reach them. Build them in, then run this again.', 400);
     if (plain) {
+      publicFiles(p.site); // before anything is made
       if (!app) {
         ctx.progress('Creating the app on Amplify…');
         const made = (await am(ctx, acc, region, '/apps', { name: p.name, platform: 'WEB' })).app;
@@ -92,15 +93,15 @@ export const amplifyHost: Host = addHost({
       job = (await awsOps.amplifyStart(ctx, acc, region, app!, branch, { jobType: 'RELEASE', jobReason: 'From Unit7' })).jobId;
     }
     await wait(ctx, acc, region, app!, branch, job);
-    return { url: `https://${branch}.${domain}`, project: `${region}/${app}/${branch}`, deployment: job, autoDeploy: !plain, point: 'Add your domain in the Amplify console, under Hosting. Unit7 can’t point domains at Amplify yet.', notes };
+    return { url: `https://${branch}.${domain}`, project: `${region}/${app}`, deployment: job, autoDeploy: !plain, point: 'Add your domain in the Amplify console, under Hosting. Unit7 can’t point domains at Amplify yet.', notes };
   },
   async logs(ctx, r) {
-    const [region, app, branch] = parts(r.project, 3) as [string, string, string];
-    return lines(ctx, r.place.accountId!, region, app, branch, r.deployment && parts(r.deployment)[0]);
+    const acc = r.place.accountId!, [region, app] = parts(r.project, 2) as [string, string];
+    return lines(ctx, acc, region, app, (await awsOps.amplifyApp(ctx, acc, region, app)).productionBranch?.branchName ?? 'main', r.deployment && parts(r.deployment)[0]);
   },
   // these reach a build, so a site made from finished files never sees them
   async env(ctx, r, op) {
-    const acc = r.place.accountId!, [region, app] = parts(r.project, 3) as [string, string, string];
+    const acc = r.place.accountId!, [region, app] = parts(r.project, 2) as [string, string];
     const vars = (await am<{ app: { environmentVariables?: Record<string, string> } }>(ctx, acc, region, `/apps/${app}`)).app.environmentVariables ?? {};
     for (const key of op.unset ?? []) delete vars[key];
     for (const e of op.set ?? []) vars[e.key] = e.value;

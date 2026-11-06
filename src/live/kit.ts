@@ -51,6 +51,13 @@ export function finished(site: Site): SiteFile[] | undefined {
   return files.some((f) => f.path === 'index.html') ? files : undefined;
 }
 
+// finished files go on the internet as they are, so a key in one stops it, as it does in a plain website
+export function publicFiles(site: Site) {
+  const dir = site.detection.staticDir, keys = site.secrets.filter((s) => dir === '.' || s.file.startsWith(`${dir}/`));
+  if (keys.length) throw new Unit7Error('keys_in_site', `Stopped: these files would put secret keys on the internet: ${keys.slice(0, 5).map((s) => `${s.file} (${s.kinds.join(', ')})`).join('; ')}. Take them out, then run this again.`, 400);
+  return finished(site)!;
+}
+
 // a throwaway folder with only what may leave this computer, for a tool that reads a whole folder
 export function cleanCopy(site: Site) {
   const dir = mkdtempSync(join(tmpdir(), 'unit7-send-'));

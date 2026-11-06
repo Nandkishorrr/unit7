@@ -162,7 +162,7 @@ function railway(st: { refuseRepo?: boolean; status?: string; calls: { q: string
     return fail(`unknown: ${q}`);
   };
 }
-const run = (st: { calls: { q: string }[] }, word: string) => st.calls.filter((c) => c.q.includes(word));
+const run = (st: { calls: { q: string; v: any }[] }, word: string) => st.calls.filter((c) => c.q.includes(word));
 
 test('Railway: a project, a service from the repo, a deploy that’s followed, logs and settings, with an account token', async () => {
   const st = { calls: [] as { q: string; v: any }[], projects: [] as any[] }, w = await world({ railway: railway(st) }), acc = w.acc('railway', 'rail-demo-token');
@@ -218,6 +218,7 @@ function fly(st: { apps: Record<string, any>; machine?: any[]; secrets?: string[
     if (rest === '/secrets') return { secrets: (st.secrets ?? []).map((name) => ({ name })) };
     if (rest === '/machines' && method === 'POST') { if (st.refuseMachine) return st.refuseMachine; const m = { id: `m${a.machines.length + 1}`, ...json }; a.machines.push(m); return m; }
     if (rest === '/machines') return a.machines;
+    if (rest === '/certificates/acme') return { dns_requirements: { cname: `${app}.fly.dev` } };
     const one = /^\/machines\/(\w+)$/.exec(rest);
     if (one && method === 'POST') { Object.assign(a.machines.find((m: any) => m.id === one[1]), json); return {}; }
     if (one) return { id: one[1], state: st.state?.shift() ?? 'started' };
@@ -229,12 +230,14 @@ function fly(st: { apps: Record<string, any>; machine?: any[]; secrets?: string[
 test('Fly.io: an app with an address and a machine from a ready image, and a person is told it costs money', async () => {
   const st = { apps: {} as Record<string, any> }, w = await world({ fly: fly(st) }); w.acc('fly', 'fo1_demo_token');
   try {
-    const r = await w.org.h('live.put', { image: 'ghcr.io/demo/shop:1.2', to: 'fly', name: 'shop', port: 3000, env: { API_KEY: 'value-demo' } });
+    const r = await w.org.h('live.put', { image: 'ghcr.io/demo/shop:1.2', to: 'fly', name: 'shop', port: 3000, env: { API_KEY: 'value-demo' }, domain: 'app.shop.example' });
     assert.equal(r.status, 'approval_required', 'starting a machine spends money, so a person says yes');
     const out = ok<any>(await w.yes(r));
     assert.equal(out.url, 'https://shop.fly.dev');
     assert.deepEqual(st.apps.shop.ips, ['shared_v4', 'v6'], 'with no address a new app can’t be reached');
     assert.equal(st.apps.shop.org, 'personal');
+    assert.equal(posts(w.api, '/fly/apps/shop/certificates/acme').length, 1, 'the domain went to this app');
+    assert.doesNotMatch(JSON.stringify(out.domain), /exactly one target/);
     const c = st.apps.shop.machines[0].config;
     assert.equal(c.image, 'ghcr.io/demo/shop:1.2');
     assert.equal(c.services[0].internal_port, 3000);
@@ -372,6 +375,22 @@ test('Firebase Hosting: a version, hashes of the gzipped files, only what’s mi
   } finally { w.close(); }
 });
 
+test('a key in a finished file stops it on the hosts that publish files as they are, before anything is made', async () => {
+  const leaked = { ...BUILT, 'dist/a.js': `const k = "sk_live_${'a1'.repeat(14)}"` };
+  const st: any = {}, w = await world({ google: firebase(st) }); st.base = w.api.base; w.acc('firebase', KEY);
+  try {
+    refused(await w.org.h('live.put', { uploadId: await w.up(leaked), to: 'firebase', name: 'shop' }), /would put secret keys on the internet: dist\/a\.js/);
+    assert.equal(st.steps, undefined, 'nothing was made');
+    assert.equal(st.uploads, undefined);
+  } finally { w.close(); }
+  const am: any = {}, x = await world({ aws: amplify(am) }); am.base = x.api.base; x.acc('aws', AWSKEY);
+  try {
+    refused(await x.yes(await x.org.h('live.put', { uploadId: await x.up(leaked), to: 'amplify', name: 'shop' })), /would put secret keys on the internet: dist\/a\.js/);
+    assert.equal(am.bodies, undefined, 'no app was made');
+    assert.equal(am.zip, undefined);
+  } finally { x.close(); }
+});
+
 test('Firebase Hosting with gcloud names a quota project; a read-only key, the Firebase CLI, a site name, no Firebase and a site with no build each say so', async () => {
   const st: any = {}, w = await world({ google: firebase(st) }); st.base = w.api.base; w.acc('firebase', JSON.stringify({ cli: 'gcloud', account: 'sam@example.com' }));
   try {
@@ -424,7 +443,7 @@ function heroku(st: { apps?: Record<string, any>; tgz?: Buffer; base?: string; s
     if (rest === '/releases') return [{ version: 12, current: true, slug: { id: 'slug-12' } }, { version: 11, current: false, slug: { id: 'slug-11' } }];
     if (rest === '/formation' && method === 'PATCH') { st.scaled = json; return []; }
     if (rest === '/formation') return st.formation ?? [{ type: 'web', quantity: 1 }];
-    if (rest === '/config-vars' && method === 'PATCH') { st.config = { ...st.config, ...json }; for (const [k, v] of Object.entries(st.config)) if (v === null) delete st.config[k]; return st.config; }
+    if (rest === '/config-vars' && method === 'PATCH') { const c = { ...st.config, ...json }; for (const [k, v] of Object.entries(c)) if (v === null) delete c[k]; st.config = c; return c; }
     if (rest === '/config-vars') return st.config ?? {};
     return undefined;
   };
@@ -581,7 +600,7 @@ test('AWS Amplify: finished files go as a zip with no GitHub, and the job is fol
     const r = await w.org.h('live.put', { uploadId: await w.up({ ...BUILT, ...SECRETS }), to: 'amplify', name: 'shop' });
     const out = ok<any>(await w.yes(r));
     assert.equal(out.url, 'https://main.d123abc.amplifyapp.example');
-    assert.equal(out.project, 'us-east-1/d123abc/main');
+    assert.equal(out.project, 'us-east-1/d123abc');
     assert.equal(st.bodies[0].platform, 'WEB');
     assert.deepEqual(st.bodies[1], { branchName: 'main', stage: 'PRODUCTION' });
     assert.deepEqual(st.bodies[2], { jobId: '1' });
@@ -591,6 +610,7 @@ test('AWS Amplify: finished files go as a zip with no GitHub, and the job is fol
     const set = ok<any>(await w.org.h('live.env', { to: 'amplify', project: out.project, op: 'set', key: 'A', value: '1' }));
     assert.deepEqual(set.settings.map((s: any) => s.key), ['OLD', 'A']);
     assert.deepEqual(st.vars, { OLD: 'x', A: '1' });
+    assert.deepEqual(ok<any>(await w.org.h('live.logs', { to: 'amplify', project: out.project })).lines, []);
   } finally { w.close(); }
 });
 

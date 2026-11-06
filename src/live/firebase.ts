@@ -9,7 +9,7 @@ import { isMissing } from '../connectors/cloudcli.ts';
 import { Unit7Error } from '../errors.ts';
 import type { Ctx } from '../tools/runtime.ts';
 import { accountsOf, addHost, type Host } from './hosts.ts';
-import { finished, one, send, taken } from './kit.ts';
+import { finished, one, publicFiles, send, taken } from './kit.ts';
 
 const API = () => `${googleApi('firebasehosting')}/v1beta1`;
 const NEEDS = ['firebasehosting.sites.create', 'firebasehosting.sites.update'];
@@ -39,7 +39,7 @@ export const firebaseHost: Host = addHost({
     return lacks.length ? `This Google sign-in can only read Firebase Hosting: it lacks ${lacks.join(', ')}. Give it the Firebase Hosting Admin role, or connect a gcloud sign-in that has it.` : undefined;
   },
   async put(ctx, p) {
-    const acc = p.place.accountId!, site = p.name, files = finished(p.site)!;
+    const acc = p.place.accountId!, site = p.name, files = publicFiles(p.site);
     if (p.env.length) throw new Unit7Error('no_settings', 'Firebase Hosting serves finished files, so settings can’t reach them. Build them in, then run this again.', 400);
     if (site.length > 30) throw new Unit7Error('invalid_input', 'A Firebase site name has up to 30 letters, digits and dashes. Choose a shorter one.', 400);
     const project = one('Google projects', (await google.projects(ctx, acc)).map((x) => x.projectId), p.team), quotaProject = quotaOf(ctx, acc, project);
