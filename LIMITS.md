@@ -67,6 +67,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Hiding personal columns is best effort: a filter can reveal a value slowly. Switching to a new major version works for Postgres on Coolify or Compose only. part.query needs psql 12 or newer. Restoring to a moment in time isn’t built: the best case is the last copy.
 
+## One-click apps
+
+- Without Coolify, only Umami and Unleash can be added. Templates outside the catalogue get no admin protection and no domain.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

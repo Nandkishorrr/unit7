@@ -283,7 +283,7 @@ const CLAIM = {
   head: `c=$1; port=$2; who=$3
 ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{println}}{{end}}' "$c" 2>/dev/null | grep -m1 .)
 [ -n "$ip" ] || { echo "it isn't running" >&2; exit 7; }
-pw="U7a$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')$4"
+pw="U7a$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')$5"
 [ \${#pw} -ge 39 ] || { echo "the server couldn't make a random password" >&2; exit 7; }
 printf '\n@@unit7:secret\n%s\n' "$pw"
 printf '\n@@unit7:reply\n'
@@ -354,7 +354,7 @@ export const claimScript = (kind: ClaimKind, container: string, port: number, wh
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(container)) throw new Unit7Error('invalid_input', 'That isn’t a container name Unit7 will use.', 400);
   if (!/^[^\s"'\\@]+@[^\s"'\\@]+\.[A-Za-z]{2,}$/.test(who)) throw new Unit7Error('invalid_input', 'That isn’t an email address Unit7 will use.', 400);
   if (kind === 'wordpress' && !/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(url)) throw new Unit7Error('invalid_input', 'That isn’t an address Unit7 will use.', 400);
-  return script(`${CLAIM.head}\n${CLAIM[kind]}`, container, port, who, ...(kind === 'flowise' ? ['-'] : url ? [url] : [])); // Flowise's passwords need a symbol
+  return script(`${CLAIM.head}\n${CLAIM[kind]}`, container, port, who, url, kind === 'flowise' ? '-' : ''); // Flowise's passwords need a symbol
 };
 // what the claim said: the password, or why it can't be trusted (someone else got there first)
 export function claimResult(out: string): { pw?: string; taken?: boolean; why?: string } {
