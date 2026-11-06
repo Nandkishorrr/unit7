@@ -608,12 +608,13 @@ test('webhookFindings: each usual failure, and quiet when it’s right', () => {
 });
 
 async function stripeWorld() {
-  const st = { hooks: {} as Record<string, object[]>, events: {} as Record<string, object[]> };
+  const st = { hooks: {} as Record<string, object[]>, events: {} as Record<string, object[]>, eventsRefused: false };
+  const refused = [403, { error: { message: 'The provided key does not have the required permissions' } }];
   const api = await fakeApi(({ path, auth }: Req) => {
     const u = new URL(path, 'http://x'), p = u.pathname, key = auth.replace(/^Bearer /, '');
-    if (p === '/stripe/account') return [403, { error: { message: 'The provided key does not have the required permissions' } }];
+    if (p === '/stripe/account') return refused;
     if (p === '/stripe/webhook_endpoints') return { data: st.hooks[key] ?? [], has_more: false };
-    if (p === '/stripe/events') return { data: st.events[key] ?? [], has_more: false };
+    if (p === '/stripe/events') return st.eventsRefused ? refused : { data: st.events[key] ?? [], has_more: false };
     if (p === '/vercel/v10/projects/prj_shop/env') {
       assert.equal(u.searchParams.get('decrypt'), 'true');
       return { envs: [
@@ -668,8 +669,9 @@ test('stripe.webhooks with one mode connected says what it couldn’t compare; a
   try {
     account(app, o.orgId, 'stripe', 'rk_live_unit7readkey12345', 'Stripe');
     api.st.hooks.rk_live_unit7readkey12345 = [{ id: 'we_l', url: 'https://shop.example.com/api/hook', status: 'disabled' }];
-    api.st.events = new Proxy({}, { get: () => { throw new Error('events refused'); } }) as never;
+    api.st.eventsRefused = true;
     const r = ok(await o.a('stripe.webhooks'));
+    assert.ok(api.calls.some((c) => c.path.startsWith('/stripe/events')), 'it did ask');
     assert.equal(r.endpoints[0].status, 'disabled');
     assert.match(r.missing, /test mode isn’t connected.*Add a test key/);
     assert.match(r.findings[0].text, /switched off/);
