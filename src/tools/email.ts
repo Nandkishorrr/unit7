@@ -16,6 +16,7 @@ import { dnsDeps } from './clouds-dns.ts';
 import { verifiers } from './core.ts';
 import { checkRef } from './env.ts';
 import { fid } from './helpers.ts';
+import { CHANGE_UNDO, keepChange } from './manage.ts';
 
 verifiers.resend = async (ctx, a) => (isOAuthAccount(a.meta) ? {} : { domains: (await resend.list(ctx, a.id)).length });
 
@@ -223,5 +224,91 @@ defineTool({
     ctx.emit('email.ready', `${domain} can send email through Resend`, { severity: 'success', resource: domain });
     const protect = (await dnsDeps.answers(`_dmarc.${domain}`, 'TXT')).some((t) => /^v=DMARC1/i.test(t)) ? '' : ' domain.protect_email adds DMARC, which this domain doesn’t have yet.';
     return { domain, ready: true, resend: d.status, sender: senderView(smtpLogin(ctx, domain)!), ...(p && held(p)), next: `${NEXT}${protect}`, untrusted: UNTRUSTED };
+  },
+});
+
+// --- email.connect_app --------------------------------------------------------------------------------------------------
+// a step of this job through another tool's own gate
+async function step<T = any>(ctx: Ctx, tool: string, input: Record<string, unknown>): Promise<T> {
+  const r = await execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: 'email', signal: ctx.signal, conversationId: ctx.conversationId, underApproval: ctx.approvalId });
+  if (r.status === 'ok') return r.output as T;
+  if (r.status === 'approval_required') throw new Unit7Error('approval_required', `${tool} waits for a person on the Approvals page.`, 409);
+  throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : `${tool} didn’t run.`, 409);
+}
+// the names apps read these by: one the app already has wins, else the first
+const APP_SETTINGS: ['host' | 'port' | 'user' | 'pass' | 'from', string[]][] = [
+  ['host', ['SMTP_HOST', 'MAIL_HOST', 'EMAIL_HOST', 'EMAIL_SERVER_HOST']],
+  ['port', ['SMTP_PORT', 'MAIL_PORT', 'EMAIL_PORT', 'EMAIL_SERVER_PORT']],
+  ['user', ['SMTP_USER', 'SMTP_USERNAME', 'MAIL_USERNAME', 'MAIL_USER', 'EMAIL_USER', 'EMAIL_HOST_USER', 'EMAIL_SERVER_USER']],
+  ['pass', ['SMTP_PASS', 'SMTP_PASSWORD', 'MAIL_PASSWORD', 'MAIL_PASS', 'EMAIL_PASSWORD', 'EMAIL_PASS', 'EMAIL_HOST_PASSWORD', 'EMAIL_SERVER_PASSWORD']],
+  ['from', ['SMTP_FROM', 'MAIL_FROM', 'MAIL_FROM_ADDRESS', 'EMAIL_FROM', 'DEFAULT_FROM_EMAIL']],
+];
+const asReplace = (what: string) => new Unit7Error('confirm_needed', `${what} Say yes with replace, or leave it as it is.`, 400, { confirm: 'replace' });
+
+const ConnectInput = z.object({
+  domain: DOMAIN.describe('The domain whose sender to use: email.setup stored it'),
+  ref: z.string().regex(/^[a-z0-9]{8,40}$/, 'a Supabase project ref').optional().describe('A hosted Supabase project'),
+  accountId: fid('acc').optional().describe('Its Supabase account, when there are several'),
+  serverId: fid('srv').optional().describe('The server, with part or uuid'),
+  part: z.string().trim().min(1).max(300).optional().describe('A self-hosted Supabase part from serverapp.list'),
+  uuid: z.string().regex(/^[a-zA-Z0-9_-]{3,64}$/, 'a Coolify uuid').optional().describe('A Coolify app or service'),
+  kind: z.enum(['application', 'service']).default('application'),
+  from: z.email().optional().describe('The address it sends as; what email.setup stored if left out'),
+  senderName: z.string().min(1).max(100).regex(/^[^\r\n\0]+$/).optional().describe('Supabase only: the name people see'),
+  replace: z.boolean().optional().describe('Yes, change the mail settings this app already has'),
+  redeploy: z.boolean().default(true).describe('Coolify app: false to leave it for the next deploy'),
+}).refine((i) => [i.ref, i.serverId && i.part, i.serverId && i.uuid].filter(Boolean).length === 1, 'Give one target: ref (hosted Supabase), serverId and part (self-hosted Supabase), or serverId and uuid (a Coolify app).')
+  .refine((i) => !i.from || i.from.toLowerCase().endsWith(`@${i.domain}`), 'from must be an address on the domain.');
+type ConnectIn = z.infer<typeof ConnectInput>;
+
+async function intoCoolify(ctx: Ctx, i: ConnectIn, l: SmtpLogin, from: string) {
+  const where = { serverId: i.serverId, uuid: i.uuid, kind: i.kind };
+  const have = new Set((await step<{ key: string; preview?: boolean }[]>(ctx, 'coolify.envs', { ...where, op: 'list' })).filter((e) => !e.preview).map((e) => e.key));
+  const sets = APP_SETTINGS.map(([what, names]) => { const key = names.find((n) => have.has(n)) ?? names[0]!; return { what, key, had: have.has(key) }; });
+  const clash = sets.filter((s) => s.had).map((s) => s.key);
+  if (clash.length && !i.replace) throw asReplace(`This app already has ${clash.join(', ')}. Unit7 never reads what they hold, so Undo couldn’t put them back.`);
+  const value = { host: l.host, port: String(l.port), user: l.user, pass: l.ref, from };
+  let last: { deploy?: { status?: string } } = {};
+  ctx.progress('Putting the settings into the app…');
+  for (const [n, s] of sets.entries()) last = await step(ctx, 'coolify.envs', { ...where, op: 'set', key: s.key, value: value[s.what], ...(s.what === 'pass' && { literal: true }), redeploy: i.redeploy && n === sets.length - 1 });
+  const added = sets.filter((s) => !s.had).map((s) => s.key);
+  const changeId = keepChange(ctx, `coolify:${i.uuid}`, 'email.connect_app', `Put ${i.domain}’s email settings into a Coolify ${i.kind}`, { ...where, added });
+  const failed = /fail/.test(last.deploy?.status ?? '');
+  return { connected: !failed, set: sets.map((s) => s.key), from, ...(failed ? { why: 'The settings are in, but the deploy failed. coolify.logs says why.' } : { note: i.redeploy ? 'The app redeployed with them.' : 'They apply on its next deploy: coolify.control with action deploy.' }),
+    ...(clash.length && { replaced: clash }), changeId, undo: `change.undo with changeId ${changeId} takes out what this added${clash.length ? `. ${clash.join(', ')} keep their new values: Unit7 never read the old ones` : ''}.` };
+}
+CHANGE_UNDO['email.connect_app'] = async (ctx, ch) => {
+  const { added, ...where } = json<{ serverId: string; uuid: string; kind: string; added: string[] }>(ch.undo, {} as never);
+  for (const [n, key] of added.entries()) await step(ctx, 'coolify.envs', { serverId: where.serverId, uuid: where.uuid, kind: where.kind, op: 'unset', key, redeploy: n === added.length - 1 });
+  return { removed: added };
+};
+
+async function intoSupabase(ctx: Ctx, i: ConnectIn, l: SmtpLogin, from: string) {
+  const where = i.ref ? { ref: i.ref, ...(i.accountId && { accountId: i.accountId }) } : { serverId: i.serverId, part: i.part };
+  const now = await step<{ smtp: { host?: string } }>(ctx, 'supabase.auth', where);
+  // a self-hosted stack starts with a stand-in like supabase-mail, which is nothing to keep
+  if (now.smtp.host?.includes('.') && now.smtp.host !== l.host && !i.replace) throw asReplace(`This Supabase already sends through ${now.smtp.host}.`);
+  const r = await step<{ changed: boolean; why?: string; changeId?: string; undo?: string }>(ctx, 'supabase.auth', { ...where, op: 'set', smtpHost: l.host, smtpPort: l.port, smtpUser: l.user, smtpPass: l.ref, smtpAdminEmail: from, ...(i.senderName && { smtpSenderName: i.senderName }) });
+  return { connected: r.changed, from, sendsThrough: l.host, ...(r.why && { why: r.why }), ...(r.changed && { note: `${i.ref ? 'Supabase sends up to 30 emails an hour on your own sender until you raise it under Authentication → Rate Limits.' : 'The stack redeployed with it.'} Undo puts the old settings back, except the old password.` }), ...(r.changeId && { changeId: r.changeId, undo: r.undo }) };
+}
+
+defineTool({
+  // an app holding the login can send as the domain, so that's a change a person hears about; Supabase's own tool asks by itself
+  name: 'email.connect_app', title: 'Put email sending into an app', risk: 'write', action: 'env_write', timeoutMs: 20 * 60_000,
+  assess: (_c, i) => (i.uuid ? { tier: 2, impact: `Puts ${i.domain}’s email login into a Coolify ${i.kind}${i.redeploy ? ' and redeploys it' : ''}. The app can then send as that domain.` } : { tier: 1 }),
+  description: 'Put a domain’s sender (from email.setup) into an app, so it can send: a Coolify app’s settings (uuid and serverId: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and SMTP_FROM, or the names it already uses like MAIL_HOST, then a redeploy); self-hosted Supabase (serverId and part: its GOTRUE_SMTP_ settings); or a hosted Supabase project (ref), both through supabase.auth. The password comes from the vault by reference and never passes through an AI. Settings already there aren’t changed unless a person or their AI says replace. Undo takes out what it added. On hosted Supabase this also lifts the built-in sender’s limit of 2 emails an hour.',
+  input: ConnectInput,
+  async run(ctx, i) {
+    const l = smtpLogin(ctx, i.domain);
+    if (!l) throw new Unit7Error('no_sender', `Unit7 has no email login for ${i.domain}. Run email.setup first.`, 409);
+    const from = i.from ?? l.from;
+    try {
+      const out = await (i.uuid ? intoCoolify(ctx, i, l, from) : intoSupabase(ctx, i, l, from));
+      if (out.connected) ctx.emit('email.connected', `An app now sends email as ${i.domain}`, { severity: 'success', resource: i.domain });
+      return { domain: i.domain, ...out };
+    } catch (e) {
+      if ((e as Unit7Error).code !== 'approval_required') throw e;
+      return { domain: i.domain, connected: false, waiting: (e as Error).message, note: i.uuid ? 'Once it’s approved, run this again.' : 'Once it’s approved, it’s done: nothing more to run.' };
+    }
   },
 });

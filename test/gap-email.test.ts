@@ -5,18 +5,26 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { fakeApi, account } from './clouds-fakes.ts';
-import { all, run } from '../src/db.ts';
+import { COOLIFY_HOST } from './xray-fixtures.ts';
+import { all, id, run } from '../src/db.ts';
 import type { App } from '../src/app.ts';
+import { CURL, coolifyTiming } from '../src/connectors/coolify.ts';
 import { dnsLook } from '../src/connectors/dnswrite.ts';
+import { ssh, type ExecOptions } from '../src/connectors/ssh.ts';
+import { buildInventory } from '../src/discovery/xray.ts';
 import { dnsHostFromNs, isSpf, mailHost, mergeSpf, spfAdvice, spfKeeps, spfLookups } from '../src/connectors/dnsinfo.ts';
 import { CATALOG } from '../src/connectors/oneclick.ts';
 import { dkimWord, isDkimKey } from '../src/sentinel/watch.ts';
 import { dnsDeps } from '../src/tools/clouds-dns.ts';
 import { domainDns } from '../src/tools/domains.ts';
 import { emailTiming } from '../src/tools/email.ts';
-import { decideApproval, type ToolResult } from '../src/tools/runtime.ts';
+import { manageTiming } from '../src/tools/manage.ts';
+import { decideApproval, getTool, viewInput, type ToolResult } from '../src/tools/runtime.ts';
+import { saveXray } from '../src/tools/xray.ts';
 
 process.env.UNIT7_RECHECK = 'off';
+coolifyTiming.pollMs = 1;
+Object.assign(manageTiming, { settleMs: 0, pollMs: 1, deadlineMs: 30 });
 
 const saved = { look: { ...dnsLook }, deps: { ...dnsDeps }, dom: { ...domainDns } };
 after(() => { Object.assign(dnsLook, saved.look); Object.assign(dnsDeps, saved.deps); Object.assign(domainDns, saved.dom); });
@@ -466,4 +474,192 @@ test('bringing your own SMTP host: the password goes straight into the vault, an
     const cfRef = all<{ meta: string }>(app.db, `SELECT meta FROM accounts WHERE provider = 'cloudflare'`)[0]!, token = JSON.parse(cfRef.meta).ref;
     assert.match(failed(await o.a('email.setup', { ...given, smtpPassword: token })).message, /isn't bound to this environment/);
   } finally { cf.close(); }
+});
+
+// --- email.connect_app: a stand-in Coolify with an app and a self-hosted Supabase ------------------------------------------
+const PASSWORD = 'My-Sm7p-Passw0rd-from-a-person', REF = 'abcdefghijklmnop12';
+const WIRED: Record<string, string> = { ADDITIONAL_REDIRECT_URLS: 'GOTRUE_URI_ALLOW_LIST', GOTRUE_SITE_URL: 'GOTRUE_SITE_URL', API_EXTERNAL_URL: 'API_EXTERNAL_URL', SMTP_HOST: 'GOTRUE_SMTP_HOST', SMTP_PORT: 'GOTRUE_SMTP_PORT', SMTP_USER: 'GOTRUE_SMTP_USER', SMTP_ADMIN_EMAIL: 'GOTRUE_SMTP_ADMIN_EMAIL' };
+function standIn(app: App, o: { appEnvs?: Record<string, string>; hardWired?: string[]; deploy?: string } = {}) {
+  const envs: Record<string, Map<string, { value: string; literal?: boolean }>> = {
+    shopapp01: new Map(Object.entries(o.appEnvs ?? {}).map(([k, value]) => [k, { value }])),
+    shopsupa01: new Map([['ADDITIONAL_REDIRECT_URLS', { value: 'https://old.example.com' }], ['SMTP_HOST', { value: '' }], ['SMTP_PORT', { value: '2500' }], ['SMTP_USER', { value: 'fake' }], ['SMTP_PASS', { value: 'fake-password' }], ['SMTP_ADMIN_EMAIL', { value: 'admin@example.com' }], ['API_EXTERNAL_URL', { value: 'http://supabase-kong:8000' }]]),
+  };
+  const live: Record<string, string> = { GOTRUE_DISABLE_SIGNUP: 'false', GOTRUE_URI_ALLOW_LIST: 'https://old.example.com', GOTRUE_SITE_URL: 'http://localhost:3000', API_EXTERNAL_URL: 'http://supabase-kong:8000', GOTRUE_SMTP_HOST: 'supabase-mail', GOTRUE_SMTP_PORT: '2500', GOTRUE_SMTP_USER: 'fake', GOTRUE_SMTP_ADMIN_EMAIL: 'admin@example.com', GOTRUE_EXTERNAL_GOOGLE_ENABLED: 'true', GOTRUE_EXTERNAL_GITHUB_ENABLED: 'false' };
+  const seen = { commands: [] as string[], api: [] as { method: string; path: string; body?: any }[], deploys: 0 };
+  ssh(app).exec = async (_s, command, opt: ExecOptions = {}) => {
+    seen.commands.push(command);
+    if (command === CURL) {
+      const stdin = String(opt.stdin), url = new URL(/^url = "(.*)"$/m.exec(stdin)![1]!), method = /^request = "(.*)"$/m.exec(stdin)![1]!;
+      const raw = /^data-binary = "(.*)"$/m.exec(stdin)?.[1], body = raw ? JSON.parse(raw.replace(/\\(.)/g, '$1')) : undefined;
+      const path = url.pathname.replace('/api/v1', ''), r = `${method} ${path}`;
+      seen.api.push({ method, path, body });
+      const send = (status: number, b: unknown) => ({ code: 0, stdout: `${JSON.stringify(b)}\n${status}`, stderr: '', truncated: false });
+      const m = /^(GET|POST|PATCH) \/(?:applications|services)\/(\w+)\/envs$/.exec(r);
+      if (m?.[1] === 'GET') return send(200, [...envs[m[2]!]!].map(([key], n) => ({ uuid: `env${n}`, key, is_preview: false })));
+      if (m) { envs[m[2]!]!.set(body.key, { value: body.value, literal: body.is_literal }); return send(201, { uuid: 'e' }); }
+      const del = /^DELETE \/(?:applications|services)\/(\w+)\/envs\/env(\d+)$/.exec(r);
+      if (del) { envs[del[1]!]!.delete([...envs[del[1]!]!.keys()][Number(del[2])]!); return send(200, {}); }
+      if (r === 'POST /deploy') {
+        seen.deploys++;
+        for (const [k, v] of Object.entries(WIRED)) if (!o.hardWired?.includes(k) && envs.shopsupa01!.has(k)) live[v] = envs.shopsupa01!.get(k)!.value;
+        return send(200, { deployments: [{ message: 'Deploying', resource_uuid: url.searchParams.get('uuid'), ...(url.searchParams.get('uuid') === 'shopapp01' && { deployment_uuid: 'd1' }) }] });
+      }
+      if (r === 'GET /deployments/d1') return send(200, { status: o.deploy ?? 'finished' });
+      if (r === 'GET /services/shopsupa01') return send(200, { status: 'running:healthy' });
+      return send(404, { message: 'Not found.' });
+    }
+    if (command.includes('@@unit7:keys')) {
+      const lines = Object.entries(live).filter(([k]) => command.includes(`"${k}"`)).map(([k, v]) => `/supabase-auth-shopsupa01|${JSON.stringify(`${k}=${v}`)}`);
+      return { code: 0, stdout: `\n@@unit7:keys\n${lines.join('\n')}\n`, stderr: '', truncated: false };
+    }
+    throw new Error(`unexpected command: ${command}`);
+  };
+  return { envs, live, seen };
+}
+function onServer(host = COOLIFY_HOST) {
+  return (async () => {
+    const app = testApp(), o = await testOrg(app), srv = id('srv');
+    run(app.db, `INSERT INTO servers (id, org_id, name, host, username, key_ref, status, facts) VALUES (?, ?, 'box', '203.0.113.9', 'root', 'credential://ssh/box/private-key', 'ready', ?)`, srv, o.orgId, JSON.stringify({ sudo: 'root' }));
+    saveXray(app.db, o.orgId, srv, 'fast', buildInventory(host));
+    const coolify = account(app, o.orgId, 'coolify', '3|unit7testtokenAbC123xyz', 'Coolify on box');
+    run(app.db, `UPDATE accounts SET meta = json_set(meta, '$.serverId', ?, '$.facts', json(?)) WHERE id = ?`, srv, JSON.stringify({ abilities: ['read', 'write', 'deploy'] }), coolify);
+    app.vault.put(o.orgId, 'credential://smtp/example-com/password', PASSWORD, { kind: 'smtp', meta: { host: 'smtp.mailhost.example', port: 2525, user: 'mailer', from: 'hello@example.com', via: 'your SMTP host' } });
+    return { app, o, srv };
+  })();
+}
+
+test('email.connect_app into a Coolify app: the password comes from the vault, a redeploy once, and Undo takes it out', async () => {
+  const { app, o, srv } = await onServer(), c = standIn(app);
+  const r = ok(await o.h('email.connect_app', { domain: 'example.com', serverId: srv, uuid: 'shopapp01' }));
+  assert.equal(r.connected, true);
+  assert.deepEqual(r.set, ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);
+  const e = c.envs.shopapp01!;
+  assert.deepEqual([e.get('SMTP_HOST')!.value, e.get('SMTP_PORT')!.value, e.get('SMTP_USER')!.value, e.get('SMTP_FROM')!.value], ['smtp.mailhost.example', '2525', 'mailer', 'hello@example.com']);
+  assert.equal(e.get('SMTP_PASS')!.value, PASSWORD, 'the app gets the real value');
+  assert.equal(e.get('SMTP_PASS')!.literal, true, 'a $ in a password stays a $');
+  assert.equal(c.seen.deploys, 1);
+  assert.ok(!JSON.stringify(r).includes(PASSWORD));
+  assert.ok(!everywhere(app).includes(PASSWORD), 'not in audit, events or the undo');
+
+  ok(await o.h('change.undo', { changeId: r.changeId }));
+  assert.equal(e.size, 0);
+  assert.equal(c.seen.deploys, 2);
+});
+
+test('email.connect_app into an app with mail settings of its own: its names are used, and nothing changes without a yes', async () => {
+  const { app, o, srv } = await onServer(), c = standIn(app, { appEnvs: { MAIL_HOST: 'smtp.old.example', MAIL_PASSWORD: 'the-old-one', DATABASE_URL: 'postgres://db' } });
+  const no = failed(await o.h('email.connect_app', { domain: 'example.com', serverId: srv, uuid: 'shopapp01' }));
+  assert.equal(no.code, 'confirm_needed');
+  assert.match(no.message, /already has MAIL_HOST, MAIL_PASSWORD/);
+  assert.equal(c.envs.shopapp01!.get('MAIL_HOST')!.value, 'smtp.old.example');
+  assert.equal(c.seen.deploys, 0);
+
+  const r = ok(await o.h('email.connect_app', { domain: 'example.com', serverId: srv, uuid: 'shopapp01', replace: true, redeploy: false, from: 'shop@example.com' }));
+  assert.deepEqual(r.set, ['MAIL_HOST', 'SMTP_PORT', 'SMTP_USER', 'MAIL_PASSWORD', 'SMTP_FROM']);
+  assert.deepEqual(r.replaced, ['MAIL_HOST', 'MAIL_PASSWORD']);
+  assert.equal(c.envs.shopapp01!.get('MAIL_PASSWORD')!.value, PASSWORD);
+  assert.equal(c.envs.shopapp01!.get('SMTP_FROM')!.value, 'shop@example.com');
+  assert.equal(c.envs.shopapp01!.get('DATABASE_URL')!.value, 'postgres://db', 'what isn’t mail stays');
+  assert.equal(c.seen.deploys, 0);
+  assert.match(r.note, /next deploy/);
+  assert.match(r.undo, /keep their new values/);
+  assert.equal(failed(await o.h('email.connect_app', { domain: 'example.com', serverId: srv, uuid: 'shopapp01', from: 'x@elsewhere.example' })).code, 'invalid_input');
+  assert.equal(failed(await o.h('email.connect_app', { domain: 'example.com', ref: REF, serverId: srv, uuid: 'shopapp01' })).code, 'invalid_input', 'one target');
+  assert.equal(failed(await o.h('email.connect_app', { domain: 'other.example', serverId: srv, uuid: 'shopapp01' })).code, 'no_sender');
+});
+
+test('a failed deploy says so, with the settings left in', async () => {
+  const { app, o, srv } = await onServer();
+  standIn(app, { deploy: 'failed' });
+  const r = ok(await o.h('email.connect_app', { domain: 'example.com', serverId: srv, uuid: 'shopapp01' }));
+  assert.equal(r.connected, false);
+  assert.match(r.why, /deploy failed/);
+});
+
+test('email.connect_app into self-hosted Supabase: GOTRUE_SMTP settings by the stack’s own names, an AI’s asks first and shows only the reference', async () => {
+  const { app, o, srv } = await onServer(), c = standIn(app);
+  const asked = ok(await o.a('email.connect_app', { domain: 'example.com', serverId: srv, part: 'shop-supabase' }));
+  assert.equal(asked.connected, false);
+  assert.match(asked.waiting, /Approvals/);
+  assert.equal(c.seen.deploys, 0);
+  const card = all<{ id: string; input: string }>(app.db, `SELECT id, input FROM approvals WHERE tool = 'supabase.auth' AND status = 'pending'`)[0]!;
+  assert.deepEqual(viewInput(card.input).smtpPass, 'credential://smtp/example-com/password', 'the approver sees the reference');
+  assert.ok(!everywhere(app).includes(PASSWORD));
+
+  const done = await decideApproval(app, o.orgId, o.human, card.id, true);
+  assert.equal(done.status, 'ok', JSON.stringify(done));
+  assert.equal(c.envs.shopsupa01!.get('SMTP_HOST')!.value, 'smtp.mailhost.example');
+  assert.equal(c.envs.shopsupa01!.get('SMTP_PASS')!.value, PASSWORD);
+  assert.equal(c.envs.shopsupa01!.get('SMTP_PORT')!.value, '2525');
+  assert.equal(c.envs.shopsupa01!.get('SMTP_ADMIN_EMAIL')!.value, 'hello@example.com');
+  assert.equal(c.live.GOTRUE_SMTP_HOST, 'smtp.mailhost.example');
+  assert.equal(c.seen.deploys, 1);
+  assert.ok(!everywhere(app).includes(PASSWORD));
+
+  // now it has a real sender: another one is a yes
+  app.vault.put(o.orgId, 'credential://smtp/shop-example-com/password', 'other', { kind: 'smtp', meta: { host: 'smtp.other.example', user: 'u' } });
+  assert.equal(failed(await o.h('email.connect_app', { domain: 'shop.example.com', serverId: srv, part: 'shop-supabase' })).code, 'confirm_needed');
+  ok(await o.h('email.connect_app', { domain: 'shop.example.com', serverId: srv, part: 'shop-supabase', replace: true }));
+  assert.equal(c.live.GOTRUE_SMTP_HOST, 'smtp.other.example');
+
+  const hard = await onServer(), h = standIn(hard.app, { hardWired: ['SMTP_HOST'] });
+  const stuck = ok(await hard.o.h('email.connect_app', { domain: 'example.com', serverId: hard.srv, part: 'shop-supabase' }));
+  assert.equal(stuck.connected, false);
+  assert.match(stuck.why, /Compose file/);
+  assert.equal(h.envs.shopsupa01!.get('SMTP_HOST')!.value, 'supabase-mail', 'put back to what ran');
+});
+
+async function hostedSupabase(auth: Record<string, unknown>) {
+  const st = { auth };
+  const api = await fakeApi(({ method, path, body }) => {
+    if (path === `/v1/projects/${REF}/config/auth` && method === 'GET') return st.auth;
+    if (path === `/v1/projects/${REF}/config/auth` && method === 'PATCH') { Object.assign(st.auth, JSON.parse(body)); return st.auth; }
+    if (path === `/v1/projects/${REF}/custom-hostname`) return [404, { message: 'none' }];
+  });
+  const off = setEnv('UNIT7_SUPABASE_API', `${api.base}/v1`);
+  return { st, api, close: () => { api.close(); off(); } };
+}
+
+test('email.connect_app into hosted Supabase: through supabase.auth, with the sender’s limits said, and an existing sender kept unless replaced', async () => {
+  const s = await hostedSupabase({ site_url: 'http://localhost:3000', uri_allow_list: '', smtp_host: '', external_google_enabled: true });
+  try {
+    const { app, o } = await onServer();
+    account(app, o.orgId, 'supabase', `sbp_${'a1'.repeat(20)}`, 'Supabase');
+    const r = ok(await o.h('email.connect_app', { domain: 'example.com', ref: REF, senderName: 'Shop' }));
+    assert.equal(r.connected, true);
+    assert.match(r.note, /30 emails an hour/);
+    assert.deepEqual([s.st.auth.smtp_host, s.st.auth.smtp_port, s.st.auth.smtp_user, s.st.auth.smtp_admin_email, s.st.auth.smtp_sender_name], ['smtp.mailhost.example', '2525', 'mailer', 'hello@example.com', 'Shop']);
+    assert.equal(s.st.auth.smtp_pass, PASSWORD);
+    assert.ok(!JSON.stringify(r).includes(PASSWORD) && !everywhere(app).includes(PASSWORD));
+
+    Object.assign(s.st.auth, { smtp_host: 'smtp.theirs.example' });
+    assert.equal(failed(await o.h('email.connect_app', { domain: 'example.com', ref: REF })).code, 'confirm_needed');
+    assert.equal(s.st.auth.smtp_host, 'smtp.theirs.example');
+    ok(await o.h('change.undo', { changeId: r.changeId }));
+    assert.equal(s.st.auth.smtp_host, '', 'Undo puts the old settings back');
+  } finally { s.close(); }
+});
+
+test('an AI trying to read the SMTP password gets nowhere, whichever way it asks', async () => {
+  const s = await hostedSupabase({ smtp_host: 'smtp.mailhost.example', smtp_user: 'mailer', smtp_pass: 'stored-hash-from-supabase', site_url: 'https://shop.example.com' });
+  try {
+    const { app, o, srv } = await onServer(), c = standIn(app, { appEnvs: { SMTP_PASS: PASSWORD } });
+    account(app, o.orgId, 'supabase', `sbp_${'a1'.repeat(20)}`, 'Supabase');
+    const ref = 'credential://smtp/example-com/password';
+    // reading tools show where it is, never what it is
+    const read = JSON.stringify([ok(await o.a('vault.list', {})), ok(await o.a('vault.history', { ref })), ok(await o.a('coolify.envs', { serverId: srv, uuid: 'shopapp01', op: 'list' })), ok(await o.a('supabase.auth', { ref: REF })), ok(await o.a('email.check', { domain: 'example.com' }))]);
+    assert.ok(!read.includes(PASSWORD) && !read.includes('stored-hash-from-supabase'));
+    // the tools that do show a value are a person's
+    for (const [tool, input] of [['coolify.envs', { serverId: srv, uuid: 'shopapp01', op: 'reveal', key: 'SMTP_PASS' }], ['coolify.running_value', { serverId: srv, uuid: 'shopapp01', key: 'SMTP_PASS' }], ['vault.set', { ref, value: 'x' }], ['vault.restore', { ref, version: 1 }]] as const) {
+      assert.equal((await o.a(tool, input)).status, 'denied', tool);
+    }
+    // a result can't carry it either: anything that echoes it comes back masked
+    const echo = await o.a('email.setup', { domain: 'example.com', smtpHost: 'smtp.mailhost.example', smtpUser: 'mailer', smtpPassword: ref });
+    assert.ok(!JSON.stringify(echo).includes(PASSWORD));
+    assert.equal(c.seen.deploys, 0);
+    // no output of any of this is kept with the value in it
+    assert.ok(!everywhere(app).includes(PASSWORD));
+    assert.deepEqual(getTool('email.setup')!.sensitive, ['smtpPassword']);
+    assert.ok(getTool('email.check')!.risk === 'read' && !getTool('email.setup')!.green && !getTool('email.connect_app')!.green && !getTool('email.forward')?.green);
+  } finally { s.close(); }
 });
