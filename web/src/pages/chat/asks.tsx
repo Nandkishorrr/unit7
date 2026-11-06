@@ -9,6 +9,7 @@ import { cx } from '../../ui';
 import type { Ask, AskAnswer } from './types';
 import { Choose } from './asks/Choose';
 import { Confirm } from './asks/Confirm';
+import { FolderAsk } from './asks/Folder';
 import { Form } from './asks/Form';
 import { Hide } from './asks/Hide';
 import { DeleteAsk } from './asks/Delete';
@@ -41,6 +42,7 @@ export function AskCard({ ask }: { ask: Ask; conversationId: string }) {
   if (ask.spec.kind === 'confirm') return <Confirm spec={ask.spec} {...props} />;
   if (ask.spec.kind === 'hide') return <Hide spec={ask.spec} {...props} />;
   if (ask.spec.kind === 'delete') return <DeleteAsk spec={ask.spec} {...props} />;
+  if (ask.spec.kind === 'folder') return <FolderAsk spec={ask.spec} {...props} />;
   return <Form spec={ask.spec} {...props} />;
 }
 

@@ -57,6 +57,7 @@ export function answerWords(spec: AskSpec, a: AskAnswer): string {
     if ('labels' in a) return a.labels.join(', ');
   }
   if (spec.kind === 'confirm' && 'ok' in a) return a.ok ? 'Confirmed' : 'Not now';
+  if (spec.kind === 'folder' && 'uploadId' in a) return a.name ?? 'Your site';
   if (spec.kind === 'hide') {
     if ('hidden' in a) return !a.hidden ? 'Kept it showing' : a.forGood ? 'Fine for good' : a.until ? `Hidden until ${new Date(a.until).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}` : 'Hidden';
     if ('done' in a) return 'Hidden';

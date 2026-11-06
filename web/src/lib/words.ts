@@ -453,7 +453,7 @@ Object.assign(NAMED, {
 });
 
 // Staging → Production (tools/promote.ts), and the chat's Delete card (tools/ui.ts)
-Object.assign(TOOL_WORDS, { 'deployment.promote': 'Promote to Production', 'ui.delete': 'Ask about deleting it' });
+Object.assign(TOOL_WORDS, { 'deployment.promote': 'Promote to Production', 'ui.delete': 'Ask about deleting it', 'ui.folder': 'Ask for the site to put live', 'live.options': 'See where a site can go', 'live.put': 'Put a site live' });
 Object.assign(NAMED, { 'deployment.promote': (x: string) => `Promote ${x} to Production` });
 
 // A raw error (often with a build log under it) as ONE plain sentence for a toast or a chat line, and the whole text

@@ -17,10 +17,11 @@ let held = ''; // when storage is blocked: signed in for this page only
 const bind = () => { try { return localStorage.getItem(BIND) ?? held; } catch { return held; } };
 
 export async function api<T = any>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  const form = init.body instanceof FormData; // files: the browser writes its own content type
   const res = await fetch(path, {
     method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
-    headers: { ...(init.body === undefined ? {} : { 'content-type': 'application/json' }), 'x-unit7-bind': bind() },
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    headers: { ...(init.body === undefined || form ? {} : { 'content-type': 'application/json' }), 'x-unit7-bind': bind() },
+    body: form ? (init.body as FormData) : init.body === undefined ? undefined : JSON.stringify(init.body),
     credentials: 'same-origin',
   });
   const tag = res.headers.get('x-unit7-bind');

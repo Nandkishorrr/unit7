@@ -35,6 +35,8 @@ export type AskSpec =
       danger?: boolean; confirmLabel?: string }
   | { kind: 'form'; title: string; note?: string; fields: { id: string; label: string; type: 'text' | 'secret' | 'select' | 'number';
       placeholder?: string; options?: string[]; required?: boolean; initial?: string }[]; submitLabel?: string }
+  // ui.folder: the person picks a folder or drops a ZIP (the same drop as the Put this live page)
+  | { kind: 'folder'; title: string; note?: string }
   // ui.hide: the AI never hides anything; the person presses Hide it (snooze.set as them). what: Unit7's own words for it
   | { kind: 'hide'; title: string; note?: string; key: string; what: string; severity?: string; itemKind: string; for: 'tomorrow' | '7d' | '15d' | 'forever' }
   // ui.delete: the AI never deletes; the person's click runs the guided delete (or archive, or stop). live: production runs
@@ -44,6 +46,7 @@ export type AskAnswer =
   | { new: true }                                     // choose → the "add new" option
   | { ok: boolean }                                   // confirm
   | { values: Record<string, string> }                // form (secret fields come back as credential references, never values)
+  | { uploadId: string; name?: string; stack?: string } // folder: the browser sends the id, the server adds what it is
   | { cancelled: true }
   | { done: true }                                    // hide: the card hid it (the server checks the store)
   | { hidden: boolean; until?: string | null; forGood?: boolean } // hide, as the server recorded it

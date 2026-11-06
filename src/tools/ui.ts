@@ -62,6 +62,13 @@ defineTool({
   run: (ctx, i) => ask(ctx, { kind: 'form', ...i }),
 });
 
+defineTool({
+  name: 'ui.folder', title: 'Ask the person for their site', risk: 'read', action: 'read', timeoutMs: wait,
+  description: 'When something should go live and it isn’t in a repo: show a card in the chat where the person picks a folder or drops a ZIP, and wait (up to 10 minutes). You never see or choose a path: Unit7 packs it into an upload. Returns {uploadId, name, stack, runtime?} for live_options and live_put | {cancelled:true} | {expired:true}.',
+  input: z.object({ title: title.default('Which site should go live?'), note }),
+  run: (ctx, i) => ask(ctx, { kind: 'folder', ...i }),
+});
+
 // --- "Hide it?": hiding is the person's call --------------------------------------------------------------------------
 // snooze.set is people-only, so an AI never hides a risk. Asked to hide or clear something, it shows this card instead:
 // what it is (in Unit7's own words, from its records, never the AI's), how serious, the choices and Hide it. The

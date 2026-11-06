@@ -32,7 +32,7 @@ export function NewProject({ open, onClose, canDeploy }: { open: boolean; onClos
     <Dialog open={open} onClose={onClose} title={title} wide>
       <div ref={box}>
         {made ? <Ready made={made} canDeploy={canDeploy} onClose={onClose} />
-          : step === 'pick' ? <Choices onPick={setStep} />
+          : step === 'pick' ? <Choices onPick={setStep} onClose={onClose} />
           : (
             <div key={step} className="animate-rise">
               <button type="button" onClick={back} className="-mt-2 mb-4 inline-flex h-8 items-center gap-1.5 rounded-full pr-2 text-[13px] font-medium text-muted transition hover:text-ink">
@@ -52,8 +52,9 @@ const CHOICES: { step: Step; icon: ReactNode; title: string; body: string; best?
   { step: 'empty', icon: <Plus size={22} />, title: 'Empty project', body: 'Start blank and add apps when you’re ready.' },
 ];
 
-function Choices({ onPick }: { onPick: (s: Step) => void }) {
+function Choices({ onPick, onClose }: { onPick: (s: Step) => void; onClose: () => void }) {
   return (
+    <>
     <div className="stagger grid gap-3 sm:grid-cols-3">
       {CHOICES.map((c, i) => (
         <button type="button" key={c.step} onClick={() => onPick(c.step)} data-first={i === 0 ? '' : undefined}
@@ -70,6 +71,15 @@ function Choices({ onPick }: { onPick: (s: Step) => void }) {
         </button>
       ))}
     </div>
+    <A href="/live" onClick={onClose} className="group mt-3 flex items-center gap-3 rounded-[18px] bg-raised p-3.5 text-left transition-colors hover:bg-blue-soft">
+      <span className="grid size-10 shrink-0 place-items-center rounded-[13px] bg-surface text-ink transition-colors group-hover:text-blue-text"><Rocket size={18} aria-hidden /></span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] font-semibold tracking-[-0.01em] text-ink">Just want it on the internet? Put this live</span>
+        <span className="block text-[12.5px] text-muted">Drop a folder or a ZIP, or pick a repo. It goes on Vercel or your server, no terminal.</span>
+      </span>
+      <ArrowRight size={16} aria-hidden className="shrink-0 text-muted transition group-hover:translate-x-0.5 group-hover:text-blue-text" />
+    </A>
+    </>
   );
 }
 
@@ -85,7 +95,8 @@ async function createWithApp(name: string, repo: string | undefined, source?: ob
 }
 
 // --- from GitHub ---------------------------------------------------------------------------------------
-function FromGithub({ onMade }: { onMade: (m: Made) => void }) {
+// onRepo: just pick a repo (the Put this live page), no project made
+export function FromGithub({ onMade, onRepo }: { onMade?: (m: Made) => void; onRepo?: (r: Repo) => void }) {
   const conns = useApi<any[]>('/api/connections', { live: (e) => e.type.startsWith('account.') });
   const gh = conns.data?.find((c) => c.id === 'github');
   const linked = (gh?.accounts ?? []).filter((a: any) => !a.pending).length;
@@ -112,11 +123,12 @@ function FromGithub({ onMade }: { onMade: (m: Made) => void }) {
   };
   const create = async () => {
     if (!pick) return;
+    if (onRepo) return onRepo(pick);
     setBusy(true);
     const name = pick.fullName.split('/')[1]!;
     const r = await createWithApp(name, pick.fullName, { type: 'git', repo: pick.fullName, branch: pick.defaultBranch, accountId: pick.accountId });
     setBusy(false);
-    if (r) onMade({ ...r, name, repo: pick.fullName, branch: pick.defaultBranch });
+    if (r) onMade?.({ ...r, name, repo: pick.fullName, branch: pick.defaultBranch });
   };
 
   if (!conns.data) return <Skeleton className="h-48 rounded-[20px]" />;
@@ -173,8 +185,8 @@ function FromGithub({ onMade }: { onMade: (m: Made) => void }) {
         </>
       )}
       <div className="flex flex-wrap items-center justify-end gap-3 border-t border-line pt-4">
-        <p className="mr-auto min-w-0 text-[12.5px] text-muted" aria-live="polite">{pick ? <>Goes live from <b className="font-medium text-ink-2">{pick.defaultBranch}</b> on every push</> : 'Pick a repo'}</p>
-        <Button variant="primary" loading={busy} disabled={!pick} onClick={create}>Create project</Button>
+        <p className="mr-auto min-w-0 text-[12.5px] text-muted" aria-live="polite">{pick ? <>Goes live from <b className="font-medium text-ink-2">{pick.defaultBranch}</b>{onRepo ? '' : ' on every push'}</> : 'Pick a repo'}</p>
+        <Button variant="primary" loading={busy} disabled={!pick} onClick={create}>{onRepo ? 'Use this repo' : 'Create project'}</Button>
       </div>
     </div>
   );

@@ -17,6 +17,7 @@ import type { Ctx } from '../tools/runtime.ts';
 import type { AgentMessage } from './brain.ts';
 import { NEXT_RULE } from './next.ts';
 import { snoozeKeyOf, snoozeState, type SnoozeFor } from '../snooze.ts';
+import { dropOf } from '../live/upload.ts';
 
 export const ASK_MS = 10 * 60_000;
 export const askWindow = { ms: ASK_MS }; // how long an ask stays open (tests shorten it)
@@ -34,6 +35,8 @@ export type AskSpec =
   | { kind: 'choose'; title: string; note?: string; source?: Source; filter?: Record<string, string>; options?: Option[]; multiple?: boolean; allowNew?: { label: string; hint?: string }; preselect?: string }
   | { kind: 'confirm'; title: string; note?: string; changes: { label: string; before?: string; after: string }[]; undo?: string; danger?: boolean; confirmLabel?: string }
   | { kind: 'form'; title: string; note?: string; fields: { id: string; label: string; type: 'text' | 'secret' | 'select' | 'number'; placeholder?: string; options?: string[]; required?: boolean; initial?: string }[]; submitLabel?: string }
+  // ui.folder: the person drops a ZIP or picks a folder; the AI hears what it is, never a path
+  | { kind: 'folder'; title: string; note?: string }
   // ui.hide: what (Unit7's words for it, from its records), how serious, and the choice picked at first
   | { kind: 'hide'; title: string; note?: string; key: string; what: string; severity?: string; itemKind: string; for: SnoozeFor }
   // ui.delete: the guided delete card (from Unit7's records): live = production runs, so the delete stops it first;
@@ -158,6 +161,15 @@ export function answerAsk(app: App, p: Principal, askId: string, body: unknown) 
   } else if (spec.kind === 'confirm') {
     const b = parse(yes, body);
     answer = { ok: 'ok' in b ? b.ok : false };
+  } else if (spec.kind === 'folder') {
+    // only an upload Unit7 unpacked itself, for this org: the browser names it, Unit7 says what it is
+    const b = parse(z.union([z.object({ uploadId: z.string().regex(/^upl_[\w-]{10,24}$/) }), z.object({ cancelled: z.literal(true) })]), body);
+    if ('cancelled' in b) answer = { cancelled: true };
+    else {
+      const drop = dropOf(b.uploadId, p.org.id);
+      if (!drop) throw new Unit7Error('invalid_input', 'That upload isn’t there anymore. Drop it again.');
+      answer = drop;
+    }
   } else if (spec.kind === 'hide') {
     // the person hid it themselves (their own snooze.set, from the card); what the AI hears comes from the store
     const b = parse(z.union([z.object({ done: z.literal(true) }), z.object({ cancelled: z.literal(true) })]), body);
@@ -364,6 +376,7 @@ Guided flows:
 - Make me an app ("…with Supabase", "…with a database", "…on my domain"): when a server's Coolify is connected (a coolify account), build there: coolify_plan with their exact words (serverId only if Coolify is on more than one server: ui_choose source servers). If it lists missing (the repo): coolify_repos and github_repos → ui_choose options of repos (allowNew "Paste a repo URL" → ui_form) → coolify_build with the same words plus the answers. coolify_build shows the one plan card itself and runs every step: don't ui_confirm it again. Then one line: the URL, or the failed step and its next step. Without Coolify: project_create → service_create → database_create with injectInto → deployment_create.
 - What's outdated / update everything ("keep my apps up to date", "any security fixes?"): fresh_plan (no serviceId for every app) and show it; for "update everything" fresh_run per app, one after the other. Each shows its own steps; then one line per app: live, waiting for their OK, or held back and why. Don't skip a failing test or release a major yourself below Autopilot.
 - Make a test copy ("staging", "a copy to try things on"): ui_choose source projects if it's unclear which → staging_create with that projectId (or serverId and app for a Coolify app). It shows the one plan card itself (live keys left out, the data copy, the room) and runs every step: don't ui_confirm it again. Then one line: the test address, or the failed step and its next step.
+- Put this live: ui_folder, or ui_choose a repo (github_repos lists them), then live_options, recommend the first place, live_put, one line with the link.
 - Add a tool to my server (analytics, uptime monitor, automation, search…): addon_catalog → ui_choose options of its tools if they didn't name one → ui_choose options of subdomains (its suggest, allowNew) → addon_install. Then one line: where it's live and what to do first (its firstVisit).
 ${NEXT_RULE}`;
 
@@ -372,6 +385,7 @@ export function askSummary(c: { spec?: AskSpec; state?: string; answer?: Record<
   const a = c.answer ?? {};
   const said = c.state !== 'answered' ? (c.state === 'waiting' ? 'not answered' : c.state)
     : a.cancelled ? 'skipped' : a.new ? 'they chose to add a new one' : a.labels ? `they picked ${a.labels.join(', ')}`
+    : a.uploadId ? `they gave their site ${a.name}, uploadId ${a.uploadId}`
     : 'hidden' in a ? (a.hidden ? 'they hid it' : 'they kept it showing')
     : 'ok' in a ? (a.ok ? 'they confirmed' : 'they said not now') : a.values ? 'they filled it in' : '';
   return c.spec ? `(I asked: ${c.spec.title} → ${said})` : '';

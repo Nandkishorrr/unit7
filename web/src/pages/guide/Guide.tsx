@@ -33,6 +33,7 @@ interface Conn { id: string; accounts: { pending: string | null }[] }
 export function Guide({ onConnect, intro }: { onConnect: (provider: string) => void; intro?: boolean }) {
   const conns = useApi<Conn[]>('/api/connections', { live: (e) => e.type.startsWith('account.') });
   const known = new Map((conns.data ?? []).map((c) => [c.id, c.accounts.some((a) => !a.pending)]));
+  const hosts = new Set(useApi<{ id: string }[]>('/api/live/hosts', { live: false }).data?.map((h) => h.id));
   const [goal, setGoal] = useState<Goal>('app');
   const [stack, setStack] = useState<Pick[]>(() => recommend('app').picks);
   const [round, setRound] = useState(0); // a new goal: every logo snaps in again
@@ -40,7 +41,7 @@ export function Guide({ onConnect, intro }: { onConnect: (provider: string) => v
   const browse = useRef<HTMLElement>(null);
   const pickGoal = (g: Goal) => { setGoal(g); setStack(recommend(g).picks); setRound((r) => r + 1); };
   const goTo = (n: Need) => { setNeed(n); browse.current?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); };
-  const ctx: RowCtx = { known, onConnect, inStack: (p) => stack.some((x) => x.plan === p.id), onToggle: (p) => setStack((s) => toggle(s, p)) };
+  const ctx: RowCtx = { known, hosts, onConnect, inStack: (p) => stack.some((x) => x.plan === p.id), onToggle: (p) => setStack((s) => toggle(s, p)) };
 
   return (
     <div className="space-y-9">
@@ -170,7 +171,7 @@ function FreeMeter({ s }: { s: ReturnType<typeof summarize> }) {
 }
 
 // --- browse by need ---------------------------------------------------------------------------------------------------
-interface RowCtx { known: Map<string, boolean>; onConnect: (provider: string) => void; inStack: (p: Plan) => boolean; onToggle: (p: Plan) => void }
+interface RowCtx { known: Map<string, boolean>; hosts: Set<string>; onConnect: (provider: string) => void; inStack: (p: Plan) => boolean; onToggle: (p: Plan) => void }
 
 function Browse({ need, setNeed, ctx }: { need: Need; setNeed: (n: Need) => void; ctx: RowCtx }) {
   const [side, setSide] = useState(false);
@@ -277,8 +278,10 @@ function Fits({ p }: { p: Plan }) {
   );
 }
 
+// A host Unit7 can put a site on goes straight there, that host chosen (it says if it still needs connecting). Otherwise
 // Connect (Unit7's own pop-up), "On my server" (Add to my server), or their page
 function Action({ p, ctx }: { p: Plan; ctx: RowCtx }) {
+  if (p.need === 'hosting' && p.connect && ctx.hosts.has(p.connect)) return <Button size="sm" variant="soft" icon={<Rocket size={13} />} onClick={() => navigate(`/live?to=${encodeURIComponent(p.connect!)}`)} aria-label={`Put a site live on ${p.name}`}>Put it live</Button>;
   if (p.connect && ctx.known.has(p.connect)) return ctx.known.get(p.connect)
     ? <span className="inline-flex h-8 items-center gap-1.5 px-1.5 text-[12.5px] font-medium text-ok"><StatusMark state="ok" size={15} label="Connected" /><span className="max-sm:sr-only">Connected</span></span>
     : <Button size="sm" variant="soft" onClick={() => ctx.onConnect(p.connect!)} aria-label={`Connect ${p.name}`}>Connect</Button>;

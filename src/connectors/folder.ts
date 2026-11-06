@@ -38,6 +38,8 @@ export function checkFolder(path: string, unit7Home: string): string {
 }
 
 const SKIP = new Set(['node_modules', '.git', 'dist', '.next']);
+// folders that never go into a site: whatever builds it makes them again, or they're only this computer's business
+export const HEAVY = new Set(['node_modules', '.git', '.next', '.vercel', '.netlify', '.turbo', '.cache', '.svelte-kit', '.nuxt', '.output', '.wrangler', '__pycache__', '__MACOSX', '.venv', 'venv', '.idea', '.vscode', 'coverage']);
 const MANIFEST = /(^|\/)(package\.json|requirements\.txt|pyproject\.toml|Pipfile|go\.mod|Cargo\.toml|composer\.json|Dockerfile|docker-compose\.ya?ml|compose\.ya?ml|\.nvmrc|\.node-version|Procfile)$/;
 
 // files three levels deep, like the listing a deploy reads on the server
@@ -72,7 +74,7 @@ export function inspectFolder(path: string, unit7Home: string) {
 // The folder as a .tgz, leaving out the usual heavy and secret files (the server rebuilds from source anyway)
 export const MAX_PACK = 90 * 1024 * 1024;
 export const packFolder = (dir: string, max = MAX_PACK, o: { keepBuild?: boolean } = {}) =>
-  tgz(['-cf', '-', '--exclude=.git', '--exclude=node_modules', '--exclude=.next', ...(o.keepBuild ? [] : ['--exclude=dist']), '--exclude=.env', '--exclude=.env.*', '--exclude=._*', '--exclude=.DS_Store', '-C', dir, '.'], max);
+  tgz(['-cf', '-', '--exclude=.git', '--exclude=node_modules', '--exclude=.next', ...(o.keepBuild ? [...HEAVY].map((d) => `--exclude=${d}`) : ['--exclude=dist']), '--exclude=.env', '--exclude=.env.*', '--exclude=._*', '--exclude=.DS_Store', '-C', dir, '.'], max);
 // These files and nothing else: what a host gets when the folder or upload could hold more than Unit7 checked (a .pem, an .npmrc)
 export const packFiles = (dir: string, paths: string[], max = MAX_PACK) => tgz(['--null', '-cf', '-', '-C', dir, '-T', '-'], max, paths.join('\0'));
 
@@ -87,7 +89,7 @@ async function tgz(args: string[], max: number, list?: string): Promise<Buffer> 
   let size = 0;
   for await (const ch of gz) {
     chunks.push(ch as Buffer);
-    if ((size += (ch as Buffer).length) > max) { tar.kill(); throw new Unit7Error('too_large', `That folder is larger than ${Math.round(max / 1024 / 1024)} MB packed. Add big files to an exclude or deploy from a git repo.`, 413); }
+    if ((size += (ch as Buffer).length) > max) { tar.kill(); throw new Unit7Error('too_large', `That folder is larger than ${Math.round(max / 1024 / 1024)} MB packed. Take out big files like videos, or use a GitHub repo instead.`, 413); }
   }
   return Buffer.concat(chunks);
 }

@@ -193,7 +193,7 @@ test('a subscription run asks through its own token: the pick goes back to the C
     assert.equal((await sam('POST', `/api/agent/asks/${ask.id}`, { choice: ['example.org'] })).status, 200);
     const t = await settle(sam, conversationId);
     const rec = JSON.parse(readFileSync(RECORD, 'utf8'));
-    assert.deepEqual(rec.listed, ['ui_choose', 'ui_confirm', 'ui_form', 'ui_hide', 'ui_delete'], 'the run’s own token sees the ui tools');
+    assert.deepEqual(rec.listed, ['ui_choose', 'ui_confirm', 'ui_form', 'ui_folder', 'ui_hide', 'ui_delete'], 'the run’s own token sees the ui tools');
     assert.deepEqual(JSON.parse(rec.answer).output.labels, ['example.org']);
     assert.deepEqual(t.filter((m) => m.role !== 'user').map((m) => m.role === 'ask' ? `ask:${m.content.state}` : `${m.role}:${m.content.text}${m.content.final ? ' (final)' : ''}`),
       ['assistant:Which one?', 'ask:answered', 'assistant:Connecting example.org. (final)']);

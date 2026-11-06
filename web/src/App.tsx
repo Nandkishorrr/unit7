@@ -48,8 +48,9 @@ import { ClientsPage, ProductsPage } from './pages/organize';
 import { ServerAppsPage } from './pages/serverapps/Page';
 import { AddPage } from './pages/make/AddPage';
 import { GuidePage } from './pages/guide/Guide';
-import { FolderOpen, PiggyBank } from 'lucide-react';
+import { FolderOpen, PiggyBank, Rocket } from 'lucide-react';
 import { FilesPage } from './pages/files/Files';
+import { LivePage } from './pages/live/Live';
 
 export { Logo };
 export interface Me { user: { id: string; name: string; email: string }; org: { id: string; name: string; slug: string }; role: string; orgs: { id: string; name: string; role: string }[]; passkeys: any[] }
@@ -82,13 +83,14 @@ export function useTheme() {
   return [t, setTheme] as const;
 }
 
-// six places to go; the rest live in the menu under your name; approvals ring the bell
+// seven places to go; the rest live in the menu under your name; approvals ring the bell
 const NAV = [
   { href: '/', label: 'Home', icon: House, key: 'h' },
+  { href: '/live', label: 'Put this live', short: 'Go live', icon: Rocket, key: 'v' },
   { href: '/projects', label: 'Projects', icon: FolderKanban, key: 'p' },
   { href: '/servers', label: 'Servers', icon: Server, key: 's' },
   { href: '/map', label: 'Map', icon: Network, key: 'm' },
-  { href: '/connections', label: 'Connections', icon: Plug, key: 'c' },
+  { href: '/connections', label: 'Connections', short: 'Connect', icon: Plug, key: 'c' },
   { href: '/activity', label: 'Activity', icon: Activity, key: 'a' },
 ];
 // in the menu under your name, in three small groups
@@ -209,6 +211,7 @@ function Shell({ me, reloadMe, path }: { me: Me; reloadMe: () => void; path: str
   else if (path === '/products') page = <ProductsPage />;
   else if (path === '/add') page = <AddPage />;
   else if (path === '/guide') page = <GuidePage />;
+  else if (path === '/live') page = <LivePage />;
   else page = <div className="py-24 text-center text-muted">Nothing lives at {path}. <A href="/" className="font-medium text-blue-text hover:underline">Go home</A></div>;
 
   const round = 'relative grid size-10 shrink-0 place-items-center rounded-full border border-line bg-surface text-ink transition hover:bg-raised';
@@ -226,8 +229,8 @@ function Shell({ me, reloadMe, path }: { me: Me; reloadMe: () => void; path: str
                 const on = active === n.href;
                 return (
                   <A key={n.href} href={n.href} data-pill={n.href} aria-current={on ? 'page' : undefined} title={`${n.label} · g then ${n.key}`}
-                    className={cx('relative z-10 flex h-10 items-center gap-2 rounded-full px-3 text-[14px] font-medium transition-colors duration-300 xl:px-4', on ? 'text-bg' : 'text-ink-2 hover:text-ink')}>
-                    <n.icon size={16} strokeWidth={on ? 2.2 : 1.9} />{n.label}
+                    className={cx('relative z-10 flex h-10 items-center gap-2 whitespace-nowrap rounded-full px-3 text-[14px] font-medium transition-colors duration-300 min-[1500px]:px-4', on ? 'text-bg' : 'text-ink-2 hover:text-ink')}>
+                    <n.icon size={16} strokeWidth={on ? 2.2 : 1.9} className="hidden min-[1500px]:block" />{n.label}
                   </A>
                 );
               })}
@@ -248,12 +251,12 @@ function Shell({ me, reloadMe, path }: { me: Me; reloadMe: () => void; path: str
 
       <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] lg:hidden">
         <div className="mx-auto flex max-w-[560px] justify-around px-2">
-          {NAV.slice(0, 5).map((n) => {
+          {NAV.slice(0, 6).map((n) => {
             const on = isActive(n.href, path);
             return (
-              <A key={n.href} href={n.href} aria-current={on ? 'page' : undefined} className={cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 pb-2 pt-1.5 text-[11px]', on ? 'font-medium text-ink' : 'text-muted')}>
-                <span className={cx('grid h-8 w-14 place-items-center rounded-full transition-colors duration-300', on ? 'bg-ink text-bg' : '')}><n.icon size={18} /></span>
-                <span className="max-w-full truncate">{n.label}</span>
+              <A key={n.href} href={n.href} aria-label={n.label} aria-current={on ? 'page' : undefined} className={cx('flex min-w-0 flex-1 flex-col items-center gap-0.5 pb-2 pt-1.5 text-[11px]', on ? 'font-medium text-ink' : 'text-muted')}>
+                <span className={cx('grid h-8 w-12 place-items-center rounded-full transition-colors duration-300', on ? 'bg-ink text-bg' : '')}><n.icon size={18} /></span>
+                <span className="max-w-full truncate">{n.short ?? n.label}</span>
               </A>
             );
           })}

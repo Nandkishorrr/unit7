@@ -9,7 +9,7 @@ import { get } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { detectSecrets } from '../redact.ts';
 import type { Ctx } from '../tools/runtime.ts';
-import { checkFolder, factsOf } from '../connectors/folder.ts';
+import { HEAVY, checkFolder, factsOf } from '../connectors/folder.ts';
 import { detect, type Detection } from '../connectors/detect.ts';
 import { cloneUrl, githubAuthEnv, githubBase, githubToken, parseRepo, type Repo } from '../connectors/github.ts';
 import { sysBin } from '../connectors/shell.ts';
@@ -23,20 +23,27 @@ export interface Site {
   done(): void; // removes what Unit7 unpacked; a person's own folder is left alone
 }
 
-const SKIP = new Set(['node_modules', '.git', '.next', '.vercel', '.netlify', '.turbo', '.cache', '.svelte-kit', '.nuxt', '.output', '.wrangler', '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage']);
 const NEVER = /^(\.env(\..*)?|.*\.(pem|key|p12|pfx|keystore|jks)|id_(rsa|ed25519|ecdsa|dsa)(\.pub)?|\.npmrc|\.netrc|\.git-credentials|\.pgpass|credentials(\.json)?|\.DS_Store|\._.*)$/i;
 const EXAMPLE = /^\.env\.(example|sample|template)$/i;
 const TEXT = /\.(html?|css|js|mjs|cjs|jsx|ts|tsx|vue|svelte|astro|json|ya?ml|toml|ini|txt|md|py|rb|php|go|sh|map)$/i;
+const CODE = /\.(js|mjs|cjs|jsx|ts|tsx|vue|svelte|astro|py|rb|php|go)$/i;
+const BUILT = /(^|\/)(dist|build|out|public|vendor)\//;
 const TESTS = /(^|\/)(tests?|__tests__|fixtures?|e2e|cypress)\/|\.(test|spec)\.[a-z]+$/i;
 // public on purpose: a Supabase public key and a Firebase web key belong in a website
 const PUBLIC_BY_DESIGN = new Set(['jwt', 'google key']);
-export const LIMITS = { files: 20_000, bytes: 1024 ** 3, scan: 512 * 1024 };
+export const LIMITS = { files: 20_000, bytes: 1024 ** 3, scan: 512 * 1024, sample: 2 * 1024 ** 2 };
+
+// by its path alone, what never goes into a site: a heavy folder, or a file that must not leave this computer
+export function leftOut(path: string) {
+  const parts = path.split('/'), file = parts.at(-1)!;
+  return parts.slice(0, -1).some((p) => HEAVY.has(p)) || (NEVER.test(file) && !EXAMPLE.test(file));
+}
 
 export function walk(dir: string, sub = '', out: SiteFile[] = []): SiteFile[] {
   for (const e of readdirSync(join(dir, sub), { withFileTypes: true })) {
     const path = sub ? `${sub}/${e.name}` : e.name;
     if (e.isSymbolicLink()) continue; // never follows a link out of the folder
-    if (e.isDirectory()) { if (!SKIP.has(e.name)) walk(dir, path, out); continue; }
+    if (e.isDirectory()) { if (!HEAVY.has(e.name)) walk(dir, path, out); continue; }
     if (!e.isFile() || (NEVER.test(e.name) && !EXAMPLE.test(e.name))) continue;
     if (out.length >= LIMITS.files) throw new Unit7Error('too_large', `That folder has more than ${LIMITS.files} files. Leave out what the site doesn’t need.`, 413);
     out.push({ path, abs: join(dir, path), size: lstatSync(join(dir, path)).size });
@@ -55,6 +62,17 @@ export function secretsIn(files: SiteFile[]) {
   return out;
 }
 
+// the settings a site reads are in its code: a file listing and package.json can't say
+function readsOf(files: SiteFile[]) {
+  let sourceSample = '';
+  for (const f of files) {
+    if (sourceSample.length > LIMITS.sample) break;
+    if (f.size <= LIMITS.scan && CODE.test(f.path) && !BUILT.test(f.path) && !TESTS.test(f.path)) sourceSample += `${readFileSync(f.abs, 'utf8')}\n`;
+  }
+  const example = files.find((f) => EXAMPLE.test(f.path));
+  return { sourceSample, ...(example && { envExample: readFileSync(example.abs, 'utf8').slice(0, 8192) }) };
+}
+
 export const siteName = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 52) || 'my-site';
 
 function open(dir: string, name: string, done: () => void, extra: Partial<Site> = {}): Site {
@@ -62,7 +80,7 @@ function open(dir: string, name: string, done: () => void, extra: Partial<Site> 
     const files = walk(dir), bytes = files.reduce((n, f) => n + f.size, 0);
     if (!files.length) throw new Unit7Error('empty_site', 'There are no files to put live in that.', 400);
     if (bytes > LIMITS.bytes) throw new Unit7Error('too_large', 'That is more than 1 GB. Leave out what the site doesn’t need, like videos or old builds.', 413);
-    return { dir, name: siteName(name), detection: detect(factsOf(dir)), files, bytes, secrets: secretsIn(files), done, ...extra };
+    return { dir, name: siteName(name), detection: detect({ ...factsOf(dir), ...readsOf(files) }), files, bytes, secrets: secretsIn(files), done, ...extra };
   } catch (e) { done(); throw e; }
 }
 

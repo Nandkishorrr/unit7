@@ -37,6 +37,8 @@ import { MANIFEST_SCRIPT_HASH, connections, connectGithubCli, githubCliReady, cl
 import { handleMcp } from '../mcp/server.ts';
 import { answerAsk, optionsFor } from '../agent/asks.ts';
 import { chooseFolder, inspectFolder } from '../connectors/folder.ts';
+import { formParts, readZip, saveDrop, saveFolder } from '../live/upload.ts';
+import { allHosts } from '../live/hosts.ts';
 import { SETUP_COMMANDS, openTerminal, terminalCommand } from '../agent/brain-setup.ts';
 
 type Env = { Variables: { principal?: auth.Principal } };
@@ -82,7 +84,7 @@ export function createHttp(app: App) {
   http.use('*', (c, next) => (c.req.path.startsWith('/api/connect/github/form/') ? next() : headers(c, next)));
   // every body is capped while it streams in, before anything reads it (uploads: 100 MB, the rest: 2 MB)
   const limit = (mb: number) => bodyLimit({ maxSize: mb * 1024 * 1024, onError: (cc) => cc.json({ error: { code: 'too_large', message: `That request is too large (${mb} MB max).` } }, 413) });
-  http.use('/api/*', (c, next) => limit(c.req.path === '/api/uploads' ? 100 : 2)(c, next));
+  http.use('/api/*', (c, next) => limit(c.req.path === '/api/uploads' || c.req.path === '/api/live/upload' ? 100 : 2)(c, next));
   http.use('/mcp', limit(2));
 
   // DNS rebinding: a website whose name points at 127.0.0.1 reaches Unit7 as "same-origin" from the browser's
@@ -165,10 +167,14 @@ export function createHttp(app: App) {
   http.get('/badge/:file', async (c) => { const { badgeOf } = await import('../ops/report.ts'); return c.body(badgeOf(db, c.req.param('file').replace(/\.svg$/, '')), 200, { 'content-type': 'image/svg+xml', 'cache-control': 'no-cache' }); });
 
   // --- upload a source folder (for `unit7 deploy`); stored under UNIT7_HOME/uploads ---
-  http.post('/api/uploads', async (c) => {
+  const uploader = (c: Context) => {
     const p = me(c);
     if (!['owner', 'admin', 'developer', 'agent'].includes(p.role)) throw forbidden('Your role cannot upload code.');
     rateLimit(`upload:${p.org.id}`, 60);
+    return p;
+  };
+  http.post('/api/uploads', async (c) => {
+    const p = uploader(c);
     const { randomBytes, createHash } = await import('node:crypto');
     const { mkdirSync, writeFileSync } = await import('node:fs');
     const { join } = await import('node:path');
@@ -190,6 +196,15 @@ export function createHttp(app: App) {
     const { downloadFile } = await import('../tools/files.ts');
     return downloadFile(app, p.org.id, auth.actorOf(p), c.req.query());
   });
+  // --- Put this live: a ZIP or a folder of files dropped in the browser (src/live/upload.ts), and the hosts a site can go on ---
+  http.post('/api/live/upload', async (c) => {
+    const p = uploader(c);
+    const form = await c.req.formData().catch(() => { throw new Unit7Error('invalid_input', 'Send a ZIP, or the folder’s files with their paths.'); });
+    const zip = form.get('zip');
+    const parts = zip instanceof File ? readZip(Buffer.from(await zip.arrayBuffer())) : formParts(form);
+    return c.json(await saveDrop(app, p.org.id, p.user.id, parts, zip instanceof File ? zip.name : String(form.get('name') ?? '')));
+  });
+  http.get('/api/live/hosts', (c) => { me(c); return c.json(allHosts().map((h) => ({ id: h.id, name: h.name }))); });
 
   // --- MCP endpoint for external AI agents (Claude Code, Cursor). Bearer token only. ---
   http.post('/mcp', async (c) => {
@@ -706,6 +721,15 @@ export function createHttp(app: App) {
     if (!Number(r.changes)) throw new Unit7Error('not_found', 'That app was not found.', 404);
     authAudit({ orgId: p.org.id, userId: p.user.id, name: p.user.name }, 'service.folder_linked', 'success', { serviceId: i.serviceId, folder: f.path });
     return c.json(f);
+  });
+
+  // Put this live: a folder picked in the Mac's window (or typed), packed into an upload
+  http.post('/api/live/folder', async (c) => {
+    const p = folderPerson(c);
+    rateLimit(`upload:${p.org.id}`, 60);
+    const { path } = await body(c, z.object({ path: z.string().trim().min(1).max(1024).optional() }));
+    const picked = path ?? await chooseFolder();
+    return c.json(picked ? await saveFolder(app, p.org.id, p.user.id, picked) : { cancelled: true });
   });
 
   http.notFound((c) => {
