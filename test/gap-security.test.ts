@@ -14,6 +14,8 @@ import { coolifyTiming } from '../src/connectors/coolify.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { moveTiming } from '../src/tools/moves.ts';
 import { addHost } from '../src/live/hosts.ts';
+import { readsOnly, touchesSecrets } from '../src/tools/supabase.ts';
+import { Redactor } from '../src/redact.ts';
 import { ROLES_BACK } from '../src/tools/move.ts';
 import { classify } from '../src/discovery/actions.ts';
 import { HELD_OPS, HELD_TOOLS, runHeld } from '../src/ops/index.ts';
@@ -582,4 +584,84 @@ test('9. after a move, a visitor’s text doesn’t run as the superuser: only t
   assert.equal(role('app'), before, 'its own password, and nothing more');
   assert.match(before, /^f\|f\|/);
   assert.equal(role('odd name'), oddBefore, 'a name that needs quotes too');
+});
+
+test('10. supabase.sql: a row made into one value, or a place that holds settings, is a person’s to read', async () => {
+  for (const sql of [
+    'select to_jsonb(t)::text as x from public.profiles t',
+    'select row_to_json(t) from public.profiles t',
+    'select json_agg(t) from public.profiles t',
+    `select jsonb_build_object('a', note) from public.profiles`,
+    'select note::jsonb from public.profiles',
+    'select t::text from public.profiles t',
+    'select cast(t as text) from public.profiles as t',
+    'select concat(t) from public.profiles t',
+    `select format('%s', p) from public.profiles p`,
+    'select array_agg(p)::text from public.profiles p',
+    'select string_agg(p::text, $$,$$) from public.profiles p',
+    'select array[p]::text from public.profiles p',
+    'select (t.*)::text from public.profiles t',
+    'select concat(t.*) from public.profiles t',
+    'select row(id, note)::text from public.profiles',
+    'select row (id) from public.profiles',
+    'select s::text from (select * from public.profiles) s',
+    'with s as (select * from public.profiles) select s::text from s',
+    'select a::text from public.orders o, public.profiles as a',
+    'select "T"::text from public.profiles "T"',
+    'select profiles::text from public.profiles',
+    'select xmlforest(note) from public.profiles',
+    'select name, setting from pg_show_all_settings()',
+    'select setconfig from pg_db_role_setting',
+    'select rolname, rolconfig from pg_roles',
+    'select * from pg_user',
+    'select query from pg_stat_activity',
+    'select jobname, command from cron.job',
+    'select * from net.http_request_queue',
+    'select * from net . _http_response',
+    'select * from supabase_functions.hooks',
+    'select prosrc from pg_proc',
+    'select pg_get_functiondef(oid) from pg_proc',
+    'select token as x from public.sessions',
+    'select * from auth . "users"',
+    'select * from auth--\r.users',
+    'select count(*) from auth.users --\r union all select ascii(substr(email, 1, 1))::bigint from auth.users',
+    'select 1\r',
+  ]) assert.equal(touchesSecrets(sql, false), true, JSON.stringify(sql));
+  for (const sql of [
+    'select * from public.profiles',
+    'select id, name from public.profiles p where p.id = 1',
+    'select p.* from public.profiles p',
+    'select p.id, o.total from public.profiles p join public.orders o on o.user_id = p.id order by 1 limit 5',
+    'select a.id, b.id from public.a a, public.b b where a.id = b.id',
+    'select lower(name), count(*) from public.profiles group by 1',
+    'with c as (select id from public.x) select c.id from c',
+    'select x.id from (select id from public.x) x',
+    'select count(*) from auth.users',
+    'select now()',
+  ]) assert.equal(touchesSecrets(sql, false), false, sql);
+  assert.equal(touchesSecrets(`update public.x set data = to_jsonb('{}'::text)`, true), false, 'a write doesn’t hand rows to an AI');
+  assert.equal(touchesSecrets('update public.x set password = 1', true), true);
+  // the same words the database reads
+  assert.equal(readsOnly('select 1 --\r; drop table x'), false);
+  assert.equal(readsOnly(`select ';' -- ;\n`), true);
+  assert.equal(readsOnly('with a as (delete from x returning 1) select * from a'), false);
+  assert.equal(readsOnly(`select 'delete'`), true);
+});
+
+test('10. a secret’s key inside a string that is JSON is masked, and the tool does it for an AI’s rows', async () => {
+  const r = new Redactor();
+  assert.deepEqual(r.redactDeep({ x: '{"id": 1, "api_key": "aaaaaaaaaaaa", "note": "{\\"password\\": \\"hunter2hunter2\\"}", "list": [{"token": "aaaaaaaaaaaa"}]}' }),
+    { x: '{"id":1,"api_key":"[redacted]","note":"{\\"password\\":\\"[redacted]\\"}","list":[{"token":"[redacted]"}]}' });
+  assert.equal(r.redactDeep('[not json'), '[not json');
+  assert.equal(r.redactDeep('{"a": 1'), '{"a": 1');
+  const { app, o } = await world();
+  const api = await fakeApi(({ path }) => (path.includes('/database/query/read-only') ? [{ note: '{"id":1,"secret_answer":"my first pet was rex"}' }] : undefined));
+  process.env.UNIT7_SUPABASE_API = api.base;
+  try {
+    account(app, o.orgId, 'supabase', 'sbp_demo');
+    const out = ok<any>(await o.a('supabase.sql', { ref: 'abcdefghijklmnopqrst', sql: 'select note from public.profiles' }));
+    assert.ok(!JSON.stringify(out).includes('rex'), JSON.stringify(out));
+    assert.equal((await o.a('supabase.sql', { ref: 'abcdefghijklmnopqrst', sql: 'select to_jsonb(t)::text from public.profiles t' })).status, 'denied');
+    assert.ok(JSON.stringify(ok<any>(await o.h('supabase.sql', { ref: 'abcdefghijklmnopqrst', sql: 'select to_jsonb(t)::text from public.profiles t' }))).includes('rex'), 'a person reads it');
+  } finally { api.close(); delete process.env.UNIT7_SUPABASE_API; }
 });

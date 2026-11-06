@@ -82,7 +82,11 @@ export class Redactor {
   }
 
   redactDeep<T>(value: T): T {
-    if (typeof value === 'string') return this.redact(value) as T;
+    if (typeof value === 'string') {
+      // a row turned into text: its keys are in there, so look inside
+      if (/^\s*[{[]/.test(value)) { try { return JSON.stringify(this.redactDeep(JSON.parse(value))) as T; } catch { /* only looks like JSON */ } }
+      return this.redact(value) as T;
+    }
     if (Array.isArray(value)) return value.map((v) => this.redactDeep(v)) as T;
     if (value && typeof value === 'object' && !(value instanceof Uint8Array)) {
       return Object.fromEntries(Object.entries(value).map(([k, v]) =>
