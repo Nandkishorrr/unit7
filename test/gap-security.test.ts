@@ -57,7 +57,7 @@ function coolifyOn(app: App, orgId: string) {
     if (r === 'GET /github-apps') return [200, []];
     if (/^POST \/applications\/(public|dockerfile)$/.test(r)) { const a = { uuid: `app${st.apps.length + 1}x`, name: body.name, build_pack: body.build_pack }; st.apps.push(a); return [201, { uuid: a.uuid }]; }
     if (/^GET \/applications\/\w+$/.test(r)) { const a = st.apps.find((x) => path.endsWith(x.uuid)); return a ? [200, a] : [404, { message: 'Not found.' }]; }
-    if (/^(GET|POST) \/applications\/\w+\/envs$/.test(r)) { if (method === 'POST') st.envs.push(body); return [200, st.envs]; }
+    if (/^(GET|POST|PATCH) \/applications\/\w+\/envs$/.test(r)) { if (method !== 'GET') st.envs.push(body); return [200, st.envs]; }
     if (/^PATCH \/applications\/\w+\/envs\/bulk$/.test(r)) { st.envs.push(...body.data); return [201, []]; }
     if (/^POST \/databases\/\w+$/.test(r)) { st.databases.push({ uuid: 'db2', name: body.name }); return [201, { uuid: 'db2' }]; }
     if (/^GET \/databases\/\w+$/.test(r)) return [200, { uuid: 'db1', internal_db_url: 'postgres://app:stored-db-password@db1:5432/app' }];
@@ -347,6 +347,9 @@ test('4. a stored key an AI names in a setting asks a person, in Coolify and in 
   assert.equal((await o.a('env.set', { environmentId: env, key: 'K', value: KEYS.manual })).status, 'approval_required');
   assert.equal(code(await o.a('env.set', { environmentId: env, key: 'PLAN', value: 'pro' })), 'ok', 'a plain setting doesn’t ask');
   assert.equal(code(await o.h('env.set', { environmentId: env, key: 'K', value: KEYS.manual })), 'ok', 'a person’s own doesn’t');
+  // one yes is enough when the setting goes through Coolify as a step of something else
+  ok(await o.a('coolify.envs', { ...set, key: 'PLAIN', value: 'x' }));
+  assert.equal(code(await o.a('coolify.envs', set, { underApproval: 'apr_whole' })), 'ok');
 });
 
 test('5. a template with a first-visitor admin: an AI asks, whatever the autonomy; Supabase and a person’s own click don’t', async () => {

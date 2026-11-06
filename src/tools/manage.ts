@@ -124,7 +124,7 @@ export const learnServerSecrets = (ctx: Ctx, serverId: string) => { for (const s
 
 // --- through Coolify: its own tools, through the same gate ---------------------------------------------
 async function viaCoolify(ctx: Ctx, tool: string, input: Record<string, unknown>) {
-  const r = await execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: 'part action, through Coolify', signal: ctx.signal, conversationId: ctx.conversationId });
+  const r = await execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: 'part action, through Coolify', signal: ctx.signal, conversationId: ctx.conversationId, underApproval: ctx.approvalId });
   if (r.status === 'ok') return { through: 'Coolify', ...(r.output && typeof r.output === 'object' && !Array.isArray(r.output) ? r.output : { result: r.output }) };
   if (r.status === 'approval_required') return { through: 'Coolify', approvalRequired: true, approvalId: r.approvalId, why: r.why };
   throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : 'Coolify didn’t run it.', 409);
