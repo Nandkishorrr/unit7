@@ -8,16 +8,22 @@ import { bearerFor, isOAuthAccount, oauthMcp } from './mcp-oauth.ts';
 
 // --- MCP: call a provider's tool and get its JSON back ------------------------------------------------
 
-export async function mcpJson<T = any>(ctx: Ctx, accountId: string, tool: string, args: Record<string, unknown> = {}): Promise<T> {
+async function mcpCall(ctx: Ctx, accountId: string, tool: string, args: Record<string, unknown>) {
   const { client, tools } = oauthMcp(ctx, accountId);
   const name = (await tools()).find((t) => t.name === tool || t.name.endsWith(`_${tool}`) || t.name.endsWith(`.${tool}`))?.name;
   if (!name) throw new Unit7Error('unsupported', `This account's connector has no "${tool}" tool.`, 501);
   const r = await client.callTool(name, args, 60_000);
   if (r.isError) throw new Unit7Error('provider_error', r.text.slice(0, 300) || `${tool} failed.`, 502);
+  return r;
+}
+export async function mcpJson<T = any>(ctx: Ctx, accountId: string, tool: string, args: Record<string, unknown> = {}): Promise<T> {
+  const r = await mcpCall(ctx, accountId, tool, args);
   const structured = (r.raw as { structuredContent?: T } | undefined)?.structuredContent;
   if (structured) return structured;
   try { return JSON.parse(r.text) as T; } catch { return r.text as T; }
 }
+// a tool that answers in words: its blocks a line apart, so a value ending one doesn't run into the next
+export const mcpText = async (ctx: Ctx, accountId: string, tool: string, args: Record<string, unknown> = {}) => ((await mcpCall(ctx, accountId, tool, args)).raw as { content?: { text?: string }[] } | undefined)?.content?.map((c) => c.text ?? '').join('\n') ?? '';
 
 // --- Supabase --------------------------------------------------------------------------------------
 

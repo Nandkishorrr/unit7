@@ -10,7 +10,7 @@ import { all, get, json, now, run, type DB } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fingerprint, ssh, type ServerRow } from '../connectors/ssh.ts';
 import { script } from '../connectors/shell.ts';
-import { mcpJson } from '../connectors/clouds.ts';
+import { resend } from '../connectors/resend.ts';
 import { noteAccess } from '../secure/hacked.ts';
 import type { Assessment } from '../policy.ts';
 import { defineTool, execute, type Ctx } from './runtime.ts';
@@ -293,7 +293,7 @@ defineTool({
 });
 
 // Resend is the sender Unit7 can connect today; a person's own link still works without it
-export const inviteMail = { send: (ctx: Ctx, accountId: string, args: Record<string, unknown>) => mcpJson(ctx, accountId, 'send-email', args) };
+export const inviteMail = { send: (ctx: Ctx, accountId: string, args: Parameters<typeof resend.send>[2]) => resend.send(ctx, accountId, args) };
 defineTool({
   name: 'team.email_invite', title: 'Email an invite', risk: 'write', action: 'settings_write', peopleOnly: true, sensitive: ['link'], timeoutMs: 30_000,
   description: 'People only: email an invite link to a teammate through the email sender connected (Resend). Without one there’s nothing to send with: copy the link instead.',

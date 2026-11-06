@@ -9,10 +9,12 @@ import { all, run } from '../src/db.ts';
 import type { App } from '../src/app.ts';
 import { dnsLook } from '../src/connectors/dnswrite.ts';
 import { dnsHostFromNs, isSpf, mailHost, mergeSpf, spfAdvice, spfKeeps, spfLookups } from '../src/connectors/dnsinfo.ts';
+import { CATALOG } from '../src/connectors/oneclick.ts';
 import { dkimWord, isDkimKey } from '../src/sentinel/watch.ts';
 import { dnsDeps } from '../src/tools/clouds-dns.ts';
 import { domainDns } from '../src/tools/domains.ts';
-import type { ToolResult } from '../src/tools/runtime.ts';
+import { emailTiming } from '../src/tools/email.ts';
+import { decideApproval, type ToolResult } from '../src/tools/runtime.ts';
 
 process.env.UNIT7_RECHECK = 'off';
 
@@ -171,5 +173,297 @@ test('dns.set: a merged SPF needs no extra yes, and one that drops a sender stil
     assert.equal(cf.st.recs.filter((r) => r.type === 'TXT').length, 1, 'still one record');
     ok(await o.h('change.undo', { changeId: done.changeId }));
     assert.deepEqual(cf.st.recs.filter((r) => r.type === 'TXT').map((r) => r.content), ['v=spf1 include:_spf.google.com ~all']);
+  } finally { cf.close(); }
+});
+
+// --- Resend, and a domain set up through it ---------------------------------------------------------------------------------
+const FULL_KEY = 're_fullAcc3ss_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345', SEND_KEY = 're_sendOnly9_zYxWvUtSrQpOnMlKjIhGfEdCbA987654', DKIM = 'p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDdemoKey';
+const SES_MX = 'feedback-smtp.us-east-1.amazonses.com', SES_SPF = 'v=spf1 include:amazonses.com ~all';
+const recordsFor = (sub = '') => [
+  { record: 'DKIM', name: `resend._domainkey${sub}`, type: 'TXT', value: DKIM, ttl: 'Auto', status: 'not_started' },
+  { record: 'SPF', name: `send${sub}`, type: 'MX', value: SES_MX, priority: 10, ttl: 'Auto', status: 'not_started' },
+  { record: 'SPF', name: `send${sub}`, type: 'TXT', value: SES_SPF, ttl: 'Auto', status: 'not_started' },
+];
+async function resendFake(o: { verifyAfter?: number; ends?: string; sub?: string; refuse?: unknown } = {}) {
+  const st = { domains: [] as any[], keys: [] as any[], checks: 0, verifies: 0 };
+  const api = await fakeApi(({ method, path, body, auth }) => {
+    if (auth !== `Bearer ${FULL_KEY}`) return [401, { name: 'missing_api_key', message: 'Missing API key' }];
+    if (o.refuse) return o.refuse;
+    if (path === '/domains' && method === 'GET') return { object: 'list', has_more: false, data: st.domains.map(({ records: _r, ...d }) => d) };
+    if (path === '/domains' && method === 'POST') { const d = { id: 'dom-uuid-1', name: JSON.parse(body).name, status: 'not_started', region: JSON.parse(body).region ?? 'us-east-1', records: recordsFor(o.sub) }; st.domains.push(d); return [201, d]; }
+    const m = /^\/domains\/([\w-]+)(\/verify)?$/.exec(path), d = st.domains.find((x) => x.id === m?.[1]);
+    if (m?.[2] && d && method === 'POST') { st.verifies++; d.status = 'pending'; return { object: 'domain', id: d.id }; }
+    if (d && method === 'GET') {
+      if (d.status === 'pending' && ++st.checks >= (o.verifyAfter ?? 2)) { d.status = o.ends ?? 'verified'; for (const r of d.records) r.status = d.status; }
+      return d;
+    }
+    if (path === '/api-keys' && method === 'POST') { st.keys.push(JSON.parse(body)); return [201, { id: 'key-1', object: 'api_key', token: SEND_KEY }]; }
+  });
+  const off = setEnv('UNIT7_RESEND_API', api.base);
+  return { st, api, close: () => { api.close(); off(); } };
+}
+async function sendable(recs: any[] = [], o: Parameters<typeof resendFake>[0] = {}, host = 'cloudflare') {
+  const [cf, rs] = [await cloudflareFake(recs), await resendFake(o)];
+  const app = testApp(), org = await testOrg(app);
+  if (host === 'cloudflare') account(app, org.orgId, 'cloudflare', 'cf-demo-token');
+  const resendAcc = account(app, org.orgId, 'resend', FULL_KEY);
+  const dns = world(host);
+  return { app, o: org, cf, rs, dns, resendAcc, close: () => { cf.close(); rs.close(); } };
+}
+const zoneOf = (recs: any[], name: string, type: string) => recs.filter((r) => r.name === name && r.type === type);
+Object.assign(emailTiming, { pollMs: 1, waitMs: 200 });
+
+test('email.setup with Resend: the domain, its records through dns.set, verified, and a send-only key in the vault', async () => {
+  const f = await sendable();
+  try {
+    const dry = await f.o.h('email.setup', { domain: 'example.com' }, { dryRun: true });
+    assert.equal(dry.status, 'dry_run');
+    assert.equal((dry as any).plan.resend, 'not added yet');
+    assert.equal(f.rs.st.domains.length, 0, 'a dry run adds nothing');
+
+    const r = ok(await f.o.h('email.setup', { domain: 'example.com', from: 'hello@example.com' }));
+    assert.equal(r.ready, true);
+    assert.equal(r.resend, 'verified');
+    assert.deepEqual(r.wrote, [`TXT resend._domainkey.example.com → ${DKIM}`, `MX send.example.com → 10 ${SES_MX}`, `TXT send.example.com → ${SES_SPF}`]);
+    assert.equal(r.changes.length, 3, 'each record keeps its own undo');
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'send.example.com', 'MX').map((x) => [x.content, x.priority]), [[SES_MX, 10]]);
+    assert.equal(zoneOf(f.cf.st.recs, 'resend._domainkey.example.com', 'TXT')[0].content, DKIM);
+    assert.equal(f.rs.st.verifies, 1);
+
+    // apps get a key that only sends, from this domain; the account's own key stays where it is
+    assert.deepEqual(f.rs.st.keys, [{ name: 'Unit7 example.com', permission: 'sending_access', domain_id: 'dom-uuid-1' }]);
+    assert.deepEqual(r.sender, { host: 'smtp.resend.com', port: 465, user: 'resend', from: 'hello@example.com', via: 'Resend', stored: 'credential://smtp/example-com/password' });
+    assert.equal(f.app.vault.resolve(f.o.orgId, r.sender.stored), SEND_KEY);
+    assert.ok(!JSON.stringify(r).includes(SEND_KEY) && !everywhere(f.app).includes(SEND_KEY), 'only in the vault’s ciphertext');
+    assert.match(r.next, /domain\.protect_email adds DMARC/);
+    assert.match(r.next, /email\.connect_app/);
+
+    // again: nothing asked, nothing added, no second key
+    const again = ok(await f.o.h('email.setup', { domain: 'example.com' }));
+    assert.equal(again.ready, true);
+    assert.equal(f.rs.st.domains.length, 1);
+    assert.equal(f.rs.st.keys.length, 1);
+    assert.equal(again.wrote, undefined);
+
+    // Undo takes a record back
+    ok(await f.o.h('change.undo', { changeId: r.changes[1] }));
+    assert.equal(zoneOf(f.cf.st.recs, 'send.example.com', 'MX').length, 0);
+  } finally { f.close(); }
+});
+
+test('email.setup by an AI: every mail record waits for a person, once, and a run after the OK finishes', async () => {
+  const f = await sendable();
+  try {
+    run(f.app.db, 'UPDATE orgs SET autonomy = 4 WHERE id = ?', f.o.orgId);
+    const first = ok(await f.o.a('email.setup', { domain: 'example.com' }));
+    assert.equal(first.ready, false);
+    assert.equal(first.waiting.length, 3);
+    assert.match(first.note, /3 DNS changes wait for a person on Approvals/);
+    assert.equal(f.cf.st.recs.length, 0, 'nothing written');
+    assert.equal(f.rs.st.verifies, 0, 'nothing to verify yet');
+
+    const again = ok(await f.o.a('email.setup', { domain: 'example.com' }));
+    assert.equal(again.waiting.length, 3);
+    const asks = all<{ id: string; tool: string }>(f.app.db, `SELECT id, tool FROM approvals WHERE status = 'pending'`);
+    assert.deepEqual(asks.map((a) => a.tool), ['dns.set', 'dns.set', 'dns.set'], 'no second copy of the same ask');
+
+    for (const a of asks) assert.equal((await decideApproval(f.app, f.o.orgId, f.o.human, a.id, true)).status, 'ok');
+    assert.equal(f.cf.st.recs.length, 3);
+
+    const done = ok(await f.o.a('email.setup', { domain: 'example.com' }));
+    assert.equal(done.ready, true);
+    assert.equal(done.alreadyThere.length, 3);
+    assert.equal(all(f.app.db, `SELECT 1 FROM approvals WHERE status = 'pending'`).length, 0, 'what’s done isn’t asked for again');
+    assert.ok(!JSON.stringify(done).includes(SEND_KEY));
+    assert.equal(f.app.vault.resolve(f.o.orgId, done.sender.stored), SEND_KEY);
+  } finally { f.close(); }
+});
+
+test('email.setup on a domain that already has mail: SPF joins, the bare domain stays as it was, and an MX in the way asks first', async () => {
+  const mail = [{ id: 'mx', type: 'MX', name: 'example.com', content: 'mx1.mailhost.example', priority: 10, ttl: 1 }, { id: 'spf', type: 'TXT', name: 'example.com', content: 'v=spf1 include:_spf.mailhost.example ~all', ttl: 1 },
+    { id: 's1', type: 'TXT', name: 'send.example.com', content: 'v=spf1 include:_spf.oldsender.example -all', ttl: 1 }, { id: 's2', type: 'MX', name: 'send.example.com', content: 'bounce.oldsender.example', priority: 5, ttl: 1 }];
+  const f = await sendable(mail);
+  try {
+    assert.equal(failed(await f.o.h('email.setup', { domain: 'example.com' })).code, 'confirm_email', 'the first run stops at the MX');
+    const plan = (await f.o.h('email.setup', { domain: 'example.com' }, { dryRun: true }) as any).plan;
+    assert.deepEqual(plan.willWrite.map((p: any) => p.record).slice(-1), [`TXT send.example.com → v=spf1 include:_spf.oldsender.example include:amazonses.com -all`], 'the dry run shows the merged line');
+    assert.match(plan.willWrite.find((p: any) => p.record.startsWith('MX')).stops[0], /Some email to @send\.example\.com may go to/);
+
+    const no = failed(await f.o.h('email.setup', { domain: 'example.com' }));
+    assert.equal(no.code, 'confirm_email');
+    assert.match(no.message, /replaceMail/);
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'send.example.com', 'MX').map((x) => x.content), ['bounce.oldsender.example'], 'the old sender’s record is left alone');
+
+    const yes = ok(await f.o.h('email.setup', { domain: 'example.com', replaceMail: true }));
+    assert.equal(yes.ready, true);
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'send.example.com', 'MX').map((x) => x.content).sort(), ['bounce.oldsender.example', SES_MX]);
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'send.example.com', 'TXT').map((x) => x.content), ['v=spf1 include:_spf.oldsender.example include:amazonses.com -all'], 'one line, every sender, its strict ending kept');
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'example.com', 'MX').map((x) => x.content), ['mx1.mailhost.example'], 'the domain’s own mail never moved');
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'example.com', 'TXT').map((x) => x.content), ['v=spf1 include:_spf.mailhost.example ~all']);
+  } finally { f.close(); }
+});
+
+test('email.setup works on a DNS host with another shape, and says exactly what to add where Unit7 can’t write', async () => {
+  const rows: any[] = [{ type: 'TXT', name: 'send', data: 'v=spf1 mx ~all', ttl: 600 }];
+  const gd = await fakeApi(({ method, path, body }) => {
+    const p = decodeURIComponent(path.split('?')[0]!);
+    if (p === '/v1/domains/example.com') return { domain: 'example.com' };
+    if (p === '/v1/domains/example.com/records' && method === 'GET') return rows;
+    if (p === '/v1/domains/example.com/records' && method === 'PATCH') { rows.push(...JSON.parse(body)); return {}; }
+    const m = /^\/v1\/domains\/example\.com\/records\/([A-Z]+)\/(.+)$/.exec(p);
+    if (!m) return undefined;
+    const here = (r: any) => r.type === m[1] && r.name === m[2];
+    if (method === 'GET') return rows.filter(here);
+    const others = rows.filter((r) => !here(r));
+    rows.length = 0; rows.push(...others);
+    if (method === 'PUT') rows.push(...JSON.parse(body).map((r: any) => ({ ...r, type: m[1], name: m[2] })));
+    return {};
+  });
+  const off = setEnv('UNIT7_GODADDY_API', gd.base);
+  const f = await sendable([], {}, 'godaddy');
+  try {
+    account(f.app, f.o.orgId, 'godaddy', 'gd-pat-token-123456');
+    const r = ok(await f.o.h('email.setup', { domain: 'example.com' }));
+    assert.equal(r.ready, true);
+    assert.deepEqual(rows.filter((x) => x.type === 'TXT' && x.name === 'send').map((x) => x.data), ['v=spf1 mx include:amazonses.com ~all']);
+    assert.deepEqual(rows.filter((x) => x.type === 'MX').map((x) => [x.name, x.data, x.priority]), [['send', SES_MX, 10]]);
+    assert.deepEqual(rows.filter((x) => x.name === 'resend._domainkey').map((x) => x.data), [DKIM]);
+  } finally { f.close(); gd.close(); off(); }
+
+  const g = await sendable([], {}, 'namecheap');
+  try {
+    g.dns['TXT send.example.com'] = ['v=spf1 mx ~all'];
+    const r = ok(await g.o.h('email.setup', { domain: 'example.com' }));
+    assert.equal(r.ready, false);
+    assert.equal(r.dns, 'needs you');
+    assert.match(r.why, /namecheap, which Unit7 can’t edit/);
+    assert.deepEqual(r.addThese, [{ type: 'TXT', name: 'resend._domainkey.example.com', value: DKIM }, { type: 'MX', name: 'send.example.com', value: SES_MX, priority: 10 }, { type: 'TXT', name: 'send.example.com', value: 'v=spf1 mx include:amazonses.com ~all' }], 'the SPF merged with what public DNS shows');
+    assert.equal(g.rs.st.verifies, 0);
+    assert.equal(g.app.vault.has(g.o.orgId, 'credential://smtp/example-com/password'), false);
+  } finally { g.close(); }
+});
+
+test('email.setup: a subdomain’s records land under it, Resend taking time or failing says so, and a send-only key says what to do', async () => {
+  const f = await sendable([], { sub: '.mail' });
+  try {
+    const r = ok(await f.o.h('email.setup', { domain: 'mail.example.com' }));
+    assert.deepEqual(r.wrote.map((x: string) => x.split(' ')[1]), ['resend._domainkey.mail.example.com', 'send.mail.example.com', 'send.mail.example.com']);
+  } finally { f.close(); }
+
+  const slow = await sendable([], { verifyAfter: 1000 });
+  try {
+    const r = ok(await slow.o.h('email.setup', { domain: 'example.com' }));
+    assert.equal(r.ready, false);
+    assert.equal(r.resend, 'pending');
+    assert.match(r.next, /Run this again to finish/);
+    assert.equal(slow.rs.st.keys.length, 0, 'no key before the domain is proven');
+  } finally { slow.close(); }
+
+  const bad = await sendable([], { verifyAfter: 1, ends: 'failed' });
+  try {
+    const r = ok(await bad.o.h('email.setup', { domain: 'example.com' }));
+    assert.match(r.why, /Resend couldn’t find TXT resend\._domainkey, MX send, TXT send/);
+  } finally { bad.close(); }
+
+  const only = await sendable([], { refuse: [401, { name: 'restricted_api_key', message: 'This API key is restricted to only send emails' }] });
+  try {
+    const e = failed(await only.o.h('email.setup', { domain: 'example.com' }));
+    assert.match(e.message, /Full access key/);
+    assert.equal(all<{ status: string }>(only.app.db, `SELECT status FROM accounts WHERE provider = 'resend'`)[0]!.status, 'verified', 'a key that sends is still a good key');
+  } finally { only.close(); }
+});
+
+test('email.setup with no sender says which free one to connect, and how', async () => {
+  const app = testApp(), o = await testOrg(app);
+  world('cloudflare');
+  const r = ok(await o.a('email.setup', { domain: 'example.com' }));
+  assert.equal(r.connected, false);
+  assert.equal(r.connect.name, 'Resend');
+  assert.match(r.connect.free, /3,000 emails a month/);
+  assert.match(r.connect.how, /Connections → Resend/);
+  assert.match(r.orBring, /Any SMTP host/);
+  assert.equal(CATALOG.find((p) => p.id === 'resend')!.alt?.keyUrl, 'https://resend.com/api-keys', 'a key works as well as the one-click sign-in');
+});
+
+test('email.setup through the one-click sign-in reads the plain text Resend’s MCP server answers in', async () => {
+  const cf = await cloudflareFake(), calls: string[] = [];
+  const head = (status: string) => `Name: example.com\nID: dom-mcp-1\nStatus: ${status}\nRegion: us-east-1\nSending: enabled\nReceiving: disabled\nOpen Tracking: false\nClick Tracking: false\nCreated at: 2026-11-06`;
+  const recs = `DKIM (TXT):\n  Name: resend._domainkey\n  Value: ${DKIM}\n  TTL: Auto\n  Status: not_started\n\nSPF (MX):\n  Name: send\n  Value: ${SES_MX}\n  TTL: Auto\n  Status: not_started\n  Priority: 10\n\nSPF (TXT):\n  Name: send\n  Value: ${SES_SPF}\n  TTL: Auto\n  Status: not_started`;
+  let status = 'not_started', created = false;
+  // text blocks, as the real server sends them (resend/resend-mcp, src/tools/domains.ts and apiKeys.ts)
+  const answer = (tool: string, args: any): string[] => {
+    calls.push(tool);
+    if (tool === 'list-domains') return created ? ['Found 1 domain(s):', head(status)] : ['No domains found.'];
+    if (tool === 'create-domain') { created = true; return ['Domain created successfully.', head(status), `DNS Records to configure:\n${recs}`, 'Show these to the user, then run verify-domain.']; }
+    if (tool === 'get-domain') return [head(status), `DNS Records:\n${recs}`];
+    if (tool === 'verify-domain') { status = 'verified'; return ['Domain verification started. The domain status will update once DNS records are verified.', `ID: ${args.id}`]; }
+    if (tool === 'create-api-key') { assert.deepEqual(args, { name: 'Unit7 example.com', permission: 'sending_access', domainId: 'dom-mcp-1' }); return ['API key created successfully.', `Name: x\nID: y\nToken: ${SEND_KEY}`, 'Save this token now: it is shown only once.']; }
+    throw new Error(`no ${tool}`);
+  };
+  const mcp = await fakeApi(({ body }) => {
+    const m = JSON.parse(body), reply = (result: unknown) => ({ jsonrpc: '2.0', id: m.id, result });
+    if (m.method === 'initialize') return reply({ protocolVersion: '2025-06-18', capabilities: {} });
+    if (m.id === undefined) return [202, {}];
+    if (m.method === 'tools/list') return reply({ tools: ['list-domains', 'create-domain', 'get-domain', 'verify-domain', 'create-api-key'].map((name) => ({ name })) });
+    return reply({ content: answer(m.params.name, m.params.arguments).map((text) => ({ type: 'text', text })) });
+  });
+  try {
+    const app = testApp(), o = await testOrg(app);
+    account(app, o.orgId, 'cloudflare', 'cf-demo-token');
+    const acc = account(app, o.orgId, 'resend', 'unused'), ref = 'credential://resend/one-click/oauth';
+    run(app.db, 'UPDATE accounts SET meta = ? WHERE id = ?', JSON.stringify({ ref, auth: 'oauth', mcpUrl: `${mcp.base}/mcp` }), acc);
+    app.vault.put(o.orgId, ref, JSON.stringify({ access_token: 'oauth-access-token', expires_at: Date.now() + 3_600_000 }), { kind: 'oauth', accountId: acc });
+    world('cloudflare');
+    const r = ok(await o.h('email.setup', { domain: 'example.com' }));
+    assert.equal(r.ready, true);
+    assert.deepEqual(r.wrote.map((x: string) => x.split(' ').slice(0, 2).join(' ')), ['TXT resend._domainkey.example.com', 'MX send.example.com', 'TXT send.example.com']);
+    assert.deepEqual(zoneOf(cf.st.recs, 'send.example.com', 'MX').map((x) => x.priority), [10]);
+    assert.equal(app.vault.resolve(o.orgId, r.sender.stored), SEND_KEY);
+    assert.deepEqual(calls.slice(0, 2), ['list-domains', 'create-domain']);
+  } finally { mcp.close(); cf.close(); }
+});
+
+test('bringing your own SMTP host: the password goes straight into the vault, and an AI never holds it', async () => {
+  const PASSWORD = 'My-Sm7p-Passw0rd-from-a-person';
+  const cf = await cloudflareFake([{ id: 'spf', type: 'TXT', name: 'example.com', content: 'v=spf1 include:_spf.google.com ~all', ttl: 1 }]);
+  try {
+    const app = testApp(), o = await testOrg(app);
+    account(app, o.orgId, 'cloudflare', 'cf-demo-token');
+    const dns = world('cloudflare');
+    const given = { domain: 'example.com', smtpHost: 'smtp.mailhost.example', smtpPort: 2525, smtpUser: 'mailer@example.com', spfInclude: '_spf.mailhost.example' };
+    assert.match(failed(await o.h('email.setup', { domain: 'example.com', smtpHost: 'smtp.mailhost.example' })).message, /together/);
+
+    // an AI can't type a password, and asking doesn't leave it anywhere
+    const denied = await o.a('email.setup', { ...given, smtpPassword: PASSWORD });
+    assert.equal(denied.status, 'denied');
+    assert.match((denied as any).why, /An AI never handles a password/);
+    assert.ok(!everywhere(app).includes(PASSWORD));
+    assert.equal(app.vault.has(o.orgId, 'credential://smtp/example-com/password'), false);
+
+    const r = ok(await o.h('email.setup', { ...given, smtpPassword: PASSWORD, from: 'hello@example.com' }));
+    assert.equal(r.ready, true);
+    assert.deepEqual(r.sender, { host: 'smtp.mailhost.example', port: 2525, user: 'mailer@example.com', from: 'hello@example.com', via: 'your SMTP host', stored: 'credential://smtp/example-com/password' });
+    assert.equal(app.vault.resolve(o.orgId, r.sender.stored), PASSWORD);
+    assert.ok(!everywhere(app).includes(PASSWORD), 'not in audit, events or the output');
+    assert.deepEqual(zoneOf(cf.st.recs, 'example.com', 'TXT').map((x) => x.content), ['v=spf1 include:_spf.google.com include:_spf.mailhost.example ~all'], 'joined to what was there');
+    assert.match(r.next, /Unit7 didn’t try the login/);
+
+    // what an AI can read of it: the host, never the password
+    dns['TXT example.com'] = ['v=spf1 include:_spf.google.com include:_spf.mailhost.example ~all'];
+    const seen = JSON.stringify([ok(await o.a('email.check', { domain: 'example.com' })), ok(await o.a('vault.list', {}))]);
+    assert.match(seen, /smtp\.mailhost\.example/);
+    assert.ok(!seen.includes(PASSWORD));
+    assert.equal((await o.a('vault.set', { ref: 'credential://smtp/example-com/password', value: 'x' })).status, 'denied');
+
+    // an AI may pass a reference a person made, but never one of Unit7's own keys or a connected account's token
+    app.vault.put(o.orgId, 'credential://generic/mine/smtp', 'stored-by-a-person', { by: 'Ada' });
+    const ref = await o.a('email.setup', { ...given, domain: 'shop.example.com', spfInclude: undefined, smtpPassword: 'credential://generic/mine/smtp' }, { approvalId: undefined });
+    assert.equal(ok(ref).ready, true);
+    assert.equal(app.vault.resolve(o.orgId, 'credential://smtp/shop-example-com/password'), 'stored-by-a-person');
+    assert.ok(!JSON.stringify(ref).includes('stored-by-a-person'));
+    app.vault.put(o.orgId, 'credential://ntfy/phone/topic', 'approve-codes-go-here', { by: 'Ada' });
+    assert.match(failed(await o.a('email.setup', { ...given, smtpPassword: 'credential://ntfy/phone/topic' })).message, /one of Unit7's own keys/);
+    const cfRef = all<{ meta: string }>(app.db, `SELECT meta FROM accounts WHERE provider = 'cloudflare'`)[0]!, token = JSON.parse(cfRef.meta).ref;
+    assert.match(failed(await o.a('email.setup', { ...given, smtpPassword: token })).message, /isn't bound to this environment/);
   } finally { cf.close(); }
 });

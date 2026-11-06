@@ -63,7 +63,7 @@ export const CATALOG: Provider[] = [
     alt: { kind: 'key', keyUrl: 'https://console.upstash.com/account/api', hint: 'Create a management API key, then paste it as EMAIL:KEY (the email you sign in with, a colon, the key).', pattern: '^[^:\\s]+@[^:\\s]+:.+' } },
   { ...mcp('stripe', 'Stripe', 'More services', 'Payments: products, prices, webhooks.', 'https://mcp.stripe.com'),
     alt: { kind: 'key', keyUrl: 'https://dashboard.stripe.com/apikeys', hint: 'Create a restricted key that can only read Webhook Endpoints, Events and Products, then paste it here. A test key sees test mode and a live key sees live mode: add one of each to compare them.', pattern: '^[rs]k_(test|live)_' } },
-  { ...mcp('resend', 'Resend', 'More services', 'Sending email from your app.', 'https://mcp.resend.com/mcp'),
+  { ...mcp('resend', 'Resend', 'More services', 'Sending email from your domain and your app.', 'https://mcp.resend.com/mcp'),
     alt: { kind: 'key', keyUrl: 'https://resend.com/api-keys', hint: 'Create an API key with full access (a sending-only key can’t list your domains), then paste it here.', pattern: '^re_' } },
   { ...mcp('sentry', 'Sentry', 'More services', 'Errors from your app, for Warden to read.', 'https://mcp.sentry.dev/mcp'),
     alt: { kind: 'key', keyUrl: 'https://sentry.io/settings/account/api/auth-tokens/', hint: 'Create a token with org:read, project:read and event:read, then paste it here.' } },
