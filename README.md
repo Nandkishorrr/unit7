@@ -90,7 +90,7 @@ safety gate.
 | **One-click tools** | More than 30 open-source tools, with the admin login claimed first, and any Coolify template one search away. |
 
 > [!NOTE]
-> Everything in this table is **in testing**. It's built and tested against fake servers, and first runs on real accounts come next. [LIMITS.md](LIMITS.md) says where each one stops.
+> Everything in this table is **in testing**. It's built and tested against fake servers, and first runs on real accounts come next. [LIMITS.md](LIMITS.md) says where each one stops, and [ROADMAP.md](ROADMAP.md) says what's next.
 
 ## 🧭 Is everything OK?
 
