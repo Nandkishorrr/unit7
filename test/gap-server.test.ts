@@ -736,7 +736,7 @@ test('delete: people only, the name typed, never with apps on it, and Hostinger 
 });
 
 // --- moving a whole Coolify server --------------------------------------------------------------------------------------------
-const DUMP = `\\connect relay\nCOPY public.users (id, name) FROM stdin;\n1\ta\n2\tb\n3\tc\n\\.\nCOPY public.orders (id) FROM stdin;\n7\n\\.\nALTER ROLE app WITH LOGIN PASSWORD 'SCRAM-SHA-256$4096:abc';\n`;
+const DUMP = `ALTER ROLE app WITH LOGIN PASSWORD 'SCRAM-SHA-256$4096:abc';\n\\connect relay\nCOPY public.users (id, name) FROM stdin;\n1\ta\n2\tb\n3\tc\n\\.\nCOPY public.orders (id) FROM stdin;\n7\n\\.\n`;
 const inv = () => buildInventory(COOLIFY_HOST, { serverHost: '203.0.113.9' });
 function seedOld(root: string) {
   mkdirSync(join(root, 'data/coolify/source'), { recursive: true });

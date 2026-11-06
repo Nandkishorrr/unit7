@@ -14,6 +14,7 @@ import { coolifyTiming } from '../src/connectors/coolify.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { moveTiming } from '../src/tools/moves.ts';
 import { addHost } from '../src/live/hosts.ts';
+import { ROLES_BACK } from '../src/tools/move.ts';
 import { classify } from '../src/discovery/actions.ts';
 import { HELD_OPS, HELD_TOOLS, runHeld } from '../src/ops/index.ts';
 import { ROUTINE_AGENT, routineActor } from '../src/tools/routines.ts';
@@ -563,4 +564,22 @@ test('8. MongoDB for an AI is plain data: none of its text can run', async () =>
   // a person keeps the whole of mongosh, and a write an AI asks for stays data too
   assert.equal(code(await q('db.users.find().limit(1).map(x => x)', o.h)), 'ok');
   assert.equal(code(await o.a('part.query', { serverId: SRV, part: 'c:mg-db', sql: 'db.users.updateOne({ a: 1 }, { $set: { b: this.process } })', write: true, confirm: 'mg-db' })), 'bad_statement');
+});
+
+test('9. after a move, a visitor’s text doesn’t run as the superuser: only the roles at the top of the dump go back, and only their passwords', real, () => {
+  const pg = pgUp as Pg, file = join(pg.dir, 'all.sql.gz');
+  const role = (name: string) => pg.sql(`SELECT rolsuper, rolcreaterole, rolpassword FROM pg_authid WHERE rolname = '${name}'`).trim();
+  pg.sql(`DROP DATABASE IF EXISTS shop WITH (FORCE); DROP ROLE IF EXISTS app; CREATE ROLE app LOGIN PASSWORD 'the-app-knows-this' VALID UNTIL 'infinity'; CREATE ROLE "odd name" LOGIN PASSWORD 'another-one'; CREATE DATABASE shop;`);
+  // a role may set its own settings, and a value may span lines
+  pg.sql(`ALTER ROLE app SET my.note = E'x\\nALTER ROLE app WITH SUPERUSER;\\nALTER ROLE app WITH CREATEROLE PASSWORD ''planted'';\\n--';`);
+  pg.sql(`CREATE TABLE comments (body text); INSERT INTO comments VALUES ('ALTER ROLE app SUPERUSER;'), ('ALTER ROLE app WITH SUPERUSER PASSWORD ''planted'';');`, 'shop');
+  const before = role('app'), oddBefore = role('odd name');
+  pg.dumpTo(file);
+  assert.ok(execFileSync('sh', ['-c', 'gunzip -c "$1"', 'unit7', file], { encoding: 'utf8' }).includes('\nALTER ROLE app SUPERUSER;\n'), 'the row really starts a line in the dump');
+  pg.sql(`ALTER ROLE app PASSWORD 'the-test-copy-set-this'; ALTER ROLE "odd name" PASSWORD 'this-one-too';`);
+  assert.notEqual(role('app'), before);
+  execFileSync('sh', ['-c', ROLES_BACK, 'unit7', 'copy', file, 'postgres:16'], { env: pg.env });
+  assert.equal(role('app'), before, 'its own password, and nothing more');
+  assert.match(before, /^f\|f\|/);
+  assert.equal(role('odd name'), oddBefore, 'a name that needs quotes too');
 });

@@ -173,8 +173,11 @@ case "$2" in
   /*) mkdir -p "$2"; find "$2" -mindepth 1 -delete ;;
   *) docker volume create --label unit7.move-from="$1" "$2" >/dev/null; docker run --rm --network none -v "$2":/v alpine:3 sh -c 'find /v -mindepth 1 -delete' ;;
 esac`;
-// a test copy sets its own password to look inside; the dump's own passwords go back last, as the apps know them
-const ROLES_BACK = `u=postgres; a=''; case "$3" in *supabase/postgres*) u=supabase_admin; a='-h 127.0.0.1' ;; esac; gunzip -c "$2" | grep -E '^ALTER ROLE ' | docker exec -i "$1" psql -q $a -U "$u" -d postgres >/dev/null; true`;
+// A test copy sets its own password to look inside; the dump's own passwords go back last, as the apps know them. This runs as the
+// superuser, so it reads only the roles at the top of pg_dumpall, up to the first \connect: after that come the tables, where a visitor's
+// text can start a line. Up there only the line pg_dumpall writes for a password passes: a multi-line setting can't look like one,
+// since a quote inside it comes out doubled.
+export const ROLES_BACK = String.raw`u=postgres; a=''; case "$3" in *supabase/postgres*) u=supabase_admin; a='-h 127.0.0.1' ;; esac; gunzip -c "$2" | sed -En -e '/^\\connect /q' -e "/^ALTER ROLE (\"[^\"]*\"|[^ ]+) WITH .*PASSWORD '[^']*'( VALID UNTIL '[^']*')?;$/p" | docker exec -i "$1" psql -q $a -U "$u" -d postgres >/dev/null; true`;
 
 const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(a * 0.01, 2);
 const numbers = (out: string) => out.trim().split(/\s+/).map(Number);
