@@ -14,8 +14,12 @@ import { dnsLook } from '../src/connectors/dnswrite.ts';
 import { dnsDeps } from '../src/tools/clouds-dns.ts';
 import { domainDns } from '../src/tools/domains.ts';
 import { liveTiming } from '../src/live/vercel.ts';
+import { hostOf } from '../src/live/hosts.ts';
+import { decideApproval, type ToolResult } from '../src/tools/runtime.ts';
+import { differs, linksOf, moveTiming } from '../src/tools/moves.ts';
 
 liveTiming.pollMs = 1; liveTiming.answerMs = 20;
+Object.assign(moveTiming, { tries: 2, waitMs: 1, pageMs: 2000 });
 process.env.UNIT7_RECHECK = 'off';
 const SECRET = 'demo-secret-value-1', RAW = 'typed-by-a-person-1', ZONE = 'shop.example';
 const saved = { look: { ...dnsLook }, deps: { ...dnsDeps }, dom: { ...domainDns } };
@@ -24,7 +28,7 @@ after(() => { Object.assign(dnsLook, saved.look); Object.assign(dnsDeps, saved.d
 const SHOP = {
   'package.json': JSON.stringify({ name: 'shop', scripts: { build: 'vite build' }, dependencies: { react: '19.0.0', 'react-router-dom': '7.0.0', stripe: '14.0.0', '@vercel/analytics': '1.0.0' }, devDependencies: { vite: '6.0.0' } }),
   'index.html': '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
-  'src/main.tsx': 'const key = import.meta.env.VITE_PUBLIC_NAME; const u = process.env.VERCEL_URL; const r = "<Route path=\\"/about\\" element={x} />"',
+  'src/main.tsx': 'const u = process.env.VERCEL_URL;\nexport const App = () => <Routes><Route path="/" element={<Home />} /><Route path="/about" element={<About />} /></Routes>;',
   'vercel.json': JSON.stringify({ crons: [{ path: '/api/daily', schedule: '0 8 * * *' }], redirects: [{ source: '/old', destination: '/new' }] }),
   'api/webhooks/stripe.ts': 'export default () => null',
   '.github/workflows/nightly.yml': 'on:\n  schedule:\n    - cron: "0 3 * * *"\n',
@@ -61,11 +65,11 @@ const godaddy = (rows: any[]) => ({ method, path, body }: Req) => {
 const HOME = '<html><head><title>Shop</title></head><body><h1>Welcome to the shop</h1><p>Good things for sale here</p><a href="/about">About</a><a href="/style.css">x</a></body></html>';
 const ABOUT = '<html><head><title>About us</title></head><body><p>We make good things by hand</p></body></html>';
 
-interface World { site?: Partial<Record<string, [number, string]>>; dead?: boolean; plan?: string; envs?: any[]; build?: string[]; files?: Record<string, string>; repo?: boolean; rows?: any[] }
+interface World { site?: Partial<Record<string, [number, string]>>; dead?: boolean; plan?: string; envs?: any[]; build?: string[]; files?: Record<string, string>; repo?: boolean; rows?: any[]; taken?: boolean }
 async function world(o: World = {}) {
   const app = testApp(), org = await testOrg(app), root = mkdtempSync(join(tmpdir(), 'remote-'));
   repoAt(root, 'shop', o.files ?? SHOP);
-  const st = { oldHostWrites: [] as string[], made: [] as any[], domains: [] as string[], deploys: o.build ?? ['live'] };
+  const st = { oldHostWrites: [] as string[], made: (o.taken ? [{ id: 'srv-1', name: 'shop', type: 'web_service' }] : []) as any[], domains: [] as string[], deploys: o.build ?? ['live'], rebuilt: 0 };
   const rows = o.rows ?? [{ type: 'A', name: '@', data: '192.0.2.10', ttl: 3600 }, { type: 'CNAME', name: 'www', data: 'cname.old-host.example', ttl: 3600 }, { type: 'MX', name: '@', data: 'mx1.example.net', ttl: 3600, priority: 10 }];
   const oldSite = await fakeApi(({ path }) => (path === '/' ? HOME : path === '/about' ? ABOUT : [404, 'nothing here']));
   const newSite = await fakeApi(({ path }) => (o.dead ? [503, 'down'] : o.site?.[path] ?? (path === '/' ? HOME : path === '/about' ? ABOUT : [404, 'nothing here'])));
@@ -91,8 +95,10 @@ async function world(o: World = {}) {
     if (p === '/services' && method === 'POST') { const b = JSON.parse(body); st.made.push({ ...b, id, serviceDetails: { url: newSite.base } }); return [201, { service: { id }, deployId: 'dep-1' }]; }
     if (p === `/services/${id}`) return { id, name: 'shop', type: 'static_site', ownerId: 'own-1', serviceDetails: { url: newSite.base } };
     if (p === `/services/${id}/deploys/dep-1`) return { id: 'dep-1', status: st.deploys.length > 1 ? st.deploys.shift() : st.deploys[0] };
-    if (p === `/services/${id}/deploys` && method === 'POST') { st.deploys = ['live']; return [201, { id: 'dep-1' }]; }
+    if (p === `/services/${id}/deploys` && method === 'POST') { st.rebuilt++; st.deploys = ['live']; return [201, { id: 'dep-1' }]; }
+    if (/^\/services\/srv-1\/env-vars\//.test(p) && method === 'PUT') { const key = decodeURIComponent(p.split('/').pop()!); st.made[0].envVars = [...(st.made[0].envVars ?? []).filter((e: any) => e.key !== key), { key, value: JSON.parse(body).value }]; return {}; }
     if (p === `/services/${id}/custom-domains` && method === 'POST') { st.domains.push(JSON.parse(body).name); return [201, {}]; }
+    if (p === `/services/${id}/env-vars`) return (st.made[0]?.envVars ?? []).map((envVar: unknown) => ({ envVar, cursor: 'c' }));
     if (/\/verify$/.test(p)) return {};
     return undefined;
   });
@@ -211,4 +217,180 @@ test('a connected Supabase project moves with supabase.*: the plan says so and s
     assert.deepEqual(out.comes.auth[0].allowed, ['https://shop.lovable.example', 'https://shop.lovable.example/**']);
     assert.equal(sb.writes.length, 0);
   } finally { sb.close(); w.close(); }
+});
+
+const GIVEN = { PUBLIC_NAME: 'demo', API_KEY: 'given-by-a-person', STRIPE_SECRET_KEY: RAW, STRIPE_WEBHOOK_SECRET: RAW };
+const failed = (r: ToolResult) => (r.status === 'error' ? r.error : assert.fail(JSON.stringify(r)));
+const moveRow = (w: { app: any; org: any }, moveId: string) => { const r = get<{ undo: string; status: string; verb: string; summary: string }>(w.app.db, 'SELECT undo, status, verb, summary FROM changes WHERE id = ? AND org_id = ?', moveId, w.org.orgId)!; return { ...r, m: JSON.parse(r.undo) }; };
+
+test('move.run only creates: a copy from the repo with the settings a person gave, compared page by page, and the old site and DNS stay as they were', async () => {
+  const w = await world();
+  try {
+    const res = await w.org.a('move.run', { assetId: w.assetId, to: 'render', env: GIVEN });
+    const out = ok<any>(res);
+    assert.equal(out.ready, true);
+    assert.equal(out.url, w.newSite.base);
+    assert.deepEqual(out.pages.map((p: any) => [p.path, p.old, p.new, p.same]), [['/', 200, 200, true], ['/about', 200, 200, true]], 'the home page, and a path from the code');
+    assert.equal(w.st.made[0].repo, 'https://github.com/demo/shop');
+    assert.deepEqual(w.st.made[0].envVars.find((e: any) => e.key === 'STRIPE_SECRET_KEY').value, RAW);
+    assert.deepEqual(out.settings.notOnTheHost, []);
+    assert.ok(!JSON.stringify(res).includes(RAW), 'a value never comes back');
+    assert.deepEqual(w.st.oldHostWrites, [], 'the old host was only read');
+    assert.equal(w.dns.calls.filter((c) => c.method !== 'GET').length, 0, 'DNS wasn’t touched');
+    assert.deepEqual(w.st.domains, [], 'no domain went on the new site');
+    const row = moveRow(w, out.moveId);
+    assert.equal(row.verb, 'move');
+    assert.equal(row.status, 'kept');
+    assert.equal(row.m.stage, 'built');
+    assert.ok(!row.undo.includes(RAW), 'the state keeps names, never values');
+    assert.ok(!JSON.stringify(all(w.app.db, 'SELECT input, output FROM audit WHERE org_id = ?', w.org.orgId)).includes(RAW), 'and so does the audit');
+    assert.match(failed(await w.org.h('change.undo', { changeId: out.moveId })).message, /nothing to undo/);
+  } finally { w.close(); }
+});
+
+test('settings whose values can’t be read stop it before anything is made, and skipMissing goes on without them', async () => {
+  const w = await world();
+  try {
+    const e = failed(await w.org.a('move.run', { assetId: w.assetId, to: 'render' }));
+    assert.equal(e.code, 'settings_missing');
+    assert.match(e.message, /before anything was made/);
+    assert.match(e.message, /can’t read STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, so a person gives them/);
+    assert.match(e.message, /can read PUBLIC_NAME, API_KEY: copySettings/);
+    assert.equal(w.st.made.length, 0);
+    assert.equal(all(w.app.db, `SELECT id FROM changes WHERE org_id = ?`, w.org.orgId).length, 0, 'no move was started');
+    const out = ok<any>(await w.org.a('move.run', { assetId: w.assetId, to: 'render', skipMissing: true }));
+    assert.deepEqual(out.settings.missing, ['PUBLIC_NAME', 'API_KEY', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET']);
+    const again = ok<any>(await w.org.a('move.run', { moveId: out.moveId, env: { STRIPE_SECRET_KEY: RAW, STRIPE_WEBHOOK_SECRET: RAW }, skipMissing: true }));
+    assert.equal(again.moveId, out.moveId);
+    assert.equal(w.st.rebuilt, 1, 'a value given later builds the copy again');
+    assert.equal(w.st.made[0].envVars.find((v: any) => v.key === 'STRIPE_SECRET_KEY').value, RAW);
+  } finally { w.close(); }
+});
+
+test('copying what Unit7 can read waits for a person when an AI asks, the value is sealed while it waits, and the yes carries it across', async () => {
+  const w = await world();
+  try {
+    const asked = await w.org.a('move.run', { assetId: w.assetId, to: 'render', copySettings: true, env: { STRIPE_SECRET_KEY: RAW, STRIPE_WEBHOOK_SECRET: RAW } }) as any;
+    assert.equal(asked.status, 'approval_required');
+    assert.match(asked.why, /Whoever runs code on the new host/);
+    assert.equal(w.st.made.length, 0);
+    const list = ok<any[]>(await w.org.a('approval.list'));
+    assert.equal(list[0].input.env, 'STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET', 'an approver sees names');
+    assert.ok(!JSON.stringify(list).includes(RAW));
+    assert.ok(!JSON.stringify(all(w.app.db, 'SELECT input FROM approvals WHERE org_id = ?', w.org.orgId)).includes(RAW), 'and it isn’t on disk in the clear');
+    const out = await decideApproval(w.app, w.org.orgId, w.org.human, asked.approvalId, true) as any;
+    assert.equal(out.status, 'ok', JSON.stringify(out));
+    const sent = Object.fromEntries(w.st.made[0].envVars.map((e: any) => [e.key, e.value]));
+    assert.deepEqual([sent.API_KEY, sent.STRIPE_SECRET_KEY, sent.PUBLIC_NAME], [SECRET, RAW, 'demo']);
+    assert.ok(!('PREVIEW_ONLY' in sent), 'production’s settings only');
+    assert.ok(!('VERCEL_URL' in sent), 'and never what a host sets by itself');
+    assert.ok(!JSON.stringify(out).includes(SECRET));
+    // a stored key is the same call for an AI
+    const stored = { assetId: w.assetId, to: 'render', name: 'shop-two', skipMissing: true, env: { STRIPE_SECRET_KEY: 'credential://demo/acct/stripe' } };
+    assert.equal((await w.org.a('move.run', stored)).status, 'approval_required');
+  } finally { w.close(); }
+});
+
+test('a new site that doesn’t answer isn’t ready, says so, and the old site is left alone; once it answers, a check is all it takes', async () => {
+  const flags = { dead: true }, w = await world(flags);
+  try {
+    const out = ok<any>(await w.org.a('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }));
+    assert.equal(out.ready, false);
+    assert.equal(out.answered, false);
+    assert.match(out.why, /answers 503/);
+    assert.match(out.next, /It isn’t ready/);
+    assert.deepEqual(w.st.oldHostWrites, []);
+    assert.equal(moveRow(w, out.moveId).m.check.answered, false);
+    flags.dead = false;
+    const again = ok<any>(await w.org.a('move.run', { moveId: out.moveId }));
+    assert.equal(again.ready, true);
+    assert.equal(w.st.made.length, 1, 'a check builds nothing');
+    assert.equal(w.st.rebuilt, 0);
+  } finally { w.close(); }
+});
+
+test('a page that only fails on the new host is named, and so is one that says something else', async () => {
+  const w = await world({ site: { '/about': [404, 'nothing here'] } });
+  try {
+    const out = ok<any>(await w.org.a('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }));
+    assert.equal(out.ready, false);
+    assert.equal(out.answered, true);
+    assert.equal(out.pages.find((p: any) => p.path === '/about').why, '/about answers 200 on the old site and 404 on the new one.');
+    assert.match(out.next, /index\.html/);
+  } finally { w.close(); }
+  assert.equal(differs('/', { status: 200, text: HOME }, { status: 200, text: HOME.replace('style.css', 'style.abc123.css') }), undefined);
+  assert.match(differs('/', { status: 200, text: HOME }, { status: 200, text: HOME.replace('<title>Shop', '<title>Parked') })!, /another title/);
+  assert.match(differs('/', { status: 200, text: '<p>one two three four five six</p>' }, { status: 200, text: '<p>seven eight nine ten eleven twelve</p>' })!, /says something else/);
+  assert.equal(differs('/x', { status: 404, text: 'a' }, { status: 404, text: 'b' }), undefined, 'gone on both is the same');
+  assert.deepEqual(linksOf(HOME, 'http://shop.example/'), ['/about'], 'pages, not files');
+  assert.deepEqual(linksOf('<a href="https://other.example/x">x</a><a href="https://shop.example/y">y</a>', 'https://shop.example/'), ['/y'], 'this site’s own');
+});
+
+test('a failed build can be tried again over what it made, and a name that was already there is never built over', async () => {
+  const w = await world({ build: ['build_failed'] });
+  try {
+    const e = failed(await w.org.a('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }));
+    assert.equal(e.code, 'build_failed');
+    assert.match(e.message, /Nothing changed on the old site/);
+    const moveId = /moveId (chg_[\w-]+)/.exec(e.message)![1]!;
+    assert.equal(moveRow(w, moveId).m.made, true);
+    const out = ok<any>(await w.org.h('move.run', { moveId, rebuild: true, env: GIVEN }));
+    assert.equal(out.ready, true);
+    assert.equal(w.st.made.length, 1, 'the same service, built again');
+    assert.equal(w.st.rebuilt, 1);
+  } finally { w.close(); }
+  const t = await world({ taken: true });
+  try {
+    const e = failed(await t.org.a('move.run', { assetId: t.assetId, to: 'render', env: GIVEN }));
+    assert.match(e.message, /already exists on Render/);
+    const moveId = /moveId (chg_[\w-]+)/.exec(e.message)![1]!;
+    assert.equal(moveRow(t, moveId).m.made, false);
+    assert.match(failed(await t.org.h('move.run', { moveId, rebuild: true, env: GIVEN })).message, /already exists on Render/, 'trying again doesn’t become an update');
+    assert.equal(t.st.rebuilt, 0);
+  } finally { t.close(); }
+});
+
+test('a host that can cost money: an AI can’t start it, and a person’s build waits on Approvals once, then the move goes on from there', async () => {
+  const w = await world(), render = hostOf('render')!;
+  render.costs = 'Render can cost money in this test.';
+  try {
+    const denied = await w.org.a('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }) as any;
+    assert.equal(denied.status, 'denied');
+    assert.match(denied.why, /can cost money/);
+    const out = ok<any>(await w.org.h('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }));
+    assert.equal(out.waiting, true);
+    assert.equal(w.st.made.length, 0);
+    const [a] = ok<any[]>(await w.org.h('approval.list'));
+    assert.equal(a.tool, 'live.put');
+    assert.ok(!JSON.stringify(a).includes(RAW), 'a list of settings is sealed while it waits');
+    assert.ok(!JSON.stringify(all(w.app.db, 'SELECT input FROM approvals WHERE org_id = ?', w.org.orgId)).includes(RAW));
+    assert.equal(ok<any>(await w.org.h('move.run', { moveId: out.moveId })).waiting, true, 'still waiting');
+    assert.equal((await decideApproval(w.app, w.org.orgId, w.org.human, a.id, true)).status, 'ok');
+    assert.equal(w.st.made[0].envVars.find((e: any) => e.key === 'STRIPE_SECRET_KEY').value, RAW, 'a sealed list opens whole');
+    const done = ok<any>(await w.org.h('move.run', { moveId: out.moveId }));
+    assert.equal(done.ready, true);
+    assert.equal(done.url, w.newSite.base);
+  } finally { delete render.costs; w.close(); }
+});
+
+test('a builder’s repo: public values from its .env go by themselves, a connected Supabase project is wired in, and an old address can be given', async () => {
+  const w = await world({ files: LOVABLE });
+  try {
+    const out = ok<any>(await w.org.a('move.run', { repo: 'demo/shop', to: 'render', oldUrl: w.oldSite.base }));
+    const sent = Object.fromEntries(w.st.made[0].envVars.map((e: any) => [e.key, e.value]));
+    assert.equal(sent.VITE_SUPABASE_URL, 'https://abcdefghijklmnopqrst.supabase.co', 'the new site points at the same project');
+    assert.equal(sent.VITE_SUPABASE_PUBLISHABLE_KEY, 'public-demo-key');
+    assert.ok(!('OPENAI_API_KEY' in sent), 'a private value in that file never travels by itself');
+    assert.equal(out.compared, true);
+    assert.equal(moveRow(w, out.moveId).m.supabase, undefined);
+  } finally { w.close(); }
+  const c = await world({ files: LOVABLE }), sb = await fakeSupabase({ site_url: 'https://shop.lovable.example', uri_allow_list: '' });
+  account(c.app, c.org.orgId, 'supabase', 'sbp_demo_token', 'Supabase');
+  try {
+    const out = ok<any>(await c.org.a('move.run', { repo: 'demo/shop', to: 'render', oldUrl: c.oldSite.base }));
+    const sent = Object.fromEntries(c.st.made[0].envVars.map((e: any) => [e.key, e.value]));
+    assert.equal(sent.VITE_SUPABASE_PUBLISHABLE_KEY, 'anon-demo-key', 'a connected project’s own key wins');
+    assert.equal(moveRow(c, out.moveId).m.supabase.ref, 'abcdefghijklmnopqrst');
+    assert.equal(sb.writes.length, 0, 'move.run changes nothing at Supabase');
+  } finally { sb.close(); c.close(); }
 });

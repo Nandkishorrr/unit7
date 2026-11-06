@@ -1,15 +1,18 @@
 // Moving a site off one host or builder onto another. move.plan only looks: what it is, where it could go and what that costs,
 // and everything that has to come along. Nobody does this whole job well: settings, sign-in addresses, webhooks and DNS each sit
 // in a separate account, so the plan names them all. Values never leave here: settings go by name, and a person decides.
+// move.run only creates: a copy on the new host, built from the repo and checked against the old site, which it never touches.
+// A move's state is one row in changes (verb move, status kept: it has nothing of its own to undo), in its undo column.
 import { z } from 'zod';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, type Ctx } from './runtime.ts';
-import { all, get, json } from '../db.ts';
+import { all, get, id, json, now, run } from '../db.ts';
 import { Unit7Error, notFound } from '../errors.ts';
+import { assertReachable } from '../netguard.ts';
 import { fid } from './helpers.ts';
 import { isPublicKey, parseDotenv } from './env.ts';
-import { SOURCE, placesOf } from './live.ts';
+import { NAME, SOURCE, WHERE, costs, placesOf } from './live.ts';
 import { supabaseVars } from './links.ts';
 import { step } from '../live/coolify.ts';
 import { LIMITS, openSource, type Site } from '../live/source.ts';
@@ -256,5 +259,174 @@ defineTool({
         untrusted: UNTRUSTED,
       };
     } finally { site?.done(); }
+  },
+});
+
+// --- is the copy the same site? ------------------------------------------------------------------------------------------------
+export const moveTiming = { tries: 3, waitMs: 5000, pageMs: 15_000 }; // tests shorten these
+const MAX_PAGE = 2 * 1024 ** 2, PAGES = 5, SAME_WORDS = 0.6;
+interface Seen { status: number; text: string }
+interface Page { path: string; old?: number; new?: number; same: boolean; why?: string }
+interface Check { answered: boolean; ok: boolean; compared: boolean; pages: Page[]; why?: string; at: string }
+// a host's test address on sslip.io has no certificate
+const plainly = (url: string) => (/\.(sslip|nip)\.io$/.test(new URL(url).hostname) ? url.replace(/^https:/, 'http:') : url);
+async function fetchPage(start: string): Promise<Seen | undefined> {
+  try {
+    let url = plainly(start);
+    for (let hops = 0; hops < 5; hops++) {
+      await assertReachable(new URL(url).hostname); // each hop: a redirect reaches nothing the first address couldn't
+      const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(moveTiming.pageMs), headers: { 'user-agent': 'Unit7 move check' } });
+      const to = res.headers.get('location');
+      if (res.status >= 300 && res.status < 400 && to) { await res.body?.cancel(); url = new URL(to, url).href; continue; }
+      const decoder = new TextDecoder();
+      let text = '';
+      for await (const part of (res.body ?? []) as AsyncIterable<Uint8Array>) { text += decoder.decode(part, { stream: true }); if (text.length > MAX_PAGE) break; }
+      return { status: res.status, text };
+    }
+  } catch { /* no answer */ }
+  return undefined;
+}
+const titleOf = (html: string) => /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1]?.trim();
+const wordsOf = (html: string) => new Set(html.replace(/<(script|style|noscript)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1));
+// the same page once build ids and hashed file names are set aside: the same kind of answer, the same title, mostly the same words
+export function differs(path: string, old: Seen, fresh: Seen): string | undefined {
+  const good = (s: Seen) => s.status >= 200 && s.status < 300;
+  if (good(old) !== good(fresh) || (!good(old) && old.status !== fresh.status)) return `${path} answers ${old.status} on the old site and ${fresh.status} on the new one.`;
+  if (!good(old)) return undefined;
+  const a = titleOf(old.text), b = titleOf(fresh.text);
+  if (a && b && a !== b) return `${path} has another title on the new site.`;
+  const x = wordsOf(old.text), y = wordsOf(fresh.text), union = new Set([...x, ...y]).size;
+  return union && [...x].filter((w) => y.has(w)).length / union < SAME_WORDS ? `${path} says something else on the new site.` : undefined;
+}
+export const linksOf = (html: string, base: string) => uniq([...html.matchAll(/<a\b[^>]*\bhref=["']([^"'#?]+)/gi)].flatMap((m) => { try { const u = new URL(m[1]!, base); return u.host === new URL(base).host ? [u.pathname] : []; } catch { return []; } })).filter((p) => p !== '/' && !/\.\w{2,5}$/.test(p));
+// pages only the code knows: a one-page app's home page links to nothing a fetch can see
+const routesOf = (l: Look) => uniq([...[...l.code.matchAll(/<Route\b[^>]*\bpath=["'](\/[\w/-]+)["']/g)].map((m) => m[1]!), ...l.files.flatMap((f) => { const m = /^(?:src\/)?app\/([\w/-]+)\/page\.[jt]sx?$/.exec(f); return m ? [`/${m[1]}`] : []; })]);
+
+async function checkCopy(ctx: Ctx, oldUrl: string | undefined, newUrl: string, paths: string[]): Promise<Check> {
+  const at = now(), none = (why: string): Check => ({ answered: false, ok: false, compared: false, pages: [], why, at });
+  if (!newUrl) return none('The new host gave it no address, so Unit7 can’t check it. Give it a test address there, then run move.run with moveId.');
+  let home: Seen | undefined;
+  for (let n = 0; n < moveTiming.tries; n++) {
+    ctx.signal.throwIfAborted();
+    home = await fetchPage(newUrl);
+    if (home && home.status < 500) break;
+    await new Promise((r) => setTimeout(r, moveTiming.waitMs));
+  }
+  if (!home || home.status >= 500) return none(`The new site at ${newUrl} ${home ? `answers ${home.status}` : 'doesn’t answer'}.`);
+  const old = oldUrl ? await fetchPage(oldUrl) : undefined;
+  if (!oldUrl || !old || old.status >= 500) return { answered: true, ok: home.status < 400, compared: false, pages: [], why: oldUrl ? 'The old site didn’t answer, so there’s nothing to compare it with.' : 'There’s no old address to compare it with. Give oldUrl to compare.', at };
+  const pages = await Promise.all(uniq(['/', ...paths, ...linksOf(old.text, oldUrl)]).slice(0, PAGES).map(async (path): Promise<Page> => {
+    const [a, b] = await Promise.all([fetchPage(new URL(path, oldUrl).href), fetchPage(new URL(path, newUrl).href)]);
+    const why = !a ? undefined : !b ? `${path} doesn’t answer on the new site.` : differs(path, a, b);
+    return { path, old: a?.status, new: b?.status, same: !why, ...(why && { why }) };
+  }));
+  return { answered: true, ok: pages.every((p) => p.same), compared: true, pages, at };
+}
+
+// --- a move's state ------------------------------------------------------------------------------------------------------------
+interface To { host: string; name: string; accountId?: string; serverId?: string; project: string; url: string; point?: Record<string, unknown> | string | false }
+interface Move {
+  steps: string[]; name: string; stage: 'building' | 'failed' | 'waiting' | 'built' | 'switched'; assetId?: string; source: { repo?: string; branch?: string; uploadId?: string };
+  want: { to: string; accountId?: string; serverId?: string; team?: string }; oldUrl?: string; domains: string[]; paths: string[]; set: string[]; supabase?: { ref: string; accountId: string };
+  made?: boolean; waiting?: string; to?: To; check?: Check;
+}
+function startMove(ctx: Ctx, m: Move) {
+  const moveId = id('chg');
+  run(ctx.db, 'INSERT INTO changes (id, org_id, server_id, part, verb, summary, undo, status, actor) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)', moveId, ctx.orgId, `move:${m.name}`, 'move', `Started moving ${m.name}`, JSON.stringify(m), 'kept', ctx.actor.name);
+  return moveId;
+}
+const saveMove = (ctx: Ctx, moveId: string, m: Move, summary?: string) => run(ctx.db, 'UPDATE changes SET undo = ?, summary = COALESCE(?, summary) WHERE id = ?', JSON.stringify(m), summary ?? null, moveId);
+function moveOf(ctx: Pick<Ctx, 'db' | 'orgId'>, moveId: string) {
+  const row = get<{ undo: string }>(ctx.db, `SELECT undo FROM changes WHERE id = ? AND org_id = ? AND verb = 'move'`, moveId, ctx.orgId);
+  if (!row) throw notFound('That move');
+  return json<Move>(row.undo, {} as Move);
+}
+
+interface Put { url: string; name: string; host: string; accountId?: string; serverId?: string; project: string; point?: To['point']; notes?: string[] }
+// what domain.point takes for the new site. Vercel and Coolify leave that to the caller: a Coolify app takes the name itself
+const toOf = (p: Put, team?: string): To => ({ host: p.host, name: p.name, accountId: p.accountId, serverId: p.serverId, project: p.project, url: p.url,
+  point: p.host === 'coolify' ? { coolify: { serverId: p.serverId, uuid: p.project, kind: 'application' } } : p.host === 'vercel' ? { vercel: { accountId: p.accountId, project: p.name, ...(team && { team }) } } : p.point });
+// a build that waited for a person ran by itself once they said yes: what it left behind, if it's over
+function settled(ctx: Ctx, approvalId: string) {
+  const a = get<{ status: string }>(ctx.db, 'SELECT status FROM approvals WHERE id = ? AND org_id = ?', approvalId, ctx.orgId);
+  if (a && ['pending', 'approved', 'executing'].includes(a.status)) return 'waiting' as const;
+  return json<Put | undefined>(get<{ output: string | null }>(ctx.db, `SELECT output FROM audit WHERE org_id = ? AND approval_id = ? AND tool = 'live.put' AND result = 'success' ORDER BY rowid DESC LIMIT 1`, ctx.orgId, approvalId)?.output, undefined);
+}
+async function finishCheck(ctx: Ctx, moveId: string, m: Move, extra: Record<string, unknown> = {}) {
+  const to = m.to!, check = await checkCopy(ctx, m.oldUrl, to.url, m.paths);
+  saveMove(ctx, moveId, { ...m, check }, `Built a copy of ${m.name} at ${to.url}`);
+  ctx.emit('move.built', `A copy of ${m.name} is on ${to.host}: ${check.ok ? 'it matches the old site' : 'it needs a look'}. Nothing changed on the old site.`, { severity: check.ok ? 'success' : 'warning', resource: to.project, data: { moveId } });
+  return { moveId, name: m.name, host: to.host, url: to.url, ready: check.ok, ...check, ...extra, oldSite: 'Not touched, and neither is DNS.',
+    next: check.ok ? 'The copy answers and matches. When the person is ready, move.switch moves the domain: it always waits for their yes on the Approvals page.'
+      : !check.answered ? `It isn’t ready: ${check.why} Fix that on the new host (live.logs shows the build), then move.run with this moveId checks again.`
+      : 'Some pages differ. Fix them, then move.run with this moveId checks again. A page that’s a 404 only on the new host usually needs a rule sending every path to index.html.', untrusted: UNTRUSTED };
+}
+
+const SETTINGS_RISK = 'Whoever runs code on the new host can read these settings, so a person says yes first.';
+const refsIn = (env?: Record<string, string>) => Object.values(env ?? {}).some((v) => v.startsWith('credential://'));
+const movesKeys = (i: { copySettings?: boolean; env?: Record<string, string> }) => !!i.copySettings || refsIn(i.env);
+const sourceOf = (i: { repo?: string; branch?: string; uploadId?: string }, app?: App) => {
+  if (i.uploadId) return { uploadId: i.uploadId };
+  const repo = pickRepo(i, app);
+  if (!repo) throw new Unit7Error('no_code', 'Unit7 doesn’t know where this site’s code is. Give repo (owner/name), or uploadId for a ZIP.', 400);
+  return { repo, ...(i.branch && { branch: i.branch }) };
+};
+
+defineTool({
+  name: 'move.run', title: 'Build a copy of a site on a new host', risk: 'write', action: 'deploy', sensitive: ['env'], timeoutMs: 45 * 60_000,
+  // live.put, the step that can cost money, keeps its own purchase gate and asks a person once; this one only keeps AIs out
+  peopleOnly: (i) => (costs(i) ? `${i.to} can cost money, so a person starts it. An AI can’t.` : false),
+  green: (i) => !costs(i) && !movesKeys(i) && !i.rebuild && !(i.moveId && i.env),
+  view: (_f, i) => Object.keys(i.env ?? {}).join(', '),
+  assess: (_c, i) => (movesKeys(i) ? { tier: 2, ask: SETTINGS_RISK, impact: `Puts ${i.copySettings ? 'the settings Unit7 can read from the old site' : 'stored keys'} on the new site.` } : { tier: 1 }),
+  description: 'Build a copy of a site on a new host (to, from move.plan) from its repo, set the settings given, check the new address answers, and compare it with the old site on the home page and a few paths. It only creates: the old site and DNS are never touched. env takes the settings a person gave, by name; a value may be a credential:// reference. copySettings copies the ones Unit7 can read from the old host, and waits for a person’s yes. If a setting has no value it stops before anything is made and names it; skipMissing builds without it. A connected Supabase project’s address and public key go on by themselves, and so do public values in the repo’s .env. oldUrl is the old address for a repo with no site on the map. Run it again with moveId to check again; with env or rebuild it builds again first. Hosts that can cost money are for a person to start.',
+  input: z.object({ moveId: fid('chg').optional().describe('Go on with this move: check again, or with env or rebuild build again'), assetId: fid('ast').optional(), repo: SOURCE.repo, branch: SOURCE.branch, uploadId: SOURCE.uploadId, ...WHERE, name: NAME.optional(), team: z.string().max(100).optional(),
+    env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,200}$/), z.string().max(65_536)).optional(), copySettings: z.boolean().default(false), skipMissing: z.boolean().default(false), rebuild: z.boolean().default(false),
+    oldUrl: z.string().url().max(300).regex(/^https?:\/\//).optional(), paths: z.array(z.string().regex(/^\/(?!\/)[\w./~-]*$/, 'a path like /about')).max(PAGES).optional() })
+    .refine((i) => !!i.moveId || !!i.to, 'Say where it goes (to): move.plan lists the places.').refine((i) => !!(i.moveId || i.assetId || i.repo || i.uploadId), 'Give assetId (a site on the map), repo or uploadId.'),
+  async run(ctx, i) {
+    let moveId = i.moveId, m = moveId ? moveOf(ctx, moveId) : undefined;
+    if (m?.stage === 'switched') throw new Unit7Error('already_switched', 'This move already switched. move.finish says what’s left.', 409);
+    if (moveId && m?.stage === 'waiting') {
+      const put = settled(ctx, m.waiting!);
+      if (put === 'waiting') return { moveId, waiting: true, next: 'The build still waits for a person on the Approvals page.' };
+      m = { ...m, waiting: undefined, ...(put ? { stage: 'built' as const, made: true, to: toOf(put, m.want.team) } : { stage: 'failed' as const }) };
+    }
+    if (moveId && m?.stage === 'built' && !i.rebuild && !i.env) return finishCheck(ctx, moveId, { ...m, paths: uniq([...(i.paths ?? []), ...m.paths]) });
+
+    const assetId = i.assetId ?? m?.assetId, app = assetId ? appOf(ctx, assetId) : undefined;
+    const source = m?.source ?? sourceOf(i, app), site = await openSource(ctx, source, i.name ?? m?.name ?? app?.name);
+    try {
+      const l = lookAt(site), old = await oldSettings(ctx, app), keys = uniq([...(old ?? []).map((s) => s.key), ...l.reads]);
+      const sb = await supabaseOf(ctx, app, l, keys), sorted = sortSettings(old, l, await wiredVars(ctx, sb, site));
+      const copied = i.copySettings ? Object.fromEntries(sorted.readable.map((k) => [k, sorted.values.get(k)!])) : {};
+      const env = { ...sorted.filled, ...copied, ...i.env };
+      const missing = [...sorted.readable, ...sorted.unreadable].filter((k) => !(k in env) && !m?.set.includes(k));
+      if (missing.length && !i.skipMissing) {
+        const can = missing.filter((k) => sorted.readable.includes(k)), cant = missing.filter((k) => sorted.unreadable.includes(k));
+        throw new Unit7Error('settings_missing', `Stopped before anything was made: these settings have no value yet. ${cant.length ? `Unit7 can’t read ${cant.join(', ')}, so a person gives them in env. ` : ''}${can.length ? `Unit7 can read ${can.join(', ')}: copySettings copies them, once a person says yes. ` : ''}skipMissing builds it without them.`, 400, { missing });
+      }
+      const name = i.name ?? m?.name ?? site.name;
+      m = { steps: [], stage: 'building', source, want: { to: i.to!, accountId: i.accountId, serverId: i.serverId, team: i.team }, domains: domainsOf(app?.m.hosts), set: [], ...m, ...(assetId && { assetId }), name,
+        oldUrl: i.oldUrl ?? m?.oldUrl ?? app?.url, paths: uniq([...(i.paths ?? []), ...routesOf(l)]), ...(sb?.accountId && sb.ref && { supabase: { ref: sb.ref, accountId: sb.accountId } }) };
+      moveId ??= startMove(ctx, m);
+      ctx.progress(`Building a copy of ${name} on ${m.want.to}…`);
+      let put: Put;
+      try {
+        // update only what this move made: a name that was already there is never built over
+        put = await step<Put>(ctx, 'live.put', { ...source, ...m.want, name, ...(Object.keys(env).length && { env }), update: !!m.made });
+      } catch (e) {
+        const err = e as Unit7Error;
+        if (err.code === 'approval_required') {
+          saveMove(ctx, moveId, { ...m, stage: 'waiting', waiting: (err.detail as { approvalId?: string } | undefined)?.approvalId });
+          return { moveId, waiting: true, why: err.message, next: `A person approves the build on the Approvals page. Then move.run with moveId ${moveId} goes on from there.` };
+        }
+        saveMove(ctx, moveId, { ...m, stage: 'failed', made: !!m.made || ['build_failed', 'build_slow'].includes(err.code) });
+        throw new Unit7Error(err.code, `${err.message} Nothing changed on the old site. move.run with moveId ${moveId} tries again.`, err.status, err.detail);
+      }
+      m = { ...m, stage: 'built', made: true, to: toOf(put, m.want.team), set: uniq([...m.set, ...Object.keys(env)]) };
+      const there = await step<{ settings: { key: string }[] }>(ctx, 'live.env', { to: put.host, ...(put.accountId && { accountId: put.accountId }), ...(put.serverId && { serverId: put.serverId }), project: put.project }).then((r) => r.settings.map((x) => x.key), () => undefined);
+      return await finishCheck(ctx, moveId, m, { settings: { set: Object.keys(env), missing, ...(there && { notOnTheHost: Object.keys(env).filter((k) => !there.includes(k)) }) }, ...(put.notes?.length && { notes: put.notes }) });
+    } finally { site.done(); }
   },
 });
