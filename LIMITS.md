@@ -55,6 +55,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - server.move copies through this Mac and doesn’t resume. Built images, non-Coolify apps and host cron stay behind. Hostinger plan changes happen in hPanel. Port rules survive restarts only with systemd.
 
+## Putting a site live
+
+- Netlify, Cloudflare Pages and GitHub Pages take finished files only. One-click Hostinger accounts can’t upload, so add a token. Unit7’s GitHub App can’t create repos or turn on Pages. Hostinger settings change all together. Cloudflare uses a token’s first account.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

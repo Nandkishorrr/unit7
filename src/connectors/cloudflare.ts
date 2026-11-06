@@ -65,15 +65,21 @@ export const cloudflare = {
     if (!account) throw new Unit7Error('cloudflare_error', 'This Cloudflare token can’t see an account. In Connections, add a new Cloudflare key (the button pre-fills the right permissions).', 403);
     return account.id;
   },
+  // the account that holds a Pages project: a token can reach several
+  async pagesAccount(ctx: Ctx, accountId: string, project: string): Promise<string> {
+    const name = encodeURIComponent(project);
+    for (const a of await cf(ctx, accountId, '/accounts?per_page=50') as { id: string }[]) if (await cf(ctx, accountId, `/accounts/${a.id}/pages/projects/${name}`).then(() => true, () => false)) return a.id;
+    throw new Unit7Error('not_found', `Cloudflare has no Pages project called ${project} that this key can reach. A key needs “Cloudflare Pages: Edit” for this: add one in Connections.`, 404);
+  },
   // a Pages project answers on a domain once Cloudflare knows the name and DNS points at its pages.dev address. A bare
   // domain needs a flattened CNAME (Cloudflare does it) or ALIAS, as on Heroku
   async addPagesDomain(ctx: Ctx, accountId: string, project: string, domain: string): Promise<{ type: 'CNAME' | 'ALIAS'; name: string; content: string }[]> {
-    const base = `/accounts/${await cloudflare.accountOf(ctx, accountId)}/pages/projects/${encodeURIComponent(project)}`;
+    const base = `/accounts/${await cloudflare.pagesAccount(ctx, accountId, project)}/pages/projects/${encodeURIComponent(project)}`;
     await cf(ctx, accountId, `${base}/domains`, { body: { name: domain } }).catch((e: Unit7Error) => { if (!/already/i.test(e.message)) throw e; });
-    return [{ type: (await dnsHost(domain)).zone === domain ? 'ALIAS' : 'CNAME', name: domain, content: (await cf(ctx, accountId, base)).subdomain }];
+    return [{ type: (await dnsHost(domain)).zone === domain ? 'ALIAS' : 'CNAME', name: domain, content: (await cf(ctx, accountId, base)).subdomain ?? `${project}.pages.dev` }];
   },
   // asks Cloudflare to check the domain again now DNS points there
-  confirmPagesDomain: async (ctx: Ctx, accountId: string, project: string, domain: string) => { await cf(ctx, accountId, `/accounts/${await cloudflare.accountOf(ctx, accountId)}/pages/projects/${encodeURIComponent(project)}/domains/${encodeURIComponent(domain)}`, { method: 'PATCH' }).catch(() => undefined); },
+  confirmPagesDomain: async (ctx: Ctx, accountId: string, project: string, domain: string) => { await cf(ctx, accountId, `/accounts/${await cloudflare.pagesAccount(ctx, accountId, project)}/pages/projects/${encodeURIComponent(project)}/domains/${encodeURIComponent(domain)}`, { method: 'PATCH' }).catch(() => undefined); },
   zonePlan: (ctx: Ctx, accountId: string, zoneId: string) => cf(ctx, accountId, `/zones/${zoneId}`).then((z: { plan?: { name: string; price: number; currency: string; frequency?: string } }) => z.plan),
   async zones(ctx: Ctx, accountId: string) {
     const out: { id: string; name: string; status: string }[] = [];
