@@ -4,7 +4,7 @@ import { startRegistration } from '@simplewebauthn/browser';
 import { Fingerprint, KeyRound, Plus, Trash2, UserPlus, Users, User, Palette, Building2, LogOut, Lock, DatabaseBackup, FolderSync, Archive, Bell, Pause, Play, TriangleAlert, Sparkles, Terminal, Sun, Moon, Monitor, Check, Siren, Rocket, ShieldCheck, Wallet, Shield, Activity, Heart, Star, Bug } from 'lucide-react';
 import { api, useApi, runTool } from '../lib/api';
 import { navigate, useQuery } from '../lib/router';
-import { act, Badge, Button, Card, CardHeader, CopyButton, Dialog, Field, HoldButton, IconCircle, Input, Mono, PageHeader, Select, Skeleton, StatusMark, SwitchRow, Tabs, cx, promptDialog, timeAgo, toast } from '../ui';
+import { act, Badge, Button, Card, CardHeader, CopyButton, Dialog, Field, HoldButton, IconCircle, Input, Mono, PageHeader, Select, Skeleton, StatusMark, SwitchRow, Tabs, Textarea, cx, promptDialog, timeAgo, toast } from '../ui';
 import { tidy } from '../lib/words';
 import { Avatar, LINKS, SupportButton, useTheme, type Me } from '../App';
 import { BrandLogo } from '../brand/BrandLogo';
@@ -121,12 +121,35 @@ function TeamTab({ me }: { me: Me }) {
   const [inviting, setInviting] = useState(false);
   const [f, setF] = useState({ email: '', role: 'developer' });
   const [link, setLink] = useState<string | null>(null);
+  const [access, setAccess] = useState({ key: '', servers: [] as string[], sudo: false, send: false, from: '' });
+  const [said, setSaid] = useState<string[]>([]);
   const admin = ['owner', 'admin'].includes(me.role);
+  const graph = useApi<{ servers: { id: string; name: string }[] }>(inviting ? '/api/graph' : null, { live: false });
+  const conns = useApi<{ id: string; accounts: unknown[] }[]>(inviting ? '/api/connections' : null, { live: false });
+  const sender = !!conns.data?.find((c) => c.id === 'resend')?.accounts.length; // an emailed invite needs something to send it with
+  const invite = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      const r = await api('/api/invites', { body: f });
+      setLink(r.link); data.reload();
+      const notes: string[] = [];
+      if (access.key.trim() && access.servers.length) {
+        const a = await runTool('team.give_access', { email: f.email, publicKey: access.key.trim(), servers: access.servers, sudo: access.sudo });
+        if (a.status === 'ok') notes.push(...(a.output as { user: string; servers: { server: string; ok: boolean; note?: string }[] }).servers.map((s) => (s.ok ? `${s.server}: they can sign in as ${(a.output as { user: string }).user}.` : `${s.server}: ${tidy(s.note ?? 'that didn’t work')}`)));
+        else notes.push(tidy(a.status === 'error' ? a.error.message : a.status === 'denied' ? a.why : 'Server access is waiting for approval.'));
+      }
+      if (access.send) {
+        const m = await runTool('team.email_invite', { email: f.email, link: r.link, ...(access.from && { from: access.from }) });
+        notes.push(m.status === 'ok' ? `Emailed to ${f.email}.` : `Not emailed: ${tidy(m.status === 'error' ? m.error.message : 'not allowed')} Send the link yourself.`);
+      }
+      setSaid(notes);
+    } catch (err) { toast('bad', 'Couldn’t make the invite', tidy((err as Error).message)); }
+  };
   return (
     <>
       <Card className="p-5 md:p-6">
         <CardHeader tone="grad" icon={<Users size={20} />} title="People" sub={data.data ? `${data.data.members.length} in ${me.org.name}` : undefined}
-          actions={admin && <Button size="sm" variant="primary" icon={<UserPlus size={14} />} onClick={() => { setLink(null); setInviting(true); }}>Invite</Button>} />
+          actions={admin && <Button size="sm" variant="primary" icon={<UserPlus size={14} />} onClick={() => { setLink(null); setSaid([]); setAccess({ key: '', servers: [], sudo: false, send: false, from: '' }); setInviting(true); }}>Invite</Button>} />
         {!data.data ? <Skeleton className="mt-5 h-20" /> : (
           <ul className="mt-4 divide-y divide-line">
             {data.data.members.map((m) => (
@@ -137,7 +160,7 @@ function TeamTab({ me }: { me: Me }) {
                   <Select value={m.role} onChange={async (r) => { try { await api(`/api/members/${m.id}`, { method: 'PATCH', body: { role: r } }); toast('ok', `${m.name} is now ${role(r).toLowerCase()}`); data.reload(); } catch (e) { toast('bad', 'Couldn’t change that', tidy((e as Error).message)); } }}
                     options={['owner', 'admin', 'developer', 'readonly', 'auditor'].map((r) => ({ value: r, label: role(r) }))} />
                 ) : <Badge>{role(m.role)}</Badge>}
-                {admin && m.id !== me.user.id && <button type="button" aria-label={`Remove ${m.name}`} onClick={async () => { if (confirm(`Remove ${m.name}? They’re signed out of ${me.org.name} right away.`)) { try { await api(`/api/members/${m.id}`, { method: 'DELETE' }); data.reload(); } catch (e) { toast('bad', 'Couldn’t remove them', tidy((e as Error).message)); } } }} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-raised hover:text-bad"><Trash2 size={15} /></button>}
+                {admin && m.id !== me.user.id && <button type="button" aria-label={`Remove ${m.name}`} onClick={async () => { if (confirm(`Remove ${m.name}? They’re signed out of ${me.org.name} right away.`)) { try { const r = await api(`/api/members/${m.id}`, { method: 'DELETE' }); data.reload(); if (r.stillOn?.length) toast('warn', `${m.name} can still sign in to ${r.stillOn.map((x: { server: string }) => x.server).join(', ')}`, 'Take them off on each server’s Advanced tab. Unit7 doesn’t remove that by itself.'); } catch (e) { toast('bad', 'Couldn’t remove them', tidy((e as Error).message)); } } }} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-raised hover:text-bad"><Trash2 size={15} /></button>}
               </li>
             ))}
           </ul>
@@ -158,12 +181,32 @@ function TeamTab({ me }: { me: Me }) {
           <div className="space-y-4">
             <p className="text-[13.5px] text-muted">Send this link to {f.email}. It works once, for 7 days.</p>
             <div className="flex items-center gap-2 rounded-[14px] bg-raised p-3"><Mono className="flex-1 break-all">{link}</Mono><CopyButton text={link} /></div>
+            {said.length > 0 && <ul className="space-y-1 text-[13px] text-ink-2">{said.map((l) => <li key={l}>{l}</li>)}</ul>}
             <div className="flex justify-end"><Button variant="primary" onClick={() => setInviting(false)}>Done</Button></div>
           </div>
         ) : (
-          <form onSubmit={async (e) => { e.preventDefault(); try { const r = await api('/api/invites', { body: f }); setLink(r.link); data.reload(); } catch (err) { toast('bad', 'Couldn’t make the invite', tidy((err as Error).message)); } }} className="space-y-4">
+          <form onSubmit={invite} className="space-y-4">
             <Field label="Email"><Input autoFocus required type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
             <Field label="Role" hint={ROLES[f.role]?.[1]}><Select className="w-full" value={f.role} onChange={(r) => setF({ ...f, role: r })} options={['developer', 'admin', 'readonly', 'auditor', 'owner'].map((r) => ({ value: r, label: role(r) }))} /></Field>
+            {!!graph.data?.servers.length && (
+              <Field label="Server access (optional)" hint="Their own user on the servers you tick, signing in with this key. Paste the one line from their .pub file.">
+                <Textarea rows={2} className="font-mono text-[12.5px]" value={access.key} onChange={(e) => setAccess({ ...access, key: e.target.value })} />
+                {access.key.trim() && (
+                  <div className="mt-2 space-y-1.5">
+                    {graph.data.servers.map((s) => (
+                      <label key={s.id} className="flex items-center gap-2 text-[13.5px]"><input type="checkbox" className="size-4" checked={access.servers.includes(s.id)} onChange={(e) => setAccess({ ...access, servers: e.target.checked ? [...access.servers, s.id] : access.servers.filter((x) => x !== s.id) })} />{s.name}</label>
+                    ))}
+                    <label className="flex items-center gap-2 text-[13.5px]"><input type="checkbox" className="size-4" checked={access.sudo} onChange={(e) => setAccess({ ...access, sudo: e.target.checked })} />Let them do anything on those servers (sudo)</label>
+                  </div>
+                )}
+              </Field>
+            )}
+            {sender && (
+              <Field label="Email it" hint="Sent through Resend. Leave the address empty to use its default.">
+                <label className="flex items-center gap-2 text-[13.5px]"><input type="checkbox" className="size-4" checked={access.send} onChange={(e) => setAccess({ ...access, send: e.target.checked })} />Email the invite to them</label>
+                {access.send && <Input className="mt-2" type="email" placeholder="Send from, on a domain you verified" value={access.from} onChange={(e) => setAccess({ ...access, from: e.target.value })} />}
+              </Field>
+            )}
             <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setInviting(false)}>Cancel</Button><Button variant="primary" icon={<UserPlus size={14} />}>Make an invite link</Button></div>
           </form>
         )}

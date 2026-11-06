@@ -436,6 +436,21 @@ Object.assign(TOOL_WORDS, {
 Object.assign(TOOL_WORDS, {
   'coolify.auto_deploy': 'Turn deploy on push on or off', 'coolify.previews': 'Turn pull request previews on or off', 'coolify.storage': 'Change an app’s storage', 'coolify.scale': 'See if an app can have more copies',
 });
+// a server itself (tools/vps.ts, tools/access.ts, tools/move.ts, tools/security.ts)
+Object.assign(TOOL_WORDS, {
+  'server.snapshot': 'Snapshot a whole server', 'server.open_port': 'Open a door to the internet', 'hostinger.firewall': 'Change Hostinger’s firewall', 'server.ssh_keys': 'Change who can sign in', 'server.users': 'Change a server’s users',
+  'server.resize': 'See or change a server’s plan', 'server.offers': 'See servers you could buy', 'server.buy': 'Buy a server', 'server.power': 'Turn a server off or on', 'server.delete': 'Delete a server for good',
+  'server.move_plan': 'Plan a server move', 'server.move': 'Copy a server to a new one', 'server.move_start': 'Start Coolify on the new server', 'team.give_access': 'Give a teammate server access', 'team.email_invite': 'Email an invite',
+});
+Object.assign(NAMED, {
+  'server.open_port': (x: string, i: any) => `Open port ${i.port} on ${x} to the internet`,
+  'server.ssh_keys': (x: string, i: any) => (i.op === 'add' ? `Add an SSH key to ${x}` : i.op === 'remove' ? `Remove an SSH key from ${x}` : `See who can sign in to ${x}`),
+  'server.users': (x: string, i: any) => (i.op === 'add' ? `Add ${i.user} to ${x}` : i.op === 'remove' ? `Take ${i.user} off ${x}` : `See the users on ${x}`),
+  'server.snapshot': (x: string, i: any) => (i.op === 'restore' ? `Take ${x} back to a snapshot` : i.replace ? `Replace ${x}’s snapshot` : i.op === 'create' ? `Take a snapshot of ${x}` : `See ${x}’s snapshots`),
+  'server.power': (x: string, i: any) => `Turn ${x} ${i.op}`,
+  'server.resize': (x: string, i: any) => (i.plan ? `Move ${x} to ${i.plan}` : `See what fits ${x}`),
+  'server.move': (x: string) => `Copy ${x} to a new server`,
+});
 
 // Staging → Production (tools/promote.ts), and the chat's Delete card (tools/ui.ts)
 Object.assign(TOOL_WORDS, { 'deployment.promote': 'Promote to Production', 'ui.delete': 'Ask about deleting it' });

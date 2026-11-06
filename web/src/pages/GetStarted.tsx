@@ -9,6 +9,7 @@ import { Button, Card, CopyButton, IconCircle, cx } from '../ui';
 import { BrandLogo } from '../brand/BrandLogo';
 import { AgentConnect, type AgentInfo } from './AgentConnect';
 import { AskButton } from './Help';
+import { BuyServerDialog } from './servers/BuyServer';
 
 export function useSetup() {
   const agents = useApi<{ local: boolean; agents: AgentInfo[] }>('/api/agents', { live: (e) => e.type.startsWith('agent.') });
@@ -18,6 +19,7 @@ export function useSetup() {
   return {
     ai: !agents.data.local || agents.data.agents.some((a) => a.connected),
     hostinger: !!conns.data.find((c) => c.id === 'hostinger')?.accounts.length,
+    hetzner: !!conns.data.find((c) => c.id === 'hetzner')?.accounts.length,
     server: graph.data.servers.some((s: any) => s.status === 'ready'),
     live: graph.data.projects.some((p: any) => p.environments.some((e: any) => e.services.some((s: any) => s.deployment?.status === 'live'))),
   };
@@ -25,17 +27,20 @@ export function useSetup() {
 
 export function GetStarted({ s }: { s: NonNullable<ReturnType<typeof useSetup>> }) {
   const [busy, setBusy] = useState(false);
+  const [buying, setBuying] = useState(false);
   const connectHostinger = async () => { setBusy(true); await openSignIn('hostinger', 'Hostinger'); setBusy(false); };
   const steps = [
     { n: 1, done: s.ai, title: 'Connect your AI', body: 'The AI you already use will drive Unit7.', action: <AgentConnect compact /> },
     {
       n: 2, done: s.server, title: 'Get a server',
-      body: s.hostinger ? 'Pick a Hostinger VPS. Unit7 sets it up for you: Docker, HTTPS, firewall.' : 'Sign in to Hostinger. Unit7 sets up your VPS for you.',
+      body: s.hostinger ? 'Pick a Hostinger VPS, or buy one here. Unit7 sets it up for you: Docker, HTTPS, firewall.' : s.hetzner ? 'Buy a server here. Unit7 connects it and sets it up for you.' : 'Sign in to Hostinger, then pick a VPS or buy one here. Unit7 sets it up for you.',
       action: <>
         {s.hostinger
           ? <Button variant="primary" className="w-full" icon={<BrandLogo id="hostinger" size={16} className="rounded bg-white p-px" />} onClick={() => navigate('/servers?from=hostinger')}>Use my Hostinger VPS</Button>
+          : s.hetzner ? <Button variant="primary" className="w-full" onClick={() => setBuying(true)}>Buy a server</Button>
           : <Button variant="primary" className="w-full" loading={busy} onClick={connectHostinger}>Connect Hostinger <ExternalLink size={14} /></Button>}
-        <button onClick={() => navigate('/servers?new=1')} className="mt-2 block w-full rounded-full py-1.5 text-center text-[12.5px] text-muted transition hover:text-ink">I have another server</button>
+        {s.hostinger && <button onClick={() => setBuying(true)} className="mt-2 block w-full rounded-full py-1.5 text-center text-[12.5px] font-medium text-ink-2 transition hover:text-ink">I don’t have a server yet: buy one</button>}
+        <button onClick={() => navigate('/servers?new=1')} className="block w-full rounded-full py-1.5 text-center text-[12.5px] text-muted transition hover:text-ink">I have another server</button>
       </>,
     },
     {
@@ -57,6 +62,7 @@ export function GetStarted({ s }: { s: NonNullable<ReturnType<typeof useSetup>> 
   if (done > 0) {
     return (
       <Card className="animate-rise p-5 md:p-6">
+        <BuyServerDialog open={buying} onClose={() => setBuying(false)} />
         <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:gap-8">
           <div className="flex min-w-0 flex-1 items-start gap-4">
             <IconCircle tone="dark" size={44}><span className="text-[15px] font-semibold">{next.n}</span></IconCircle>
@@ -80,6 +86,7 @@ export function GetStarted({ s }: { s: NonNullable<ReturnType<typeof useSetup>> 
 
   return (
     <section aria-labelledby="get-started" className="space-y-4 pt-2">
+      <BuyServerDialog open={buying} onClose={() => setBuying(false)} />
       <div className="px-1">
         <h2 id="get-started" className="text-[20px] font-semibold tracking-[-0.025em]">Let’s get your app live</h2>
         <p className="mt-0.5 text-[14px] text-muted">Three steps. Each one ticks itself off when it’s done.</p>

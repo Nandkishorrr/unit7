@@ -24,6 +24,8 @@ import { Timeline } from './story';
 import { ClientFilter, useClientFilter } from './organize';
 import { AddServerCard, AddServerWelcome } from './servers/AddServer';
 import { ClosedPorts, CoolifyDashboardLine } from './servers/CoolifyDomain';
+import { BuyServerDialog } from './servers/BuyServer';
+import { ServerCare } from './servers/Care';
 
 // --- what we know about a server without asking it ---
 const providerOf = (s: any): string | null => (s.provider_ref ? String(s.provider_ref).split(':')[0]! : null);
@@ -168,6 +170,7 @@ function HostingerVps({ servers, onUsed }: { servers: any[]; onUsed: () => void 
   const [vps, setVps] = useState<{ id: number; hostname: string; state: string; ip?: string; plan?: string; os?: string }[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [buying, setBuying] = useState(false);
   const load = () => { setErr(null); setVps(null); runTool('hostinger.vps_list', {}).then((r) => (r.status === 'ok' ? setVps((r.output as any).vps) : setErr(r.status === 'error' ? r.error.message : 'Not allowed'))).catch((e) => setErr(e.message)); };
   useEffect(load, []);
   const use = async (id: number, name: string) => {
@@ -185,6 +188,7 @@ function HostingerVps({ servers, onUsed }: { servers: any[]; onUsed: () => void 
   return (
     <Card className="mt-6 p-5 md:p-6 animate-rise">
       <CardHeader icon={<BrandLogo id="hostinger" size={20} />} title="Your Hostinger servers" sub="One click from ready" />
+      <BuyServerDialog open={buying} onClose={() => setBuying(false)} />
       {err ? (
         <div className="mt-4 flex flex-wrap items-center gap-3 rounded-[16px] bg-raised px-4 py-3">
           <p className="min-w-[200px] flex-1 text-[13px] text-ink-2" title={err}>Couldn’t load them from Hostinger right now. If it keeps happening, sign in to Hostinger again.</p>
@@ -193,8 +197,8 @@ function HostingerVps({ servers, onUsed }: { servers: any[]; onUsed: () => void 
         </div>
       ) : !vps ? <Skeleton className="mt-4 h-16" /> : vps.length === 0 ? (
         <div className="mt-4 flex flex-wrap items-center gap-3 rounded-[16px] bg-raised px-4 py-3">
-          <p className="flex-1 text-[13px] text-muted">No VPS in this Hostinger account yet. Get one, then it shows up here.</p>
-          <a href="https://www.hostinger.com/vps-hosting" target="_blank" rel="noopener" className="inline-flex items-center gap-1 text-[13px] font-medium text-blue-text hover:underline">Get a VPS<ArrowUpRight size={13} /></a>
+          <p className="flex-1 text-[13px] text-muted">No VPS in this Hostinger account yet. Buy one here and Unit7 sets it up.</p>
+          <Button size="sm" variant="primary" onClick={() => setBuying(true)}>Buy a server</Button>
         </div>
       ) : (
         <ul className="mt-4 divide-y divide-line">
@@ -432,6 +436,7 @@ export function ServerDetail({ id }: { id: string }) {
             {x?.disk && <DiskParts x={x} className="self-start lg:col-span-5" />}
             {!problem && <Doctor serverId={id} name={name} auto={false} onFixed={load} className="self-start lg:col-span-7" />}
             <ServerLogs serverId={id} reachable={reachable} why={why} />
+            <ServerCare serverId={id} name={name} provider={prov} coolify={!!x?.coolify} others={(graph.data.servers as { id: string; name: string }[]).filter((o) => o.id !== id)} />
           </div>
         )}
       </div>
