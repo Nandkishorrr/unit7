@@ -213,3 +213,8 @@ DEFAULT_RULES.production.system_file_write = 'restricted';
 // A server itself (tools/vps.ts, tools/access.ts): who can sign in is hard to undo for what it opens or locks out, and an AI
 // always asks first; turning one off is a change with undo; deleting one at its provider is never for an AI.
 Object.assign(ACTION_TIER, { server_access: 3, server_power: 2, server_delete: 4 } satisfies Record<string, Tier>);
+
+// Moving a site (tools/moves.ts): a live domain going to its new home is a person's final step, so it waits on Approvals
+// for everyone, a person's own click too. Everything before it only creates, and needs no key of its own.
+Object.assign(ACTION_TIER, { site_switch: 3 } satisfies Record<string, Tier>);
+DEFAULT_RULES.production.site_switch = 'restricted';

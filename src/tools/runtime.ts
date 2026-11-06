@@ -219,9 +219,12 @@ const b64 = (b: Uint8Array) => Buffer.from(b).toString('base64');
 function sealInput(app: App, orgId: string, approvalId: string, tool: Tool, input: Record<string, unknown>, actor: Actor) {
   const out = { ...input };
   for (const f of tool.sensitive ?? []) {
-    if (typeof out[f] !== 'string') continue;
-    const s = app.vault.sealValue(orgId, `approval:${approvalId}:${f}`, out[f] as string);
-    out[f] = { __sealed: `${b64(s.ciphertext)}.${b64(s.wrapped)}`, view: tool.view?.(f, input, actor) ?? viewOf(out[f] as string, String(input.key ?? f)) };
+    const v = out[f];
+    if (typeof v !== 'string' && (!v || typeof v !== 'object')) continue;
+    const s = app.vault.sealValue(orgId, `approval:${approvalId}:${f}`, typeof v === 'string' ? v : JSON.stringify(v));
+    // a list of settings seals whole, and an approver sees each one the way a .env line is shown
+    const view = tool.view?.(f, input, actor) ?? (typeof v === 'string' ? viewOf(v, String(input.key ?? f)) : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, viewOf(String(x), k)])));
+    out[f] = { __sealed: `${b64(s.ciphertext)}.${b64(s.wrapped)}`, ...(typeof v !== 'string' && { json: true }), view };
   }
   return stable(out);
 }
@@ -234,12 +237,12 @@ function viewOf(v: string, name: string): string {
   if (masked !== v) return masked; // known token shapes, passwords inside URLs
   return looksSecretName(name) || looksRandom(v) ? `[sensitive, ${v.length} characters]` : v;
 }
-const isSealed = (v: unknown): v is { __sealed: string; view?: string } => !!v && typeof v === 'object' && typeof (v as { __sealed?: unknown }).__sealed === 'string';
+const isSealed = (v: unknown): v is { __sealed: string; json?: boolean; view?: unknown } => !!v && typeof v === 'object' && typeof (v as { __sealed?: unknown }).__sealed === 'string';
 export function openInput(app: App, orgId: string, approvalId: string, stored: string): Record<string, unknown> {
   return Object.fromEntries(Object.entries(json<Record<string, unknown>>(stored, {})).map(([k, v]) => {
     if (!isSealed(v)) return [k, v];
-    const [c, w] = v.__sealed.split('.');
-    return [k, app.vault.openValue(orgId, `approval:${approvalId}:${k}`, Buffer.from(c!, 'base64'), Buffer.from(w!, 'base64'))];
+    const [c, w] = v.__sealed.split('.'), open = app.vault.openValue(orgId, `approval:${approvalId}:${k}`, Buffer.from(c!, 'base64'), Buffer.from(w!, 'base64'));
+    return [k, v.json ? JSON.parse(open) : open];
   }));
 }
 export const viewInput = (stored: string) => Object.fromEntries(Object.entries(json<Record<string, unknown>>(stored, {})).map(([k, v]) => [k, isSealed(v) ? v.view ?? '[sensitive]' : v]));

@@ -5,12 +5,11 @@ import type { Ctx } from '../tools/runtime.ts';
 import { Unit7Error } from '../errors.ts';
 import { bearerFor, isOAuthAccount } from './mcp-oauth.ts';
 import { json, run } from '../db.ts';
-import { rest, DO, doAuth } from './dnswrite.ts';
-import { dnsHost } from './dnsinfo.ts';
+import { rest, DO, doAuth, dnsLook } from './dnswrite.ts';
 
 type DnsRec = { type: 'A' | 'CNAME' | 'TXT' | 'ALIAS'; name: string; content: string };
 const hostOf = (url?: string | null) => { try { return url ? new URL(url.includes('://') ? url : `https://${url}`).hostname.toLowerCase() : undefined; } catch { return undefined; } };
-const isApex = async (domain: string) => (await dnsHost(domain)).zone === domain;
+const isApex = async (domain: string) => (await dnsLook.host(domain)).zone === domain;
 
 // --- Netlify -----------------------------------------------------------------------------------------
 const NETLIFY_API = () => process.env.UNIT7_NETLIFY_API ?? 'https://api.netlify.com/api/v1'; // overridable for offline tests
@@ -203,7 +202,7 @@ export const railway = {
     const r = await rw(ctx, acc, `mutation($i: CustomDomainCreateInput!) { customDomainCreate(input: $i) { status { verificationDnsHost verificationToken dnsRecords { fqdn recordType requiredValue purpose } } } }`,
       { i: { projectId: t.project, environmentId: t.environment, serviceId: t.service, domain } });
     const st = r.customDomainCreate.status;
-    const zone = (await dnsHost(domain)).zone ?? domain;
+    const zone = (await dnsLook.host(domain)).zone ?? domain;
     const recs: DnsRec[] = st.dnsRecords.filter((d: any) => d.purpose !== 'DNS_RECORD_PURPOSE_ACME_DNS01_CHALLENGE' && /_(A|CNAME|TXT)$/.test(d.recordType))
       .map((d: any) => ({ type: d.recordType.replace('DNS_RECORD_TYPE_', ''), name: d.fqdn.replace(/\.$/, ''), content: d.requiredValue.replace(/\.$/, '') }));
     if (st.verificationDnsHost && st.verificationToken && !recs.some((x) => x.type === 'TXT')) {

@@ -26,8 +26,8 @@ import '../live/amplify.ts';
 import '../live/azure.ts';
 import { createRepo, githubToken, parseRepo, pushFolder, repoExists, repoIsPrivate } from '../connectors/github.ts';
 
-const NAME = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,51}$/, 'lowercase letters, digits and dashes, up to 52');
-const SOURCE = {
+export const NAME = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,51}$/, 'lowercase letters, digits and dashes, up to 52');
+export const SOURCE = {
   folder: z.string().trim().min(1).max(1024).optional().describe('A folder on this computer. People only: an AI uses uploadId or repo.'),
   uploadId: fid('upl').or(z.string().regex(/^upl_[\w-]{10,24}$/)).optional(), repo: z.string().trim().max(300).optional().describe('A GitHub repo: owner/name.'),
   branch: z.string().regex(/^[\w./-]{1,100}$/).optional(),
@@ -37,8 +37,8 @@ const SOURCE = {
 const oneSource = (i: { folder?: string; uploadId?: string; repo?: string; image?: string; copyOf?: string }) => [i.folder, i.uploadId, i.repo, i.image, i.copyOf].filter(Boolean).length === 1;
 const ONE_SOURCE = 'Give one of folder, uploadId, repo, image or copyOf.';
 const needsPerson = (i: { folder?: string }) => !!i.folder;
-const WHERE = { to: z.string().regex(/^[a-z-]{2,30}$/).optional().describe('A host from live.options: vercel, coolify, netlify, cloudflare-pages, github-pages, hostinger, server…'), accountId: fid('acc').optional(), serverId: fid('srv').optional() };
-const costs = (i: { to?: string }) => !!(i.to && hostOf(i.to)?.costs);
+export const WHERE = { to: z.string().regex(/^[a-z-]{2,30}$/).optional().describe('A host from live.options: vercel, coolify, netlify, cloudflare-pages, github-pages, hostinger, server…'), accountId: fid('acc').optional(), serverId: fid('srv').optional() };
+export const costs = (i: { to?: string }) => !!(i.to && hostOf(i.to)?.costs);
 
 const facts = (s: Site) => ({ name: s.name, stack: s.detection.stack, runtime: s.detection.runtime ?? null, files: s.files.length, mb: +(s.bytes / 1024 / 1024).toFixed(1), needs: s.detection.needs, settings: s.detection.envKeys.slice(0, 40) });
 // a sign-in that can only read is refused here, before anything is made, and the reason is its fit
@@ -52,6 +52,8 @@ const placesFor = (ctx: Ctx, site: Site) => Promise.all(allHosts().flatMap((h) =
 const rank = (f: Fit) => (f.best ? 2 : f.ok ? 1 : 0);
 // the best fit first, and of two the same, the one that can't cost money
 const best = (a: { fit: Fit; host: Host }, b: { fit: Fit; host: Host }) => rank(b.fit) - rank(a.fit) || +!!a.host.costs - +!!b.host.costs;
+// every connected place, in the words a person reads
+export const placesOf = async (ctx: Ctx, site: Site) => (await placesFor(ctx, site)).sort(best).map(({ place, fit, host }) => ({ to: host.id, label: place.label, accountId: place.accountId, serverId: place.serverId, ok: fit.ok, why: fit.why, recommended: !!fit.best, ...(host.costs && { costs: host.costs }) }));
 
 // A key in a plain website is on the internet for anyone to read. On a host that builds, it's still in your code, so it's said.
 function secretWarning(site: Site) {
@@ -77,7 +79,7 @@ defineTool({
   async run(ctx, i) {
     const site = await openSource(ctx, i);
     try {
-      const places = (await placesFor(ctx, site)).sort(best).map(({ place, fit, host }) => ({ to: host.id, label: place.label, accountId: place.accountId, serverId: place.serverId, ok: fit.ok, why: fit.why, recommended: !!fit.best, ...(host.costs && { costs: host.costs }) }));
+      const places = await placesOf(ctx, site);
       const usable = places.filter((p) => p.ok), w = secretWarning(site);
       // the hosts nobody connected yet, so "nothing can host this" can say which to connect
       const notConnected = allHosts().filter((h) => !h.places(ctx).length).map((h) => ({ h, f: h.fit(site) })).sort((a, b) => rank(b.f) - rank(a.f)).map(({ h, f }) => ({ to: h.id, name: h.name, ok: f.ok, why: f.why }));
@@ -111,7 +113,7 @@ defineTool({
       ctx.emit('live.placed', `${name} is live on ${chosen.host.name}: ${placed.url}`, { severity: 'success', resource: placed.project, data: { host: chosen.host.id, url: placed.url } });
       const answered = placed.url ? await answers(placed.url) : false;
       const domain = i.domain && placed.point !== false ? await pointDomain(ctx, i.domain, chosen.place, name, placed, i.team).catch((e: Error) => ({ error: e.message })) : undefined;
-      return { url: placed.url, name, host: chosen.host.id, project: placed.project, deployment: placed.deployment, verified: answered !== false, status: answered || undefined, autoDeploy: !!placed.autoDeploy, site: facts(site),
+      return { url: placed.url, name, host: chosen.host.id, accountId: chosen.place.accountId, serverId: chosen.place.serverId, project: placed.project, deployment: placed.deployment, point: placed.point, verified: answered !== false, status: answered || undefined, autoDeploy: !!placed.autoDeploy, site: facts(site),
         ...(domain && { domain }), notes: [...(placed.notes ?? []), ...(w ? [`These files hold keys, so they shouldn’t be in the code: ${w.list}.`] : []), ...(site.detection.envKeys.length && !i.env && chosen.host.env ? [`The code reads ${site.detection.envKeys.length} setting${site.detection.envKeys.length === 1 ? '' : 's'}. Set them with live.env or the site may not work: ${site.detection.envKeys.slice(0, 12).join(', ')}.`] : [])],
         next: answered === false ? 'It says it’s live but didn’t answer yet. Check again in a minute with live.status.' : undefined };
     } finally { site.done(); }
