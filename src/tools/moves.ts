@@ -3,9 +3,12 @@
 // in a separate account, so the plan names them all. Values never leave here: settings go by name, and a person decides.
 // move.run only creates: a copy on the new host, built from the repo and checked against the old site, which it never touches.
 // A move's state is one row in changes (verb move, status kept: it has nothing of its own to undo), in its undo column.
+// move.switch is a person's final step: the domain to the new place, always through Approvals, with one undo for all of it.
+// move.finish only suggests what can go. Unit7 never removes the old site in a move.
 import { z } from 'zod';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CHANGE_UNDO, keepChange } from './manage.ts';
 import { defineTool, type Ctx } from './runtime.ts';
 import { all, get, id, json, now, run } from '../db.ts';
 import { Unit7Error, notFound } from '../errors.ts';
@@ -17,6 +20,7 @@ import { supabaseVars } from './links.ts';
 import { step } from '../live/coolify.ts';
 import { LIMITS, openSource, type Site } from '../live/source.ts';
 import { supabase, vc } from '../connectors/clouds.ts';
+import { EDITORS, type FullRec } from '../connectors/dnswrite.ts';
 import { fly, heroku, netlify, railway, render } from '../connectors/hosts.ts';
 import { parseRepo } from '../connectors/github.ts';
 import { dnsDeps, DNS_NAMES } from './clouds-dns.ts';
@@ -328,7 +332,7 @@ interface To { host: string; name: string; accountId?: string; serverId?: string
 interface Move {
   steps: string[]; name: string; stage: 'building' | 'failed' | 'waiting' | 'built' | 'switched'; assetId?: string; source: { repo?: string; branch?: string; uploadId?: string };
   want: { to: string; accountId?: string; serverId?: string; team?: string }; oldUrl?: string; domains: string[]; paths: string[]; set: string[]; supabase?: { ref: string; accountId: string };
-  made?: boolean; waiting?: string; to?: To; check?: Check;
+  made?: boolean; waiting?: string; to?: To; check?: Check; ttlUntil?: string; hostnames?: string[]; switchedAt?: string; switchId?: string;
 }
 function startMove(ctx: Ctx, m: Move) {
   const moveId = id('chg');
@@ -428,5 +432,186 @@ defineTool({
       const there = await step<{ settings: { key: string }[] }>(ctx, 'live.env', { to: put.host, ...(put.accountId && { accountId: put.accountId }), ...(put.serverId && { serverId: put.serverId }), project: put.project }).then((r) => r.settings.map((x) => x.key), () => undefined);
       return await finishCheck(ctx, moveId, m, { settings: { set: Object.keys(env), missing, ...(there && { notOnTheHost: Object.keys(env).filter((k) => !there.includes(k)) }) }, ...(put.notes?.length && { notes: put.notes }) });
     } finally { site.done(); }
+  },
+});
+
+// --- move.switch: a person's final step ------------------------------------------------------------------------------------------
+const LOW_TTL = 600; // GoDaddy's lowest, and low enough for a way back everywhere else
+const HOSTNAME = z.string().trim().toLowerCase().regex(/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/, 'a domain like shop.example.com');
+const namesOf = (m: Move, i: { hostnames?: string[] }) => {
+  const names = i.hostnames ?? m.domains;
+  if (!names.length) throw new Unit7Error('which_domain', 'Unit7 doesn’t know this site’s domain. Say which ones move (hostnames).', 400);
+  return names;
+};
+// A person said yes to the whole switch, so its steps run as a person: they don't each wait on Approvals again, and domain.point
+// lets a person move a name that's in use. Only under that yes: move.switch refuses to run without one.
+const approved = (ctx: Ctx): Ctx => ({ ...ctx, actor: { ...ctx.actor, kind: 'user', role: 'admin', agent: undefined } });
+
+// what the new place wants at a name, where that can be told from here: domain.point writes it, and a CNAME stands alone
+function wantedType(target: Record<string, unknown>, apex: boolean) {
+  if (['coolify', 'server', 'serviceId', 'hostinger'].some((k) => k in target)) return 'A';
+  if (!apex) return 'CNAME';
+  return ['vercel', 'netlify', 'render', 'fly', 'github'].some((k) => k in target) ? 'A' : undefined;
+}
+const hereAt = (z: Zone, name: string) => z.records.filter((r) => r.name === name && ADDRESS_TYPES.has(r.type));
+const full = (r: Rec): FullRec => ({ type: r.type, name: r.name, content: r.value, ...(r.ttl && { ttl: r.ttl }), ...(r.proxied !== undefined && { proxied: r.proxied }) });
+const sameRec = (a: { type: string; content: string }, b: { type: string; content: string }) => a.type === b.type && a.content.replace(/\.$/, '').toLowerCase() === b.content.replace(/\.$/, '').toLowerCase();
+
+interface DomainRow { service_id: string | null; target: string | null; records: string | null; status: string; tls_mode: string | null }
+const domainRow = (ctx: Pick<Ctx, 'db' | 'orgId'>, hostname: string) => get<DomainRow>(ctx.db, 'SELECT service_id, target, records, status, tls_mode FROM domains WHERE hostname = ? AND org_id = ?', hostname, ctx.orgId);
+interface Moved { hostname: string; provider: string; accountId: string; zone: string; before: FullRec[]; after: FullRec[]; row?: DomainRow }
+interface ByHand { hostname: string; at?: string; addThese?: unknown; now: string[] }
+
+// one name to the new place. What it's replacing is read first, so going back never depends on the host that's taking over
+async function pointName(me: Ctx, hostname: string, target: Record<string, unknown>): Promise<{ moved?: Moved; byHand?: ByHand; steps: string[] }> {
+  const z = await zoneAt(me, hostname), row = domainRow(me, hostname);
+  if ('why' in z) {
+    const out = await step<{ addThese?: unknown; at?: string }>(me, 'domain.point', { hostname, ...target });
+    return { byHand: { hostname, at: out.at, addThese: out.addThese, now: (await Promise.all(['A', 'CNAME'].map((t) => dnsDeps.answers(hostname, t)))).flat() }, steps: [] };
+  }
+  const where = { zone: z.zone, accountId: z.accountId }, had = hereAt(z, hostname), want = wantedType(target, z.zone === hostname), steps: string[] = [];
+  const remove = async (r: Rec) => { const out = await step<{ changeId?: string }>(me, 'dns.remove', { ...where, name: r.name, type: r.type, value: r.value, confirmName: r.name }); if (out.changeId) steps.push(out.changeId); };
+  // what can't stand next to the new record goes first, and comes back if the new one fails
+  const clash = had.filter((r) => (want === 'A' && (r.type === 'CNAME' || r.type === 'ALIAS')) || (want === 'CNAME' && r.type !== 'CNAME'));
+  for (const r of clash) await remove(r);
+  let out: { addThese?: unknown; at?: string };
+  try { out = await step(me, 'domain.point', { hostname, ...target, accountId: z.accountId }); }
+  catch (e) {
+    for (const r of clash) await step(me, 'dns.set', { ...where, name: r.name, type: r.type, value: r.value, ...(r.ttl && r.ttl >= 60 && { ttl: r.ttl }), mode: 'add' }).catch(() => undefined);
+    throw e;
+  }
+  if (out.addThese) return { byHand: { hostname, at: out.at, addThese: out.addThese, now: had.map(show) }, steps };
+  const after = json<FullRec[]>(domainRow(me, hostname)?.records, []).filter((r) => ADDRESS_TYPES.has(r.type)), before = had.map(full);
+  // an old answer the write left behind (an AAAA, a second A) would keep sending some visitors to the old site
+  const fresh = await zoneAt(me, hostname);
+  if (!('why' in fresh)) for (const r of hereAt(fresh, hostname).filter((r) => before.some((b) => sameRec(b, full(r))) && !after.some((a) => sameRec(a, full(r))))) await remove(r);
+  return { moved: { hostname, provider: z.provider, accountId: z.accountId, zone: z.zone, before, after, ...(row && { row }) }, steps };
+}
+
+// a connected Supabase project's sign-in list follows the domain. This never stops a switch: DNS has already moved
+async function addSignIn(me: Ctx, m: Move, names: string[]) {
+  if (!m.supabase || !names.length) return undefined;
+  const { accountId, ref } = m.supabase;
+  try {
+    const a = await step<{ siteUrl?: string; redirectUrls: string[] }>(me, 'supabase.auth', { accountId, ref, op: 'get' });
+    // by the whole host: old-shop.example isn't shop.example, and these addresses can hold wildcards a URL parser won't take
+    const hostIn = (u?: string) => /^[a-z][a-z0-9+.-]*:\/\/([^/:?#]+)/i.exec(u ?? '')?.[1]?.toLowerCase();
+    const add = names.filter((h) => !a.redirectUrls.some((u) => hostIn(u) === h)).map((h) => `https://${h}/**`);
+    const oldHost = hostIn(m.oldUrl), moveHome = !!oldHost && hostIn(a.siteUrl) === oldHost && !names.includes(oldHost);
+    if (!add.length && !moveHome) return undefined;
+    const out = await step<{ undo?: string }>(me, 'supabase.auth', { accountId, ref, op: 'set', redirectUrls: [...a.redirectUrls, ...add], ...(moveHome && { siteUrl: `https://${names[0]}` }) });
+    return `Supabase sign-in now allows ${names.join(', ')}. ${out.undo ?? ''}`.trim();
+  } catch (e) { return `DNS moved, but Unit7 couldn’t add ${names.join(', ')} to Supabase’s sign-in list: ${(e as Error).message} Add it in Supabase, under Authentication, URL Configuration.`; }
+}
+
+defineTool({
+  name: 'move.switch', title: 'Switch a site to its new home', risk: 'destructive', action: 'site_switch', timeoutMs: 30 * 60_000,
+  description: 'A person’s final step of a move: it points the domain at the new site, and it always waits for their yes on the Approvals page, whoever asks. Each domain the old site had goes (hostnames picks some). Where the DNS host allows it, the first run only lowers the TTL and says when to run it again; now: true goes at once, and some visitors then see the old site a while longer. It checks the new site first and stops if it doesn’t answer, or if its pages differ unless anyway: true. A connected Supabase project’s sign-in list gets the new address. The old site isn’t touched, and the result says how to go back: change.undo puts the old DNS back. Email records stay as they are. Run it as a dry run to see what changes.',
+  input: z.object({ moveId: fid('chg'), hostnames: z.array(HOSTNAME).min(1).max(10).optional(), now: z.boolean().default(false).describe('Don’t wait for the old TTL to run out'), anyway: z.boolean().default(false).describe('Go on although some pages differ from the old site') }),
+  assess(c, i) {
+    const m = moveOf(c, i.moveId);
+    if (m.stage === 'switched') throw new Unit7Error('already_switched', 'This move already switched. move.finish says what’s left, and its change undoes it.', 409);
+    if (!m.to || m.stage !== 'built') throw new Unit7Error('not_built', 'There’s no finished copy to switch to yet. move.run builds it.', 409);
+    if (typeof m.to.point !== 'object') throw new Unit7Error('by_hand', typeof m.to.point === 'string' ? m.to.point : 'This host serves the site from its domain already, so there’s nothing to point.', 400);
+    if (!c.dryRun && !i.now && m.ttlUntil && m.ttlUntil > now()) throw new Unit7Error('too_soon', `The TTL is low now, but visitors may hold the old answer until ${m.ttlUntil.slice(11, 16)} UTC. Run this again after that, or with now: true to go at once.`, 409);
+    return { tier: 3, ask: 'A live domain moving to a new home is a person’s final step.', impact: `Points ${namesOf(m, i).join(', ')} at ${m.to.url}. The old site keeps running, and change.undo puts the old DNS back.` };
+  },
+  async dryRun(ctx, i) {
+    const m = moveOf(ctx, i.moveId);
+    return { goesTo: m.to?.url, host: m.to?.host, names: await Promise.all(namesOf(m, i).map(async (h) => { const z = await zoneAt(ctx, h); return 'why' in z ? { hostname: h, why: z.why } : { hostname: h, at: z.at, now: hereAt(z, h).map(show), ttl: Math.max(0, ...hereAt(z, h).map((r) => r.ttl ?? 0)) }; })), untrusted: UNTRUSTED };
+  },
+  async run(ctx, i) {
+    if (!ctx.approvalId) throw new Unit7Error('approval_needed', 'This always waits for a person’s yes on the Approvals page.', 403);
+    const m = moveOf(ctx, i.moveId), to = m.to!, names = namesOf(m, i), me = approved(ctx);
+    const check = await checkCopy(ctx, m.oldUrl, to.url, m.paths);
+    if (!check.answered) throw new Unit7Error('not_ready', `Stopped before DNS changed. ${check.why}`, 409);
+    if (!check.ok && !i.anyway) throw new Unit7Error('pages_differ', `Stopped before DNS changed. ${check.pages.filter((p) => !p.same).map((p) => p.why).join(' ')} Fix them, or say anyway: true if that’s expected.`, 409);
+
+    if (!i.now && !m.ttlUntil) {
+      let lowered: string[] = [], wait = 0;
+      for (const h of names) {
+        const z = await zoneAt(me, h);
+        if ('why' in z) continue;
+        for (const r of hereAt(z, h).filter((x) => (x.ttl ?? 0) > LOW_TTL && !x.proxied)) {
+          // a host that won't go this low isn't a reason to stop: it's only where it can be done
+          const done = await step(me, 'dns.set', { zone: z.zone, accountId: z.accountId, name: r.name, type: r.type, value: r.value, ttl: LOW_TTL, mode: 'add' }).then(() => true, () => false);
+          if (done) { lowered = [...lowered, show(r)]; wait = Math.max(wait, r.ttl!); }
+        }
+      }
+      if (lowered.length) {
+        const until = new Date(Date.now() + wait * 1000).toISOString();
+        saveMove(ctx, i.moveId, { ...m, ttlUntil: until });
+        ctx.emit('move.ttl_lowered', `${m.name}: the TTL is low now, and the switch can go after ${until.slice(11, 16)} UTC.`, { data: { moveId: i.moveId } });
+        return { switched: [], waiting: true, lowered, until, next: `Nothing points anywhere new yet. Visitors may hold the old answer until ${until.slice(11, 16)} UTC. Run move.switch again after that, or with now: true to go at once.`, untrusted: UNTRUSTED };
+      }
+    }
+
+    const moved: Moved[] = [], byHand: ByHand[] = [], steps: string[] = [];
+    let failed: { hostname: string; why: string } | undefined;
+    for (const h of names) {
+      ctx.progress(`Pointing ${h} at ${to.host}…`);
+      try {
+        const r = await pointName(me, h, to.point as Record<string, unknown>);
+        if (r.moved) moved.push(r.moved);
+        if (r.byHand) byHand.push(r.byHand);
+        steps.push(...r.steps);
+      } catch (e) { failed = { hostname: h, why: (e as Error).message }; break; }
+    }
+    if (failed && !moved.length && !byHand.length) throw new Unit7Error('switch_failed', `${failed.hostname} couldn’t move: ${failed.why} The old DNS stays as it was.`, 502);
+    const changeId = moved.length ? keepChange(ctx, `move:${m.name}`, 'move.switch', `Switched ${moved.map((d) => d.hostname).join(', ')} to ${to.url}`, { moveId: i.moveId, names: moved }) : undefined;
+    // one undo for the whole switch: the steps' own would each put back only a piece of it
+    if (changeId) for (const s of steps) run(ctx.db, `UPDATE changes SET status = 'kept' WHERE id = ? AND org_id = ?`, s, ctx.orgId);
+    const signIn = await addSignIn(me, m, [...moved.map((d) => d.hostname), ...byHand.map((d) => d.hostname)]);
+    if (!failed) saveMove(ctx, i.moveId, { ...m, stage: 'switched', hostnames: names, switchedAt: now(), switchId: changeId }, `Moved ${m.name} to ${to.url}`);
+    ctx.emit('move.switched', `${names.join(', ')} now point${names.length === 1 ? 's' : ''} at ${to.host}. The old site still runs, so going back is one step.`, { severity: 'success', resource: to.project, data: { moveId: i.moveId, changeId } });
+    const toAdd = byHand.filter((d) => d.addThese).map(({ now: _now, ...d }) => d);
+    return {
+      switched: moved.map((d) => d.hostname), ...(toAdd.length && { addThese: toAdd, note: 'Unit7 can’t edit this DNS, so these records are for a person to add where it’s managed.' }), ...(failed && { failed, next: `${failed.hostname} didn’t move. Fix that, then run move.switch with hostnames for what’s left.` }), ...(changeId && { changeId }),
+      goBack: [...(changeId ? [`change.undo with changeId ${changeId} puts the old DNS back. The old site still runs, so visitors are back on it within about ${Math.ceil(LOW_TTL / 60)} minutes.`] : []), ...byHand.map((d) => `To go back, set ${d.hostname} to what it said before: ${d.now.join(', ') || 'Unit7 couldn’t read that'}.`)],
+      ...(signIn && { signIn }), ...(!failed && { next: 'Check the site on its domain. After a few good days, move.finish says what can go. Unit7 never removes the old site.' }), untrusted: UNTRUSTED,
+    };
+  },
+});
+
+// the whole switch back: the new records go first, since a CNAME can't come back while an A record stands at its name
+CHANGE_UNDO['move.switch'] = async (ctx, ch) => {
+  const u = json<{ moveId: string; names: Moved[] }>(ch.undo, { moveId: '', names: [] });
+  for (const d of [...u.names].reverse()) {
+    const ed = EDITORS[d.provider];
+    if (!ed) throw new Unit7Error('cannot_undo', `Unit7 can’t edit ${d.hostname}’s DNS anymore. Put this back where it’s managed: ${d.before.map((r) => `${r.type} ${r.name} → ${r.content}`).join(', ')}.`, 409);
+    for (const r of d.after) await ed.del(ctx, d.accountId, d.zone, { name: r.name, type: r.type, value: r.content });
+    try { for (const r of d.before) await ed.add(ctx, d.accountId, d.zone, r); }
+    catch (e) { for (const r of d.after) await ed.add(ctx, d.accountId, d.zone, r).catch(() => undefined); throw e; }
+    if (d.row) run(ctx.db, 'UPDATE domains SET service_id = ?, target = ?, records = ?, status = ?, tls_mode = ? WHERE hostname = ? AND org_id = ?', d.row.service_id, d.row.target, d.row.records, d.row.status, d.row.tls_mode, d.hostname, ctx.orgId);
+    else run(ctx.db, 'DELETE FROM domains WHERE hostname = ? AND org_id = ?', d.hostname, ctx.orgId);
+  }
+  const m = moveOf(ctx, u.moveId);
+  saveMove(ctx, u.moveId, { ...m, stage: 'built', hostnames: undefined, switchedAt: undefined, switchId: undefined, ttlUntil: undefined }, `Built a copy of ${m.name} at ${m.to?.url}`);
+  return { restored: u.names.map((d) => d.hostname), note: 'The old DNS is back, the old site never stopped, and the new copy is still there.' };
+};
+
+// --- move.finish: it only ever suggests ------------------------------------------------------------------------------------------
+const KEEP_DAYS = 3;
+defineTool({
+  name: 'move.finish', title: 'What can go after a move', risk: 'read', action: 'read', timeoutMs: 2 * 60_000,
+  description: 'After a move has switched: checks each domain reaches the new site and says what can go. It only suggests. Removing the old site is a person’s own step, on the Delete card (asset.delete) or the old host’s dashboard, and this never does it.',
+  input: z.object({ moveId: fid('chg') }),
+  async run(ctx, i) {
+    const m = moveOf(ctx, i.moveId), keep = 'Unit7 never removes the old site in a move. That’s a person’s own step.';
+    if (m.stage !== 'switched') return { ready: false, says: 'The domain hasn’t switched, so the old site is still the live one. Keep it.', keep };
+    const domains = await Promise.all((m.hostnames ?? []).map(async (hostname) => {
+      const d = get<{ id: string }>(ctx.db, 'SELECT id FROM domains WHERE hostname = ? AND org_id = ?', hostname, ctx.orgId);
+      const c = d && await step<{ status: string; httpsWorking: boolean; note: string }>(ctx, 'domain.check', { domainId: d.id }).catch(() => undefined);
+      return { hostname, reachesNewSite: c?.status === 'active', https: !!c?.httpsWorking, ...(c?.status !== 'active' && { note: c?.note ?? 'Unit7 couldn’t check it.' }) };
+    }));
+    const days = Math.floor((Date.now() - Date.parse(m.switchedAt!)) / 86400_000), reached = domains.every((d) => d.reachesNewSite);
+    const old = m.assetId ? get<{ name: string; provider: string }>(ctx.db, 'SELECT name, provider FROM assets WHERE id = ? AND org_id = ?', m.assetId, ctx.orgId) : undefined, where = old ? DNS_NAMES[old.provider] ?? old.provider : 'its old host';
+    if (!reached) return { ready: false, daysSinceSwitch: days, domains, says: 'Not every domain reaches the new site yet. Keep the old site.', keep };
+    if (days < KEEP_DAYS) return { ready: false, daysSinceSwitch: days, domains, says: `Everything reaches the new site, but give it ${KEEP_DAYS} days. While the old site runs, going back is one step.`, keep };
+    return {
+      ready: true, daysSinceSwitch: days, domains, says: 'Everything reaches the new site, and it has run for a while. The old site can go whenever the person wants.',
+      suggests: [`Remove ${old?.name ?? `the old site`} on ${where}. A person does that, on the Delete card (asset.delete) or on ${where}’s own dashboard.`, 'First check what the plan said stays behind there: it goes with it.', `If nothing else runs on that account, end its plan on ${where}.`],
+      ...(m.assetId && { assetId: m.assetId }), keep,
+    };
   },
 });

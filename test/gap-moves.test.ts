@@ -394,3 +394,207 @@ test('a builder’s repo: public values from its .env go by themselves, a connec
     assert.equal(sb.writes.length, 0, 'move.run changes nothing at Supabase');
   } finally { sb.close(); c.close(); }
 });
+
+const built = async (w: Awaited<ReturnType<typeof world>>, o: Record<string, unknown> = {}) => ok<any>(await w.org.h('move.run', { assetId: w.assetId, to: 'render', env: GIVEN, ...o }));
+const approve = async (w: Awaited<ReturnType<typeof world>>, r: ToolResult) => {
+  assert.equal(r.status, 'approval_required', JSON.stringify(r));
+  return decideApproval(w.app, w.org.orgId, w.org.human, (r as { approvalId: string }).approvalId, true) as Promise<ToolResult>;
+};
+const writes = (w: Awaited<ReturnType<typeof world>>) => w.dns.calls.filter((c) => c.method !== 'GET').length;
+const at = (w: Awaited<ReturnType<typeof world>>, name: string) => w.rows.filter((r) => r.name === name).map((r) => `${r.type} ${r.data} ${r.ttl}`).sort();
+
+test('an AI calling move.switch only asks: nothing moves, and a person’s own click waits on Approvals too', async () => {
+  const w = await world();
+  try {
+    const { moveId } = await built(w);
+    const before = writes(w);
+    const ai = await w.org.a('move.switch', { moveId }) as any;
+    assert.equal(ai.status, 'approval_required');
+    assert.match(ai.why, /restricted/);
+    assert.match(ai.why, /Points shop\.example, www\.shop\.example at /);
+    const human = await w.org.h('move.switch', { moveId }) as any;
+    assert.equal(human.status, 'approval_required', 'approval always, whoever asks');
+    assert.equal(writes(w), before, 'no DNS changed');
+    assert.deepEqual(w.st.domains, []);
+    await assert.rejects(decideApproval(w.app, w.org.orgId, { ...w.org.human, kind: 'token' }, ai.approvalId, true), /Only a person can approve/);
+    assert.equal(writes(w), before);
+    assert.equal(moveRow(w, moveId).m.stage, 'built');
+  } finally { w.close(); }
+});
+
+test('the switch lowers the TTL first, waits it out, then moves the domain, keeps email and the old site, and one undo puts it all back', async () => {
+  const rows = [{ type: 'A', name: '@', data: '192.0.2.10', ttl: 3600 }, { type: 'AAAA', name: '@', data: '2001:db8::10', ttl: 3600 }, { type: 'CNAME', name: 'www', data: 'cname.old-host.example', ttl: 3600 }, { type: 'MX', name: '@', data: 'mx1.example.net', ttl: 3600, priority: 10 }];
+  const w = await world({ rows });
+  try {
+    const { moveId } = await built(w);
+    const first = await approve(w, await w.org.a('move.switch', { moveId })) as any;
+    assert.equal(first.status, 'ok', JSON.stringify(first));
+    assert.equal(first.output.waiting, true);
+    assert.deepEqual(first.output.switched, []);
+    assert.match(first.output.next, /Nothing points anywhere new yet.*now: true/);
+    assert.deepEqual(at(w, '@').filter((r) => r.startsWith('A ')), ['A 192.0.2.10 600'], 'the same address, a lower TTL');
+    assert.deepEqual(at(w, 'www'), ['CNAME cname.old-host.example 600']);
+    assert.deepEqual(w.st.domains, [], 'nothing pointed yet');
+
+    const early = await w.org.a('move.switch', { moveId }) as any;
+    assert.equal(early.status, 'error');
+    assert.equal(early.error.code, 'too_soon', 'nothing to approve until the old answer runs out');
+
+    const done = await approve(w, await w.org.a('move.switch', { moveId, now: true })) as any;
+    assert.equal(done.status, 'ok', JSON.stringify(done));
+    assert.deepEqual(done.output.switched, ['shop.example', 'www.shop.example']);
+    assert.deepEqual(w.st.domains, ['shop.example', 'www.shop.example']);
+    assert.deepEqual(at(w, '@').filter((r) => !r.startsWith('MX')), ['A 216.24.57.1 600'], 'the new address, and the old AAAA would have kept some visitors behind');
+    assert.ok(at(w, 'www')[0]!.startsWith('CNAME 127.0.0.1'), 'www follows');
+    assert.deepEqual(at(w, '@').filter((r) => r.startsWith('MX')), ['MX mx1.example.net 3600'], 'email stays');
+    assert.deepEqual(w.st.oldHostWrites, [], 'the old site wasn’t touched');
+    assert.match(done.output.goBack[0], /change\.undo with changeId chg_.*old DNS back/);
+    assert.equal(moveRow(w, moveId).m.stage, 'switched');
+    assert.equal(all(w.app.db, `SELECT id FROM changes WHERE org_id = ? AND status = 'done' AND verb = 'dns.remove'`, w.org.orgId).length, 0, 'one undo for the whole switch, not one per step');
+
+    const later = await w.org.a('move.switch', { moveId }) as any;
+    assert.equal(later.error.code, 'already_switched');
+
+    const back = ok<any>(await w.org.h('change.undo', { changeId: done.output.changeId }));
+    assert.deepEqual(back.restored, ['shop.example', 'www.shop.example']);
+    assert.deepEqual(at(w, '@').filter((r) => !r.startsWith('MX')).sort(), ['A 192.0.2.10 600', 'AAAA 2001:db8::10 600'].sort());
+    assert.deepEqual(at(w, 'www'), ['CNAME cname.old-host.example 600']);
+    assert.equal(all(w.app.db, 'SELECT hostname FROM domains WHERE org_id = ?', w.org.orgId).length, 0);
+    assert.equal(moveRow(w, moveId).m.stage, 'built', 'the move can go again');
+  } finally { w.close(); }
+});
+
+test('a record of the wrong kind goes first and comes back if the new one fails, because a CNAME stands alone', async () => {
+  const rows = [{ type: 'A', name: 'www', data: '192.0.2.10', ttl: 600 }, { type: 'A', name: '@', data: '192.0.2.10', ttl: 600 }];
+  const w = await world({ rows });
+  try {
+    const { moveId } = await built(w);
+    const done = await approve(w, await w.org.h('move.switch', { moveId, hostnames: [`www.${ZONE}`] })) as any;
+    assert.equal(done.status, 'ok', JSON.stringify(done));
+    assert.deepEqual(at(w, 'www').map((r) => r.split(' ')[0]), ['CNAME'], 'an A became a CNAME');
+    ok(await w.org.h('change.undo', { changeId: done.output.changeId }));
+    assert.deepEqual(at(w, 'www'), ['A 192.0.2.10 600']);
+  } finally { w.close(); }
+  const f = await world({ rows: [{ type: 'A', name: 'www', data: '192.0.2.10', ttl: 600 }] });
+  try {
+    const { moveId } = await built(f);
+    run(f.app.db, 'DELETE FROM accounts WHERE id = ?', f.renderAcc);
+    const r = await approve(f, await f.org.h('move.switch', { moveId, hostnames: [`www.${ZONE}`] })) as any;
+    assert.equal(r.status, 'error');
+    assert.match(r.error.message, /The old DNS stays as it was/);
+    assert.deepEqual(at(f, 'www'), ['A 192.0.2.10 600'], 'the old record is back');
+    assert.equal(moveRow(f, moveId).m.stage, 'built');
+  } finally { f.close(); }
+});
+
+test('a new site that stopped answering stops the switch before DNS, and different pages need a person to say anyway', async () => {
+  const flags: { dead: boolean; site?: Record<string, [number, string]> } = { dead: false }, w = await world(flags);
+  try {
+    const { moveId } = await built(w);
+    const before = writes(w);
+    flags.dead = true;
+    const r = await approve(w, await w.org.h('move.switch', { moveId, now: true })) as any;
+    assert.equal(r.error.code, 'not_ready');
+    assert.match(r.error.message, /Stopped before DNS changed.*answers 503/);
+    flags.dead = false; flags.site = { '/about': [404, 'gone'] };
+    const d = await approve(w, await w.org.h('move.switch', { moveId, now: true })) as any;
+    assert.equal(d.error.code, 'pages_differ');
+    assert.equal(writes(w), before);
+    assert.deepEqual(w.st.domains, []);
+    const go = await approve(w, await w.org.h('move.switch', { moveId, now: true, anyway: true })) as any;
+    assert.equal(go.status, 'ok', JSON.stringify(go));
+    assert.equal(go.output.switched.length, 2);
+  } finally { w.close(); }
+});
+
+test('DNS Unit7 can’t edit gets the exact records for a person, and says what it said before, as the way back', async () => {
+  const w = await world();
+  try {
+    const { moveId } = await built(w);
+    run(w.app.db, 'DELETE FROM accounts WHERE id = ?', w.dnsAcc);
+    dnsDeps.answers = async (_n, t) => (t === 'A' ? ['192.0.2.10'] : []);
+    const r = await approve(w, await w.org.h('move.switch', { moveId, now: true, hostnames: [ZONE] })) as any;
+    assert.equal(r.status, 'ok', JSON.stringify(r));
+    assert.deepEqual(r.output.switched, []);
+    assert.equal(r.output.addThese[0].hostname, ZONE);
+    assert.equal(r.output.addThese[0].addThese[0].value, '216.24.57.1');
+    assert.match(r.output.goBack[0], /set shop\.example to what it said before: 192\.0\.2\.10/);
+    assert.equal(r.output.changeId, undefined, 'Unit7 changed nothing it could undo');
+  } finally { w.close(); }
+});
+
+test('a host Unit7 can’t point a domain at says what to do, with nothing to approve, and a site with no known domain asks which', async () => {
+  const w = await world();
+  try {
+    const { moveId } = await built(w), row = moveRow(w, moveId);
+    run(w.app.db, 'UPDATE changes SET undo = ? WHERE id = ?', JSON.stringify({ ...row.m, to: { ...row.m.to, point: 'Add your domain in the Firebase console.' } }), moveId);
+    const r = await w.org.a('move.switch', { moveId }) as any;
+    assert.equal(r.status, 'error');
+    assert.equal(r.error.message, 'Add your domain in the Firebase console.');
+    run(w.app.db, 'UPDATE changes SET undo = ? WHERE id = ?', JSON.stringify({ ...row.m, domains: [] }), moveId);
+    assert.equal((await w.org.a('move.switch', { moveId }) as any).error.code, 'which_domain');
+  } finally { w.close(); }
+});
+
+test('a dry run shows what would change, and changes nothing', async () => {
+  const w = await world();
+  try {
+    const { moveId } = await built(w), before = writes(w);
+    const r = await w.org.a('move.switch', { moveId }, { dryRun: true }) as any;
+    assert.equal(r.status, 'dry_run');
+    assert.deepEqual(r.plan.names[0].now, [`A ${ZONE} → 192.0.2.10`]);
+    assert.equal(r.plan.names[0].ttl, 3600);
+    assert.equal(writes(w), before);
+  } finally { w.close(); }
+});
+
+test('a connected Supabase project’s sign-in list gets the new domain at the switch, with its own undo, and a sign-in failure never stops it', async () => {
+  const w = await world({ files: LOVABLE }), sb = await fakeSupabase({ site_url: 'https://old-shop.example', uri_allow_list: 'https://old-shop.example/**' });
+  account(w.app, w.org.orgId, 'supabase', 'sbp_demo_token', 'Supabase');
+  try {
+    const { moveId } = ok<any>(await w.org.a('move.run', { repo: 'demo/shop', to: 'render', oldUrl: w.oldSite.base }));
+    const out = await approve(w, await w.org.a('move.switch', { moveId, now: true, hostnames: [ZONE] })) as any;
+    assert.equal(out.status, 'ok', JSON.stringify(out));
+    assert.equal(sb.writes.length, 1);
+    assert.equal(sb.writes[0].uri_allow_list, `https://old-shop.example/**,https://${ZONE}/**`, 'added next to what was there');
+    assert.equal(sb.writes[0].site_url, undefined, 'the site address is only moved off the old site’s own address');
+    assert.match(out.output.signIn, /Supabase sign-in now allows shop\.example\. change\.undo with changeId chg_/);
+  } finally { sb.close(); w.close(); }
+  const d = await world({ files: LOVABLE }), sb2 = await fakeSupabase({ site_url: 'https://old-shop.example', uri_allow_list: '' });
+  account(d.app, d.org.orgId, 'supabase', 'sbp_demo_token', 'Supabase');
+  try {
+    const { moveId } = ok<any>(await d.org.a('move.run', { repo: 'demo/shop', to: 'render', oldUrl: d.oldSite.base }));
+    sb2.close(); // the switch goes on without Supabase
+    const out = await approve(d, await d.org.a('move.switch', { moveId, now: true, hostnames: [ZONE] })) as any;
+    assert.equal(out.status, 'ok', JSON.stringify(out));
+    assert.deepEqual(out.output.switched, [ZONE]);
+    assert.match(out.output.signIn, /DNS moved, but Unit7 couldn’t add shop\.example/);
+  } finally { d.close(); }
+});
+
+test('move.finish only suggests: it waits for the switch and a few good days, and it never removes anything', async () => {
+  const w = await world();
+  try {
+    const { moveId } = await built(w);
+    const early = ok<any>(await w.org.a('move.finish', { moveId }));
+    assert.equal(early.ready, false);
+    assert.match(early.says, /still the live one/);
+    const r = await approve(w, await w.org.h('move.switch', { moveId, now: true, hostnames: [ZONE] })) as any;
+    assert.equal(r.status, 'ok', JSON.stringify(r));
+    const pending = ok<any>(await w.org.a('move.finish', { moveId }));
+    assert.equal(pending.ready, false);
+    assert.match(pending.says, /Not every domain reaches/);
+    domainDns.look = () => ({ soa: async () => ({}), ns: async () => [], a: async () => ['216.24.57.1'], cname: async () => [] });
+    const soon = ok<any>(await w.org.a('move.finish', { moveId }));
+    assert.equal(soon.ready, false);
+    assert.match(soon.says, /give it 3 days/);
+    const row = moveRow(w, moveId);
+    run(w.app.db, 'UPDATE changes SET undo = ? WHERE id = ?', JSON.stringify({ ...row.m, switchedAt: new Date(Date.now() - 4 * 86400_000).toISOString() }), moveId);
+    const later = ok<any>(await w.org.a('move.finish', { moveId }));
+    assert.equal(later.ready, true);
+    assert.match(later.suggests[0], /Remove shop on Vercel\. A person does that/);
+    assert.match(later.keep, /never removes/);
+    assert.deepEqual(w.st.oldHostWrites, [], 'nothing was asked of the old host');
+    assert.ok(get(w.app.db, 'SELECT 1 FROM assets WHERE id = ?', w.assetId), 'and it’s still on the map');
+  } finally { w.close(); }
+});
