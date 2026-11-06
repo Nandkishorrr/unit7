@@ -7,12 +7,13 @@ import { defineTool, execute, type Ctx } from './runtime.ts';
 import { all, get, json, now } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { isRef, makeRef } from '../vault.ts';
+import { cf, cloudflare } from '../connectors/cloudflare.ts';
 import { isSpf, mailHost, mergeSpf, spfAdvice, spfLookups } from '../connectors/dnsinfo.ts';
 import { normValue } from '../connectors/dnswrite.ts';
 import { isOAuthAccount } from '../connectors/mcp-oauth.ts';
 import { resend, type ResendDomain } from '../connectors/resend.ts';
 import { DKIM_SELECTORS, dkimWord, isDkimKey } from '../sentinel/watch.ts';
-import { dnsDeps } from './clouds-dns.ts';
+import { DNS_NAMES, dnsDeps } from './clouds-dns.ts';
 import { verifiers } from './core.ts';
 import { checkRef } from './env.ts';
 import { fid } from './helpers.ts';
@@ -312,3 +313,110 @@ defineTool({
     }
   },
 });
+
+// --- email.forward --------------------------------------------------------------------------------------------------------
+// Cloudflare Email Routing, in the order that keeps mail safe: the inbox proves itself first (nothing about the domain changes
+// until its owner clicks the link), then the rule (which does nothing yet), then the MX through dns.set, then Cloudflare's
+// switch. Mail that goes somewhere else today is never replaced unless a person says so.
+const CF_MAIL = /\.mx\.cloudflare\.net$/i;
+const ForwardInput = z.object({
+  from: z.email().toLowerCase().max(254).describe('The address people write to: hello@example.com'),
+  to: z.email().toLowerCase().max(254).describe('The real inbox it goes to. It has to be on another domain'),
+  accountId: fid('acc').optional().describe('The Cloudflare account, when there are several'),
+  replaceMail: z.boolean().optional().describe('Yes: mail for this domain stops going where it goes now, or this address changes inbox'),
+}).refine((i) => i.from.split('@')[1] !== i.to.split('@')[1], 'to has to be an inbox on another domain, or mail goes round in a circle.');
+type ForwardIn = z.infer<typeof ForwardInput>;
+
+// a key from before forwarding existed can't do this: said plainly, and not taken as a dead key
+const routing = <T = any>(ctx: Ctx, acc: string, path: string, init?: { method?: string; body?: unknown }): Promise<T> => cf(ctx, acc, path, init).catch((e: Unit7Error) => {
+  throw e.status === 403 ? new Unit7Error('cloudflare_key', 'Your Cloudflare key can’t set up forwarding. In Connections, add a new Cloudflare key (the button pre-fills it), or give this one Email Routing Addresses: Edit, Email Routing Rules: Edit and Zone Settings: Edit.', 403) : e;
+}) as Promise<T>;
+async function routingZone(ctx: Ctx, zone: string, named?: string) {
+  const accounts = all<{ id: string }>(ctx.db, `SELECT id FROM accounts WHERE org_id = ? AND provider = 'cloudflare' AND (? IS NULL OR id = ?)`, ctx.orgId, named ?? null, named ?? null);
+  if (!accounts.length) throw new Unit7Error('no_account', `${zone}’s DNS is on Cloudflare. Connect that account first (Connections → Cloudflare), then run this again.`, 409);
+  for (const { id: acc } of accounts) { const z = await cloudflare.findZone(ctx, acc, zone).catch(() => undefined); if (z?.name === zone) return { acc, zoneId: z.id }; }
+  throw new Unit7Error('not_found', `None of your connected Cloudflare accounts holds ${zone}.`, 404);
+}
+interface CfRule { id: string; name?: string; enabled?: boolean; matchers?: { type: string; field?: string; value?: string }[]; actions?: { type: string; value?: string[] }[] }
+const ruleFor = (rules: CfRule[], from: string) => rules.find((r) => r.matchers?.some((m) => m.type === 'literal' && m.field === 'to' && m.value?.toLowerCase() === from));
+const ruleBody = (from: string, to: string) => ({ name: `Unit7: ${from}`, enabled: true, matchers: [{ type: 'literal', field: 'to', value: from }], actions: [{ type: 'forward', value: [to] }] });
+
+async function lookForward(ctx: Ctx, i: ForwardIn) {
+  const domain = i.from.split('@')[1]!, { zone, host } = await dnsDeps.host(domain);
+  if (!zone) throw new Unit7Error('not_found', `${domain} isn’t in public DNS. Is the domain registered?`, 404);
+  if (host !== 'cloudflare') {
+    const at = host ? DNS_NAMES[host] ?? host : 'your DNS host', mx = await dnsDeps.answers(zone, 'MX');
+    return { elsewhere: { forwarded: false, at, why: `${zone}’s DNS is at ${at}. Unit7 forwards mail through Cloudflare Email Routing, which needs the domain’s DNS on Cloudflare.`,
+      steps: [...(mx.length ? [`Mail for ${zone} goes to ${mailHost(mx)?.name ?? mx.map((m) => m.split(' ').pop()).join(', ')} now: add a forward from ${i.from} to ${i.to} there. Most mail hosts have one.`] : [`Look for email forwarding in ${zone}’s settings at ${at}: many hosts have it free.`]),
+        'Or move the DNS to Cloudflare, free: domain.move_dns copies every record first. Then run this again.'], untrusted: UNTRUSTED } };
+  }
+  if (domain !== zone) throw new Unit7Error('unsupported', `Unit7 sets up forwarding on ${zone} itself, not on ${domain}. Use an address @${zone}.`, 400);
+  const { acc, zoneId } = await routingZone(ctx, zone, i.accountId);
+  const mx = await step<{ records: { value: string }[] }>(ctx, 'dns.list', { domain: zone, name: '@', type: 'MX', accountId: acc });
+  const [settings, rules, info, needed] = await Promise.all([routing<{ enabled?: boolean }>(ctx, acc, `/zones/${zoneId}/email/routing`), routing<CfRule[]>(ctx, acc, `/zones/${zoneId}/email/routing/rules`), routing<{ account: { id: string } }>(ctx, acc, `/zones/${zoneId}`),
+    routing<{ type: string; name: string; content: string; priority?: number }[] | { record?: { type: string; name: string; content: string; priority?: number }[] }>(ctx, acc, `/zones/${zoneId}/email/routing/dns`)]);
+  const addresses = await routing<{ id: string; email: string; verified?: string | null }[]>(ctx, acc, `/accounts/${info.account.id}/email/routing/addresses?per_page=50`);
+  const foreign = mx.records.filter((r) => !CF_MAIL.test(r.value.replace(/\.$/, ''))).map((r) => r.value), rule = ruleFor(rules, i.from);
+  // a new MX takes the place of the mail host's records, once a person said so
+  let replacing = foreign.length > 0;
+  const wants = (Array.isArray(needed) ? needed : needed.record ?? []).map((r): Want => {
+    const first = r.type === 'MX' && replacing;
+    if (first) replacing = false;
+    return { type: r.type, name: fullName(r.name, zone, zone), value: r.content, ...(r.priority !== undefined && { priority: r.priority }), ...(first && { mode: 'replace' as const }) };
+  });
+  return { zone, acc, zoneId, foreign, rule, goes: rule?.actions?.find((a) => a.type === 'forward')?.value?.[0]?.toLowerCase(), enabled: !!settings.enabled, cfAccount: info.account.id, dest: addresses.find((a) => a.email.toLowerCase() === i.to), wants };
+}
+function guardMail(i: ForwardIn, l: { zone: string; foreign: string[]; rule?: CfRule; goes?: string }) {
+  if (l.foreign.length && !i.replaceMail) throw new Unit7Error('confirm_email', `Mail for ${l.zone} goes to ${l.foreign.join(', ')} now. Forwarding sends all of it to Cloudflare instead, every address, so anything you read there stops arriving. Say yes with replaceMail, or add the forward at your mail host.`, 400, { confirm: 'replaceMail' });
+  if (l.rule && l.goes !== i.to && !i.replaceMail) throw new Unit7Error('confirm_email', `${i.from} goes to ${l.goes ?? 'somewhere else'} now. Say yes with replaceMail to send it to ${i.to} instead.`, 400, { confirm: 'replaceMail' });
+}
+
+defineTool({
+  // whoever reads the inbox gets the password resets sent to this address, so an AI always asks; once for one forward, however many runs it takes
+  name: 'email.forward', title: 'Forward an address to an inbox', risk: 'write', action: 'dns_write', timeoutMs: 2 * 60_000,
+  assess(c, i) {
+    const yes = get(c.db, `SELECT 1 FROM audit WHERE org_id = ? AND tool = 'email.forward' AND result = 'success' AND approval_id IS NOT NULL AND created_at > ? AND json_extract(input, '$.from') = ? AND json_extract(input, '$.to') = ?`, c.orgId, new Date(Date.now() - 7 * 86400_000).toISOString(), i.from, i.to);
+    return yes ? { tier: 1 } : { tier: 3, ask: 'Where a domain’s email goes is a person’s call.', impact: `Email to ${i.from} goes to ${i.to}, whose owner then gets anything sent there, password resets too.${i.replaceMail ? ' Mail that goes somewhere else now stops going there.' : ''} Activity’s Undo takes it back.` };
+  },
+  description: 'hello@yourdomain goes to a real inbox. Where the domain’s DNS is on Cloudflare: Cloudflare emails the inbox a link to confirm it (run this again once it’s clicked; nothing about the domain changes before that), then a rule for the address, then the domain’s MX and SPF through dns.set (its approvals apply, and an SPF already there is joined), then Email Routing is turned on. Elsewhere it says what to do instead. An AI’s call waits for a person, once per forward. If the domain’s mail goes somewhere else now, or the address already forwards elsewhere, nothing changes until someone says yes with replaceMail. Run it as a dry run first. Activity’s Undo takes it back.',
+  input: ForwardInput,
+  async dryRun(ctx, i) {
+    const l = await lookForward(ctx, i);
+    if ('elsewhere' in l) return l.elsewhere;
+    const p = await place(ctx, l.zone, l.wants, { dry: true, yes: true });
+    return { from: i.from, to: i.to, mailGoesTo: l.foreign, stopsThere: l.foreign.length > 0, inbox: !l.dest ? 'Cloudflare emails it a link to click' : l.dest.verified ? 'confirmed' : 'still waiting for its link to be clicked',
+      rule: !l.rule ? 'added' : l.goes === i.to ? 'already there' : `moves from ${l.goes ?? 'something else'}`, emailRouting: l.enabled ? 'on' : 'turned on', willWrite: p.plan, alreadyThere: p.there, ...(p.waiting.length && { waiting: p.waiting }), untrusted: UNTRUSTED };
+  },
+  async run(ctx, i) {
+    const l = await lookForward(ctx, i);
+    if ('elsewhere' in l) return l.elsewhere;
+    guardMail(i, l);
+    if (!l.dest) await routing(ctx, l.acc, `/accounts/${l.cfAccount}/email/routing/addresses`, { body: { email: i.to } });
+    if (!l.dest?.verified) return { forwarded: false, from: i.from, to: i.to, waiting: 'inbox', note: `${l.dest ? 'Cloudflare already sent' : 'Cloudflare just sent'} a link to ${i.to}. Click it (check spam too), then run this again. Nothing about ${l.zone}’s mail has changed.` };
+    const had = l.rule && l.goes === i.to, body = ruleBody(i.from, i.to);
+    const ruleId = had ? l.rule!.id : l.rule ? (await routing<CfRule>(ctx, l.acc, `/zones/${l.zoneId}/email/routing/rules/${encodeURIComponent(l.rule.id)}`, { method: 'PUT', body })).id : (await routing<CfRule>(ctx, l.acc, `/zones/${l.zoneId}/email/routing/rules`, { body })).id;
+    // the mail host's records only go with a yes (guardMail), and a second MX next to the first is what forwarding needs
+    const p = await place(ctx, l.zone, l.wants, { yes: true });
+    if (p.waiting.length || p.addThese.length) return { forwarded: false, from: i.from, to: i.to, ...held(p), ...(p.waiting.length && { note: `${p.waiting.length === 1 ? 'One DNS change waits' : `${p.waiting.length} DNS changes wait`} for a person on Approvals. Once approved, run this again and forwarding turns on.` }), untrusted: UNTRUSTED };
+    if (!l.enabled) { ctx.progress('Turning on Email Routing…'); await routing(ctx, l.acc, `/zones/${l.zoneId}/email/routing/dns`, { method: 'POST' }); }
+    // a rule made on an earlier run counts as new here: Undo takes it away
+    const changeId = had && l.enabled && !p.changes.length ? undefined : keepChange(ctx, `email:${i.from}`, 'email.forward', `Forwarded ${i.from} to ${i.to}`, { accountId: l.acc, zoneId: l.zoneId, ruleId, before: had ? null : l.rule ?? null, turnedOn: !l.enabled, dns: p.changes });
+    ctx.emit('email.forwarding', `${i.from} goes to ${i.to}`, { severity: 'success', resource: i.from });
+    return { forwarded: true, from: i.from, to: i.to, at: 'Cloudflare Email Routing', ...held(p), note: `Send a test from another address: mail you send yourself can look lost, because some inboxes hide their own.${l.foreign.length ? ` Mail no longer goes to ${l.foreign.join(', ')}.` : ''}`, ...(changeId && { changeId, undo: `change.undo with changeId ${changeId} takes the forward away.` }) };
+  },
+});
+CHANGE_UNDO['email.forward'] = async (ctx, ch) => {
+  const u = json<{ accountId: string; zoneId: string; ruleId: string; before: CfRule | null; turnedOn: boolean; dns: string[] }>(ch.undo, {} as never), rule = `/zones/${u.zoneId}/email/routing/rules`;
+  if (u.before) { const { id: _id, ...body } = u.before; await routing(ctx, u.accountId, `${rule}/${encodeURIComponent(u.ruleId)}`, { method: 'PUT', body }); }
+  else await routing(ctx, u.accountId, `${rule}/${encodeURIComponent(u.ruleId)}`, { method: 'DELETE' });
+  // the domain goes back only when nothing else forwards through it
+  const others = (await routing<CfRule[]>(ctx, u.accountId, rule)).some((r) => r.matchers?.some((m) => m.type === 'literal'));
+  if (!u.turnedOn || others) return { rule: u.before ? 'put back' : 'removed', ...(others && { note: 'Other addresses still forward, so Email Routing stays on.' }) };
+  await routing(ctx, u.accountId, `/zones/${u.zoneId}/email/routing/dns`, { method: 'DELETE' });
+  const left: string[] = [];
+  for (const changeId of [...u.dns].reverse()) {
+    const r = await execute(ctx.app, ctx.orgId, ctx.actor, 'change.undo', { changeId }, { reason: 'taking a forward back', signal: ctx.signal, underApproval: ctx.approvalId });
+    if (r.status !== 'ok') left.push(changeId);
+  }
+  return { rule: 'removed', emailRouting: 'off', ...(left.length && { note: `Undo these DNS changes in Activity too: ${left.join(', ')}.` }) };
+};

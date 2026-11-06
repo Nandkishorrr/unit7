@@ -28,7 +28,7 @@ export interface Provider { id: string; name: string; group: string; what: strin
 
 const cfToken = 'https://dash.cloudflare.com/profile/api-tokens?' + new URLSearchParams({
   name: 'Unit7',
-  permissionGroupKeys: JSON.stringify([{ key: 'zone', type: 'edit' }, { key: 'dns', type: 'edit' }, { key: 'zone_settings', type: 'edit' }, { key: 'cache_purge', type: 'edit' }, { key: 'page', type: 'edit' }, { key: 'account_settings', type: 'read' }]),
+  permissionGroupKeys: JSON.stringify([{ key: 'zone', type: 'edit' }, { key: 'dns', type: 'edit' }, { key: 'zone_settings', type: 'edit' }, { key: 'cache_purge', type: 'edit' }, { key: 'page', type: 'edit' }, { key: 'account_settings', type: 'read' }, { key: 'email_routing_address', type: 'edit' }, { key: 'email_routing_rule', type: 'edit' }]),
   accountId: '*', zoneId: 'all',
 });
 

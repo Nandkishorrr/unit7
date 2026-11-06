@@ -45,7 +45,7 @@ function world(host: string | undefined, records: Public = {}, zone = 'example.c
 // --- Cloudflare: DNS records, and Email Routing beside them -------------------------------------------------------------
 const CF_MX = [{ type: 'MX', name: 'example.com', content: 'route1.mx.cloudflare.net', priority: 13, ttl: 1 }, { type: 'MX', name: 'example.com', content: 'route2.mx.cloudflare.net', priority: 86, ttl: 1 }, { type: 'TXT', name: 'example.com', content: 'v=spf1 include:_spf.mx.cloudflare.net ~all', ttl: 1 }];
 async function cloudflareFake(recs: any[] = []) {
-  const st = { recs, n: 1, enabled: false, addresses: [] as any[], rules: [] as any[], refused: undefined as RegExp | undefined };
+  const st = { recs, n: 1, enabled: false, addresses: [] as any[], rules: [] as any[], refused: undefined as RegExp | undefined, mxWhenOn: undefined as string[] | undefined };
   const ok = (result: unknown) => ({ success: true, errors: [], messages: [], result });
   const api = await fakeApi(({ method, path, body }) => {
     const u = new URL(path, 'http://x'), p = u.pathname;
@@ -58,7 +58,7 @@ async function cloudflareFake(recs: any[] = []) {
     if (rec && method === 'DELETE') { st.recs.splice(st.recs.findIndex((r) => r.id === rec[1]), 1); return ok({ id: rec[1] }); }
     if (p === '/zones/z1/email/routing') return ok({ id: 'z1', enabled: st.enabled, status: st.enabled ? 'ready' : 'unconfigured', name: 'example.com' });
     if (p === '/zones/z1/email/routing/dns' && method === 'GET') return ok(CF_MX);
-    if (p === '/zones/z1/email/routing/dns' && method === 'POST') { st.enabled = true; return ok({ id: 'z1', enabled: true, status: 'ready' }); }
+    if (p === '/zones/z1/email/routing/dns' && method === 'POST') { st.enabled = true; st.mxWhenOn = st.recs.filter((r) => r.type === 'MX').map((r) => r.content); return ok({ id: 'z1', enabled: true, status: 'ready' }); }
     if (p === '/zones/z1/email/routing/dns' && method === 'DELETE') { st.enabled = false; st.recs = st.recs.filter((r) => !/mx\.cloudflare\.net$/.test(r.content)); return ok({ id: 'z1', enabled: false }); }
     if (p === '/accounts/cfacc/email/routing/addresses' && method === 'GET') return ok(st.addresses);
     if (p === '/accounts/cfacc/email/routing/addresses' && method === 'POST') { const a = { id: `a${st.n++}`, email: JSON.parse(body).email, verified: null }; st.addresses.push(a); return ok(a); }
@@ -638,6 +638,169 @@ test('email.connect_app into hosted Supabase: through supabase.auth, with the se
     ok(await o.h('change.undo', { changeId: r.changeId }));
     assert.equal(s.st.auth.smtp_host, '', 'Undo puts the old settings back');
   } finally { s.close(); }
+});
+
+// --- email.forward -----------------------------------------------------------------------------------------------------------
+const HELLO = { from: 'hello@example.com', to: 'ada@inbox.example' };
+async function forwardable(recs: any[] = []) {
+  const cf = await cloudflareFake(recs), app = testApp(), o = await testOrg(app);
+  account(app, o.orgId, 'cloudflare', 'cf-demo-token');
+  world('cloudflare');
+  const clicked = () => { cf.st.addresses[0].verified = '2026-11-06T10:00:00Z'; };
+  return { app, o, cf, clicked, close: cf.close };
+}
+const mxOf = (f: { cf: { st: { recs: any[] } } }) => zoneOf(f.cf.st.recs, 'example.com', 'MX').map((r) => `${r.priority} ${r.content}`).sort();
+
+test('email.forward: the inbox proves itself first, then the rule, the records and the switch, and Undo takes it all back', async () => {
+  const f = await forwardable();
+  try {
+    const dry = (await f.o.h('email.forward', HELLO, { dryRun: true }) as any).plan;
+    assert.equal(dry.inbox, 'Cloudflare emails it a link to click');
+    assert.deepEqual(dry.willWrite.map((p: any) => p.record), ['MX example.com → 13 route1.mx.cloudflare.net', 'MX example.com → 86 route2.mx.cloudflare.net', 'TXT example.com → v=spf1 include:_spf.mx.cloudflare.net ~all']);
+    assert.equal(f.cf.st.addresses.length, 0, 'a dry run sends no email');
+
+    const first = ok(await f.o.h('email.forward', HELLO));
+    assert.equal(first.forwarded, false);
+    assert.equal(first.waiting, 'inbox');
+    assert.match(first.note, /sent a link to ada@inbox\.example/);
+    assert.match(first.note, /Nothing about example\.com’s mail has changed/);
+    assert.deepEqual([f.cf.st.addresses.map((a) => a.email), f.cf.st.rules.length, f.cf.st.recs.length, f.cf.st.enabled], [['ada@inbox.example'], 0, 0, false]);
+
+    assert.match(ok(await f.o.h('email.forward', HELLO)).note, /already sent a link/);
+    assert.equal(f.cf.st.addresses.length, 1, 'one email is enough');
+
+    f.clicked();
+    const done = ok(await f.o.h('email.forward', HELLO));
+    assert.equal(done.forwarded, true);
+    assert.deepEqual(f.cf.st.rules.map((r) => [r.matchers[0], r.actions[0], r.enabled]), [[{ type: 'literal', field: 'to', value: 'hello@example.com' }, { type: 'forward', value: ['ada@inbox.example'] }, true]]);
+    assert.deepEqual(mxOf(f), ['13 route1.mx.cloudflare.net', '86 route2.mx.cloudflare.net']);
+    assert.deepEqual(f.cf.st.mxWhenOn, ['route1.mx.cloudflare.net', 'route2.mx.cloudflare.net'], 'the records were in, through dns.set, before the switch');
+    assert.equal(done.changes.length, 3);
+
+    const again = ok(await f.o.h('email.forward', HELLO));
+    assert.equal(again.forwarded, true);
+    assert.equal(again.changeId, undefined, 'nothing to change, nothing to undo');
+    assert.equal(f.cf.st.rules.length, 1);
+
+    ok(await f.o.h('change.undo', { changeId: done.changeId }));
+    assert.deepEqual([f.cf.st.rules.length, f.cf.st.enabled, f.cf.st.recs.length], [0, false, 0]);
+  } finally { f.close(); }
+});
+
+test('email.forward with mail already going somewhere: nothing changes without a yes, the old host’s SPF stays, and Undo brings it all back', async () => {
+  const f = await forwardable([{ id: 'mx1', type: 'MX', name: 'example.com', content: 'mx1.mailhost.example', priority: 10, ttl: 1 }, { id: 'mx2', type: 'MX', name: 'example.com', content: 'mx2.mailhost.example', priority: 20, ttl: 1 }, { id: 'spf', type: 'TXT', name: 'example.com', content: 'v=spf1 include:_spf.mailhost.example -all', ttl: 1 }]);
+  try {
+    const no = failed(await f.o.h('email.forward', HELLO));
+    assert.equal(no.code, 'confirm_email');
+    assert.match(no.message, /goes to mx1\.mailhost\.example, mx2\.mailhost\.example now/);
+    assert.match(no.message, /every address/);
+    assert.equal(f.cf.st.addresses.length, 0, 'not even the email to the inbox');
+    assert.deepEqual(mxOf(f), ['10 mx1.mailhost.example', '20 mx2.mailhost.example']);
+    const dry = (await f.o.h('email.forward', { ...HELLO, replaceMail: true }, { dryRun: true }) as any).plan;
+    assert.equal(dry.stopsThere, true);
+    assert.deepEqual(dry.willWrite[0].replaces, ['MX example.com → 10 mx1.mailhost.example', 'MX example.com → 20 mx2.mailhost.example'], 'the dry run shows what goes');
+
+    ok(await f.o.h('email.forward', { ...HELLO, replaceMail: true }));
+    f.clicked();
+    const done = ok(await f.o.h('email.forward', { ...HELLO, replaceMail: true }));
+    assert.equal(done.forwarded, true);
+    assert.match(done.note, /no longer goes to mx1\.mailhost\.example/);
+    assert.deepEqual(mxOf(f), ['13 route1.mx.cloudflare.net', '86 route2.mx.cloudflare.net']);
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'example.com', 'TXT').map((r) => r.content), ['v=spf1 include:_spf.mailhost.example include:_spf.mx.cloudflare.net -all'], 'one SPF, the old sender in it');
+
+    ok(await f.o.h('change.undo', { changeId: done.changeId }));
+    assert.deepEqual(mxOf(f), ['10 mx1.mailhost.example', '20 mx2.mailhost.example']);
+    assert.deepEqual(zoneOf(f.cf.st.recs, 'example.com', 'TXT').map((r) => r.content), ['v=spf1 include:_spf.mailhost.example -all']);
+    assert.equal(f.cf.st.enabled, false);
+  } finally { f.close(); }
+});
+
+test('email.forward by an AI: a person says yes once, MX goes through dns.set’s own approval, and existing mail needs the words too', async () => {
+  const f = await forwardable();
+  try {
+    run(f.app.db, 'UPDATE orgs SET autonomy = 4 WHERE id = ?', f.o.orgId);
+    const asked = await f.o.a('email.forward', HELLO);
+    assert.equal(asked.status, 'approval_required', 'even at full autopilot');
+    assert.match((asked as any).why, /Where a domain’s email goes is a person’s call.*ada@inbox\.example.*password resets/);
+    assert.equal(f.cf.st.addresses.length, 0);
+    const first = await decideApproval(f.app, f.o.orgId, f.o.human, (asked as any).approvalId, true);
+    assert.equal(first.status, 'ok', JSON.stringify(first));
+    assert.equal((first as any).output.waiting, 'inbox');
+
+    f.clicked();
+    const second = ok(await f.o.a('email.forward', HELLO));
+    assert.equal(second.forwarded, false);
+    assert.equal(second.waiting.length, 3);
+    assert.match(second.note, /run this again and forwarding turns on/);
+    assert.deepEqual([f.cf.st.recs.length, f.cf.st.enabled], [0, false], 'no MX without dns.set’s approval');
+    const asks = all<{ id: string; tool: string }>(f.app.db, `SELECT id, tool FROM approvals WHERE status = 'pending'`);
+    assert.deepEqual(asks.map((a) => a.tool), ['dns.set', 'dns.set', 'dns.set']);
+
+    assert.equal(ok(await f.o.a('email.forward', HELLO)).waiting.length, 3);
+    assert.equal(all(f.app.db, `SELECT 1 FROM approvals WHERE status = 'pending'`).length, 3, 'asking again files nothing new');
+    for (const a of asks) assert.equal((await decideApproval(f.app, f.o.orgId, f.o.human, a.id, true)).status, 'ok');
+
+    const third = ok(await f.o.a('email.forward', HELLO));
+    assert.equal(third.forwarded, true);
+    assert.equal(f.cf.st.enabled, true);
+    assert.deepEqual(mxOf(f), ['13 route1.mx.cloudflare.net', '86 route2.mx.cloudflare.net']);
+
+    // a different inbox is a different forward: a new yes, and the old one isn't replaced unasked
+    const other = await f.o.a('email.forward', { ...HELLO, to: 'someone@else.example' });
+    assert.equal(other.status, 'approval_required');
+    const ruled = await decideApproval(f.app, f.o.orgId, f.o.human, (other as any).approvalId, true);
+    assert.equal(ruled.status, 'error');
+    assert.match((ruled as any).error.message, /goes to ada@inbox\.example now/);
+    assert.deepEqual(f.cf.st.rules[0].actions, [{ type: 'forward', value: ['ada@inbox.example'] }]);
+  } finally { f.close(); }
+});
+
+test('email.forward moves an address to a new inbox with a yes, and leaves the domain on when others still forward', async () => {
+  const f = await forwardable();
+  try {
+    ok(await f.o.h('email.forward', HELLO));
+    f.clicked();
+    const first = ok(await f.o.h('email.forward', HELLO));
+    f.cf.st.addresses.push({ id: 'a9', email: 'new@inbox.example', verified: '2026-11-06T10:00:00Z' }, { id: 'a8', email: 'sales@inbox.example', verified: '2026-11-06T10:00:00Z' });
+    assert.equal(failed(await f.o.h('email.forward', { ...HELLO, to: 'new@inbox.example' })).code, 'confirm_email');
+    const moved = ok(await f.o.h('email.forward', { ...HELLO, to: 'new@inbox.example', replaceMail: true }));
+    assert.deepEqual(f.cf.st.rules.map((r) => r.actions[0].value[0]), ['new@inbox.example']);
+    ok(await f.o.h('change.undo', { changeId: moved.changeId }));
+    assert.deepEqual(f.cf.st.rules.map((r) => r.actions[0].value[0]), ['ada@inbox.example'], 'Undo puts the old inbox back');
+
+    ok(await f.o.h('email.forward', { from: 'sales@example.com', to: 'sales@inbox.example' }));
+    const off = ok(await f.o.h('change.undo', { changeId: first.changeId }));
+    assert.match(off.note, /Other addresses still forward/);
+    assert.equal(f.cf.st.enabled, true);
+    assert.deepEqual(f.cf.st.rules.map((r) => r.matchers[0].value), ['sales@example.com']);
+  } finally { f.close(); }
+});
+
+test('email.forward says what to do where it can’t: another DNS host, no account, an old key, odd addresses', async () => {
+  const app = testApp(), o = await testOrg(app);
+  world('hostinger', { 'MX example.com': ['5 mx1.hostinger.com'] });
+  const r = ok(await o.h('email.forward', HELLO));
+  assert.equal(r.forwarded, false);
+  assert.equal(r.at, 'Hostinger');
+  assert.match(r.steps[0], /goes to Hostinger Email now: add a forward from hello@example\.com to ada@inbox\.example there/);
+  assert.match(r.steps[1], /domain\.move_dns/);
+  world('namecheap');
+  assert.match(ok(await o.h('email.forward', HELLO)).steps[0], /Look for email forwarding/);
+  world('cloudflare');
+  assert.equal(failed(await o.h('email.forward', HELLO)).code, 'no_account');
+  assert.match(failed(await o.h('email.forward', { from: 'hello@example.com', to: 'me@example.com' })).message, /another domain/);
+
+  const f = await forwardable();
+  try {
+    f.cf.st.refused = /email\/routing/;
+    const e = failed(await f.o.h('email.forward', HELLO));
+    assert.equal(e.code, 'cloudflare_key');
+    assert.match(e.message, /Email Routing Addresses: Edit/);
+    assert.equal(all<{ status: string }>(f.app.db, `SELECT status FROM accounts WHERE provider = 'cloudflare'`)[0]!.status, 'verified', 'the key still does everything else');
+    f.cf.st.refused = undefined;
+    assert.match(failed(await f.o.h('email.forward', { from: 'hello@mail.example.com', to: 'me@inbox.example' })).message, /on example\.com itself/);
+  } finally { f.close(); }
+  assert.match(decodeURIComponent(CATALOG.find((p) => p.id === 'cloudflare')!.method.kind === 'key' ? (CATALOG.find((p) => p.id === 'cloudflare')!.method as { keyUrl: string }).keyUrl : ''), /email_routing_rule/, 'a new key can do this');
 });
 
 test('an AI trying to read the SMTP password gets nowhere, whichever way it asks', async () => {
