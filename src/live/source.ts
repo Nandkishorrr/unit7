@@ -102,7 +102,7 @@ export async function openSource(ctx: Pick<Ctx, 'app' | 'db' | 'orgId' | 'signal
     const args = ['clone', '--depth', '1', ...(i.branch ? ['--branch', i.branch] : []), '--', cloneUrl(repo), tmp];
     await exec(sysBin('git'), args, { timeout: 180_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(token && githubBase().startsWith('https://') ? githubAuthEnv(token) : {}) } })
       .catch((e: Error) => { throw new Unit7Error('git_unreachable', `Unit7 couldn’t read ${repo.owner}/${repo.name}. Check the repo’s name and that your GitHub connection can reach it.${token ? '' : ' GitHub isn’t connected.'} ${e.message.replaceAll(token ?? '\u0000', '***').slice(0, 160)}`, 502); });
-    // the branch it really is: a repo's default isn't always main
-    return open(tmp, name ?? repo.name, done, { repo, branch: i.branch ?? (await exec(sysBin('git'), ['-C', tmp, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim() });
+    // the branch it really is: a repo's default isn't always main. An empty repo has a branch name and no commit, so this still answers
+    return open(tmp, name ?? repo.name, done, { repo, branch: i.branch ?? (await exec(sysBin('git'), ['-C', tmp, 'symbolic-ref', '--short', 'HEAD'])).stdout.trim() });
   } catch (e) { done(); throw e; }
 }

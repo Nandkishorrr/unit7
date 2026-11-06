@@ -62,7 +62,7 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 - A build or start command can be changed on Coolify, your own server, Vercel, Render and DigitalOcean. Elsewhere the host works out its own build. Sizes aren’t offered for a plain website.
 - A site with no domain on Coolify gets a free test address on sslip.io. Its certificate comes from Let’s Encrypt, which can refuse when too many people ask at once, so it isn’t for real visitors. Add your domain for that.
 - A push goes live by itself on Coolify only when GitHub can reach it: through Coolify’s GitHub App, or a webhook Unit7 adds when Coolify has a public address. If it can’t, the page says so.
-- Netlify, Cloudflare Pages and GitHub Pages take finished files only. One-click Hostinger accounts can’t upload, so add a token. Unit7’s GitHub App can’t create repos or turn on Pages. Hostinger settings change all together. Cloudflare uses a token’s first account.
+- Netlify, Cloudflare Pages and GitHub Pages take finished files only. One-click Hostinger accounts can’t upload, so add a token. A GitHub App connected earlier needs its rights changed by hand: Unit7 gives the links. Hostinger settings change all together. Cloudflare uses a token’s first account.
 
 - Fly needs a ready image or a copy of an app. Cloud Run needs a gcloud sign-in and uses us-central1. Render, Railway, DigitalOcean and Amplify builds need their GitHub app connected once in a browser.
 

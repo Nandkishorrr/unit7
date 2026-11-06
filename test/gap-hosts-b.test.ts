@@ -846,3 +846,10 @@ test('a pasted .env file reads the same in the page as on the server', async () 
   assert.deepEqual(parseDotenv(text), server(text));
   assert.deepEqual(Object.keys(parseDotenv(text)), ['API_URL', 'NAME', 'QUIET', 'plain']);
 });
+
+test('an empty repo says so, instead of a git error', async () => {
+  const w = await world({});
+  try {
+    refused(await w.org.a('live.options', { repo: 'demo/shop' }), /no files to put live/);
+  } finally { w.close(); }
+});

@@ -77,7 +77,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 57. Email: email_check says what’s wrong. email_setup sends from a domain; run it again after DNS approvals. email_connect_app puts it in an app. email_forward sends hello@ to an inbox. Never ask for an SMTP password in chat: use ui_form. After a domain change, auth_urls fixes login and says what to paste at Google or GitHub.
 58. Compose from a repo waits for a person. Once approved, run live_put with update true.
 59. part_query shows an AI plain columns, counts and simple sums. Anything computed is hidden. MongoDB takes plain data.
-60. A stored key in a setting asks a person first, and link_create with Neon asks too. With Supabase it wires the public keys: a service key is a person’s to add, on the Wiring page or in the Vault.`;
+60. A stored key in a setting asks a person first, and link_create with Neon asks too. With Supabase it wires the public keys: a service key is a person’s to add, on the Wiring page or in the Vault.
+61. When GitHub’s answer lists steps to give Unit7’s App more rights, those steps are the person’s: tell them as written.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).
