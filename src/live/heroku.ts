@@ -62,6 +62,12 @@ async function copy(ctx: Ctx, acc: string, app: string, from: string) {
 
 export const herokuHost: Host = addHost({
   id: 'heroku', name: 'Heroku', builds: true, noCode: true, envNow: true,
+  sizes: [
+    { id: 'basic', label: 'Basic: always on', price: '$7 a month' },
+    { id: 'eco', label: 'Eco: sleeps with no visitors, shares its hours across your apps', price: '$5 a month' },
+    { id: 'standard-1x', label: 'Standard: 512 MB', price: '$25 a month' },
+    { id: 'standard-2x', label: 'Standard: 1 GB', price: '$50 a month' },
+  ],
   costs: 'Heroku has no free apps: Eco is $5 a month and Basic is $7.',
   places: (ctx) => accountsOf(ctx, 'heroku', 'heroku'),
   fit(site) {
@@ -89,8 +95,9 @@ export const herokuHost: Host = addHost({
     const deployment = p.site.copyOf ? (await copy(ctx, acc, p.name, p.site.copyOf), undefined) : await build(ctx, acc, p.name, p);
     // a new app can come up with its web process at zero
     const form = await call(ctx, acc, `/apps/${p.name}/formation`);
-    if (Array.isArray(form.data) && form.data.some((f: { type: string; quantity: number }) => f.type === 'web' && !f.quantity)) await call(ctx, acc, `/apps/${p.name}/formation`, { method: 'PATCH', body: { updates: [{ type: 'web', quantity: 1 }] } });
-    return { url: String(app.data.web_url ?? '').replace(/\/$/, ''), project: p.name, deployment, point: { heroku: { accountId: acc, app: p.name } }, notes: p.site.copyOf ? [`It runs what ${p.site.copyOf} runs, without its settings or add-ons. Give it test keys with live.env.`] : [] };
+    const off = Array.isArray(form.data) && form.data.some((f: { type: string; quantity: number }) => f.type === 'web' && !f.quantity);
+    const scaled = off || p.size ? await call(ctx, acc, `/apps/${p.name}/formation`, { method: 'PATCH', body: { updates: [{ type: 'web', quantity: 1, ...(p.size && { size: p.size.id }) }] } }) : undefined;
+    return { url: String(app.data.web_url ?? '').replace(/\/$/, ''), project: p.name, deployment, point: { heroku: { accountId: acc, app: p.name } }, notes: [...(p.site.copyOf ? [`It runs what ${p.site.copyOf} runs, without its settings or add-ons. Give it test keys with live.env.`] : []), ...(p.size && scaled && scaled.status >= 400 ? [`It’s live, but Heroku wouldn’t set the size to ${p.size.id}: ${String(scaled.data?.message ?? scaled.status)}.`] : [])] };
   },
   async logs(ctx, r) {
     const acc = r.place.accountId!, app = parts(r.project)[0]!;

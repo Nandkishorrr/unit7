@@ -70,7 +70,7 @@ async function publish(ctx: Ctx, p: Put, token: string, files: SiteFile[]) {
 }
 
 export const githubPagesHost: Host = addHost({
-  id: 'github-pages', name: 'GitHub Pages', builds: false,
+  id: 'github-pages', name: 'GitHub Pages', builds: false, price: 'Free on a public repo. A private repo needs a paid GitHub plan.',
   places: (ctx) => accountsOf(ctx, 'github-pages', 'github'),
   fit: (site) => fitFinished(site, 'GitHub Pages', 'Free, from a public GitHub repo. It takes the finished files as they are.'),
   async put(ctx, p) {

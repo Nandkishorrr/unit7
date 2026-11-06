@@ -35,7 +35,7 @@ function service(p: Put, ownerId: string, repo: string, branch: string) {
   const d = p.site.detection, build = [INSTALL[d.packageManager ?? ''], d.buildCommand].filter(Boolean).join(' && ');
   const base = { name: p.name, ownerId, repo, branch, autoDeployTrigger: 'commit', envVars: p.env.map(({ key, value }) => ({ key, value })) };
   if (d.builder === 'static') return { ...base, type: 'static_site', serviceDetails: { ...(build && { buildCommand: build }), publishPath: d.staticDir } };
-  return { ...base, type: 'web_service', serviceDetails: { plan: 'free', ...(d.dockerfile
+  return { ...base, type: 'web_service', serviceDetails: { plan: p.size?.id ?? 'free', ...(d.dockerfile
     ? { runtime: 'docker', envSpecificDetails: { dockerfilePath: `./${d.dockerfile}` } }
     : { runtime: RUNTIME[d.runtime!], envSpecificDetails: { buildCommand: build || 'true', startCommand: d.startCommand } }) } };
 }
@@ -48,7 +48,13 @@ async function lines(ctx: Ctx, acc: string, id: string) {
 }
 
 export const renderHost: Host = addHost({
-  id: 'render', name: 'Render', builds: true,
+  id: 'render', name: 'Render', builds: true, pushes: true, tunes: true,
+  price: 'Free to start. A plain website stays free.',
+  sizes: [
+    { id: 'free', label: 'Free: 512 MB, sleeps after 15 minutes with no visitors', price: 'Free' },
+    { id: 'starter', label: '512 MB, always on', price: '$7 a month', paid: true },
+    { id: 'standard', label: '2 GB, always on', price: '$25 a month', paid: true },
+  ],
   places: (ctx) => accountsOf(ctx, 'render', 'render'),
   fit(site) {
     const d = site.detection;

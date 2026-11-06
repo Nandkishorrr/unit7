@@ -819,6 +819,21 @@ test('your own server: a step that waited for a person isn’t done twice, a liv
   } finally { s.close(); }
 });
 
+test('your own server: the room and the build a person picks are what it deploys with', async () => {
+  const s = await onServer();
+  try {
+    const out = ok<any>(await s.org.h('live.put', { uploadId: await s.upload(site(EXPRESS)), to: 'server', name: 'shop', size: '1gb', buildCommand: 'npm run bundle', startCommand: 'node web.js', port: 8081 }));
+    assert.equal(out.host, 'server');
+    const cfg = json<any>(get<{ config: string }>(s.app.db, 'SELECT config FROM services')!.config, {});
+    assert.deepEqual([cfg.memoryMb, cfg.buildCommand, cfg.startCommand, cfg.port], [1024, 'npm run bundle', 'node web.js', 8081]);
+    // no cap and nothing changed: it's left as it was found
+    ok(await s.org.h('live.put', { uploadId: await s.upload(site(EXPRESS)), to: 'server', name: 'blog', size: 'any' }));
+    const plain = json<any>(get<{ config: string }>(s.app.db, `SELECT config FROM services WHERE name = 'blog'`)!.config, {});
+    assert.equal(plain.memoryMb, undefined);
+    assert.equal(plain.buildCommand, undefined);
+  } finally { s.close(); }
+});
+
 test('your own server: a repo stays a repo, a domain is routed to the app, and a server with Coolify is left to Coolify', async () => {
   const s = await onServer(), root = mkdtempSync(join(tmpdir(), 'remotes-')), remote = join(root, 'demo', 'shop.git');
   const point = getTool('domain.point')!, realPoint = point.run, pointed: any[] = [];

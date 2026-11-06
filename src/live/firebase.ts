@@ -26,7 +26,7 @@ async function upload(ctx: Ctx, acc: string, url: string, want: string[], byHash
 }
 
 export const firebaseHost: Host = addHost({
-  id: 'firebase', name: 'Firebase Hosting', builds: false,
+  id: 'firebase', name: 'Firebase Hosting', builds: false, price: 'Free up to the limits of its Spark plan.',
   places: (ctx) => [...accountsOf(ctx, 'firebase', 'firebase'), ...accountsOf(ctx, 'firebase', 'gcp')],
   fit: (site) => (finished(site)
     ? { ok: true, why: 'It serves finished files fast, with HTTPS and a free address.' }

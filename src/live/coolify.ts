@@ -8,7 +8,8 @@ import { serverRow } from '../tools/servers.ts';
 import { byName, envResources, hostsOf } from '../connectors/coolify.ts';
 import { createRepo, githubToken, pushFolder, repoExists, type Repo } from '../connectors/github.ts';
 import type { Detection } from '../connectors/detect.ts';
-import { addHost, type Host, type Put } from './hosts.ts';
+import { classify } from '../netguard.ts';
+import { addHost, OWN_PRICE, OWN_SIZES, type Host, type Put } from './hosts.ts';
 
 export async function step<T = any>(ctx: Ctx, tool: string, input: Record<string, unknown>, next = 'Run this again once it’s approved.'): Promise<T> {
   const r = await execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: 'a step of putting a site live', signal: ctx.signal, conversationId: ctx.conversationId, underApproval: ctx.approvalId });
@@ -41,25 +42,32 @@ const buildOf = (p: Put) => {
   return { buildPack: 'nixpacks', port: d.port };
 };
 
+// a site with no domain yet still gets an address: sslip.io answers for any server's own address, so nothing needs setting up
+const freeAddress = (name: string, host: string) => (classify(host) === 'public' && !host.includes(':') ? `${name}.${host.replace(/\./g, '-')}.sslip.io` : undefined);
+
 export const coolifyHost: Host = addHost({
-  id: 'coolify', name: 'Coolify on your server', builds: true,
+  id: 'coolify', name: 'Coolify on your server', builds: true, price: OWN_PRICE, sizes: OWN_SIZES, pushes: true, tunes: true,
   places: (ctx) => all<{ id: string; name: string; server_id: string; srv: string }>(ctx.db, `SELECT a.id, a.name, s.id server_id, s.name srv FROM accounts a JOIN servers s ON s.org_id = a.org_id AND a.provider = 'coolify' AND a.status != 'failing' AND json_extract(a.meta, '$.serverId') = s.id WHERE a.org_id = ?`, ctx.orgId)
     .map((a) => ({ host: 'coolify', accountId: a.id, serverId: a.server_id, label: `Coolify on ${a.srv}` })),
-  fit: (site) => ({ ok: true, best: !!site.detection.dockerfile || site.detection.builder === 'compose' || !!site.detection.needs.length, why: 'It runs on your own server, so it costs nothing extra and any app works.' }),
+  fit: (site) => ({ ok: true, best: !!site.detection.dockerfile || site.detection.builder === 'compose' || !!site.detection.needs.length, why: 'It runs on your own server, and any app works.' }),
   async put(ctx, p) {
-    const serverId = p.place.serverId!;
+    const serverId = p.place.serverId!, row = serverRow(ctx, serverId);
     const { repo, branch } = await repoFor(ctx, p);
     ctx.progress('Creating the app in Coolify…');
     const pj = await step(ctx, 'coolify.create_project', { serverId, name: p.name, environment: 'production' });
     // a compose app waits for a person each time it's asked for, so one that's there is only looked up
-    const had = runsCompose(p.site.detection) ? byName((await envResources(need(ctx, serverRow(ctx, serverId)).api, pj.project, 'production')).application, p.name) : undefined;
-    const app = had ? { uuid: had.uuid as string, reused: true, domains: hostsOf(had.fqdn) } : await step(ctx, 'coolify.create_app', { serverId, project: pj.project, environment: 'production', name: p.name, repo: `${repo.owner}/${repo.name}`, branch, ...buildOf(p), ...(p.domain && { domains: [p.domain] }), deploy: !p.env.length, reuse: true }, 'Once it’s approved, run this again with update: true.');
+    const had = runsCompose(p.site.detection) ? byName((await envResources(need(ctx, row).api, pj.project, 'production')).application, p.name) : undefined;
+    const address = p.domain ?? freeAddress(p.name, row.host), cap = p.size?.memoryMb, hold = !!p.env.length || !!cap; // both are read at the first deploy
+    const app = had ? { uuid: had.uuid as string, reused: true, domains: hostsOf(had.fqdn) } : await step(ctx, 'coolify.create_app', { serverId, project: pj.project, environment: 'production', name: p.name, repo: `${repo.owner}/${repo.name}`, branch, ...buildOf(p), ...(p.tuned?.port && { port: p.tuned.port }), ...(p.tuned?.buildCommand && { buildCommand: p.tuned.buildCommand }), ...(p.tuned?.startCommand && { startCommand: p.tuned.startCommand }), ...(address && { domains: [address] }), deploy: !hold, reuse: true }, 'Once it’s approved, run this again with update: true.');
     if (app.reused && !p.update) throw new Unit7Error('already_exists', `Coolify already has an app called ${p.name} in that project. Choose another name, or say you want to update it.`, 409);
     for (const e of p.env) await step(ctx, 'coolify.envs', { serverId, uuid: app.uuid, kind: 'application', op: 'set', key: e.key, value: e.value });
-    if (p.env.length) await step(ctx, 'coolify.control', { serverId, uuid: app.uuid, kind: 'application', action: 'deploy' });
-    else if (p.update) await step(ctx, 'coolify.control', { serverId, uuid: app.uuid, kind: 'application', action: 'deploy' });
+    if (cap) await step(ctx, 'coolify.memory_cap', { serverId, uuid: app.uuid, memoryMb: cap });
+    if (hold || p.update) await step(ctx, 'coolify.control', { serverId, uuid: app.uuid, kind: 'application', action: 'deploy' });
+    // a push becomes the next release. It stays a note if it can't: the site itself is already live
+    const pushes = await step<{ hears?: string; next?: string }>(ctx, 'coolify.auto_deploy', { serverId, uuid: app.uuid, on: true }).catch((e: Error) => ({ next: e.message, hears: undefined }));
     const url = app.domains?.[0] ? `https://${String(app.domains[0]).replace(/^https?:\/\//, '')}` : '';
-    return { url, project: app.uuid, notes: [`The code is in the private repo ${repo.owner}/${repo.name}.`, ...(url ? [] : ['Coolify gave it no address yet. Add a domain to reach it.'])], autoDeploy: false };
+    const free = !!url && !p.domain && !app.reused;
+    return { url, project: app.uuid, notes: [...(p.site.repo ? [] : [`The code is in the private repo ${repo.owner}/${repo.name}.`]), ...(free ? ['This is a free test address, and its certificate can take a few minutes. Add your domain for one that’s yours.'] : []), ...(url ? [] : ['Coolify gave it no address yet. Add a domain to reach it.']), ...(pushes.next ? [`A push won’t go live by itself yet: ${pushes.next}`] : [])], autoDeploy: !!pushes.hears };
   },
   logs: async (ctx, r) => (await step<{ lines?: string[] }>(ctx, 'coolify.logs', { serverId: r.place.serverId, uuid: r.project, kind: 'application', lines: 200 })).lines ?? [],
 });

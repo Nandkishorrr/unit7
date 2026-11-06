@@ -8,7 +8,11 @@ import type { Site, SiteFile } from './source.ts';
 
 export interface Place { host: string; accountId?: string; serverId?: string; label: string }
 export interface Fit { ok: boolean; why: string; best?: boolean }
-export interface Put { name: string; site: Site; place: Place; env: { key: string; value: string; secret: boolean }[]; domain?: string; update: boolean; team?: string; port?: number }
+// a size a person can pick. paid: picking it costs money, so an AI can't. Prices come from each host's price page, 2026-11
+export interface Size { id: string; label: string; price: string; paid?: boolean; memoryMb?: number }
+// what a person changed from what Unit7 detected
+export interface Tuned { buildCommand?: string; startCommand?: string; staticDir?: string; port?: number }
+export interface Put { name: string; site: Site; place: Place; env: { key: string; value: string; secret: boolean }[]; domain?: string; update: boolean; team?: string; port?: number; size?: Size; tuned?: Tuned }
 // point: what domain.point takes for this app, in words what to do instead, or false when the domain is already the site itself
 export interface Placed { url: string; project: string; deployment?: string; dashboard?: string; notes?: string[]; autoDeploy?: boolean; point?: Record<string, unknown> | string | false }
 export interface Ref { place: Place; project: string; deployment?: string; team?: string }
@@ -20,6 +24,14 @@ export interface Host {
   noCode?: boolean;
   // going live here can cost money, in words: an AI never starts these, and a person names them
   costs?: string;
+  // what it costs, in words, when `costs` doesn't already say. Shown before anyone presses Go
+  price?: string;
+  // what a person can choose here for an app that runs, cheapest first. The first is what's used when nobody picks
+  sizes?: Size[];
+  // from a repo, a push goes live by itself
+  pushes?: boolean;
+  // it takes a build command, start command and output folder
+  tunes?: boolean;
   // a new setting reaches the running app by itself, with no build
   envNow?: boolean;
   places(ctx: Pick<Ctx, 'db' | 'orgId'>): Place[];
@@ -39,6 +51,15 @@ const hosts = new Map<string, Host>();
 export const addHost = (h: Host) => { hosts.set(h.id, h); return h; };
 export const allHosts = () => [...hosts.values()];
 export const hostOf = (id: string) => hosts.get(id);
+
+export const OWN_PRICE = 'Nothing extra: you already pay for this server.';
+export const OWN_SIZES: Size[] = [
+  { id: 'any', label: 'No cap: it uses what the server has free', price: OWN_PRICE },
+  { id: '512mb', label: 'Up to 512 MB of memory', price: OWN_PRICE, memoryMb: 512 },
+  { id: '1gb', label: 'Up to 1 GB of memory', price: OWN_PRICE, memoryMb: 1024 },
+  { id: '2gb', label: 'Up to 2 GB of memory', price: OWN_PRICE, memoryMb: 2048 },
+  { id: '4gb', label: 'Up to 4 GB of memory', price: OWN_PRICE, memoryMb: 4096 },
+];
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // finished files read no settings: what they need was fixed when they were built

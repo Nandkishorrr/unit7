@@ -134,7 +134,7 @@ async function deployRepo(ctx: Ctx, acc: string, w: Website, p: Put) {
 const needsComposer = (s: Site) => isPhp(s) && s.files.some((f) => f.path === 'composer.json') && !s.files.some((f) => f.path === 'vendor/autoload.php');
 
 export const hostingerHost: Host = addHost({
-  id: 'hostinger', name: 'Hostinger web hosting', builds: true,
+  id: 'hostinger', name: 'Hostinger web hosting', builds: true, price: 'Included in your Hostinger plan.',
   places: (ctx) => accountsOf(ctx, 'hostinger', 'hostinger'),
   fit(site) {
     const d = site.detection, which = ' Say which of your websites it goes on (its domain).';

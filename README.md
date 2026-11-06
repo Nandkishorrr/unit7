@@ -79,7 +79,7 @@ safety gate.
 
 | New | What it does |
 |---|---|
-| **Put this live** | Drop a folder or a ZIP, pick a GitHub repo, or run `unit7 live`. It picks the best host you've connected, from 16: Vercel, Netlify, Cloudflare Pages, GitHub Pages, Hostinger, Coolify, your own server, Render, Railway, Fly.io, DigitalOcean, Firebase, Heroku, Cloud Run, Amplify and Azure Static Web Apps. |
+| **Put this live** | Pick a GitHub repo, drop a folder or a ZIP, or run `unit7 live`. Add your settings, choose how much room it gets, and see the price before you go. It picks the best host you've connected, from 16: Vercel, Netlify, Cloudflare Pages, GitHub Pages, Hostinger, Coolify, your own server, Render, Railway, Fly.io, DigitalOcean, Firebase, Heroku, Cloud Run, Amplify and Azure Static Web Apps. |
 | **Your real databases** | Tables, safe queries, import and export on any Postgres, MySQL, MariaDB, Redis or MongoDB it finds on your server, Supabase included. Personal columns stay hidden from an AI. |
 | **Supabase and Neon** | Projects, SQL, functions, secrets, auth, storage and logs, hosted or self-hosted. |
 | **Domains and DNS** | Records, redirects, wildcards and one-step domains on Coolify apps. Mail records wait for a person. |

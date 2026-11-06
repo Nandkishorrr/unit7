@@ -55,8 +55,9 @@ function coolifyOn(app: App, orgId: string) {
     if (r === 'GET /projects/proj0001/production') return [200, { applications: st.apps, postgresqls: st.databases, services: st.services }];
     if (r === 'GET /servers') return [200, [{ uuid: 'srvuuid01', name: 'localhost', ip: '203.0.113.9' }]];
     if (r === 'GET /github-apps') return [200, []];
-    if (/^POST \/applications\/(public|dockerfile)$/.test(r)) { const a = { uuid: `app${st.apps.length + 1}x`, name: body.name, build_pack: body.build_pack }; st.apps.push(a); return [201, { uuid: a.uuid }]; }
+    if (/^POST \/applications\/(public|dockerfile)$/.test(r)) { const a = { uuid: `app${st.apps.length + 1}x`, name: body.name, build_pack: body.build_pack, git_repository: body.git_repository, body }; st.apps.push(a); return [201, { uuid: a.uuid }]; }
     if (/^GET \/applications\/\w+$/.test(r)) { const a = st.apps.find((x) => path.endsWith(x.uuid)); return a ? [200, a] : [404, { message: 'Not found.' }]; }
+    if (/^PATCH \/applications\/\w+$/.test(r)) { const a = st.apps.find((x) => path.endsWith(x.uuid)); Object.assign(a, body); return [200, a]; }
     if (/^(GET|POST|PATCH) \/applications\/\w+\/envs$/.test(r)) { if (method !== 'GET') st.envs.push(body); return [200, st.envs]; }
     if (/^PATCH \/applications\/\w+\/envs\/bulk$/.test(r)) { st.envs.push(...body.data); return [201, []]; }
     if (/^POST \/databases\/\w+$/.test(r)) { st.databases.push({ uuid: 'db2', name: body.name }); return [201, { uuid: 'db2' }]; }
@@ -125,6 +126,35 @@ test('1. a green live.put reaches it, and the waiting step comes back plainly: a
   assert.equal(code(await approve(app, o, again)), 'ok');
   assert.equal(c.calls.filter((x) => x.startsWith('POST /deploy')).length, deploys + 1);
   assert.equal(c.apps.length, 1);
+});
+
+test('Coolify: a free address, the room picked before its first deploy, and a push that becomes the next release', async () => {
+  const { app, o } = await world(), c = coolifyOn(app, o.orgId);
+  repoWith({ 'package.json': JSON.stringify({ scripts: { build: 'tsc', start: 'node server.js' }, dependencies: { express: '5.0.0' } }), 'server.js': 'listen()' });
+  const out = ok<any>(await o.h('live.put', { repo: 'evil/site', to: 'coolify', serverId: SRV, name: 'site', size: '1gb', buildCommand: 'npm run bundle', startCommand: 'node web.js', port: 8081 }));
+  const made = c.apps[0];
+  assert.equal(made.body.domains, 'https://site.203-0-113-9.sslip.io', 'no domain, and it still has an address');
+  assert.equal(out.url, 'https://site.203-0-113-9.sslip.io');
+  assert.match(out.notes.join(' '), /free test address/);
+  assert.deepEqual([made.body.build_command, made.body.start_command, made.body.ports_exposes], ['npm run bundle', 'node web.js', '8081']);
+  assert.equal(made.limits_memory, '1024m');
+  const cap = c.calls.indexOf(`PATCH /applications/${made.uuid}`), deploy = c.calls.findIndex((x) => x.startsWith('POST /deploy'));
+  assert.ok(cap >= 0 && cap < deploy, 'the cap is read at the deploy, so it goes first');
+  assert.equal(made.is_auto_deploy_enabled, true);
+  assert.equal(out.autoDeploy, false, 'it can’t hear a push yet, so it doesn’t say so');
+  assert.match(out.notes.join(' '), /A push won’t go live by itself yet/);
+
+  // Coolify's GitHub App hears pushes by itself, so here a push is the next release
+  made.source_id = 1;
+  const update = ok<any>(await o.h('live.put', { repo: 'evil/site', to: 'coolify', serverId: SRV, name: 'site', update: true }));
+  assert.equal(update.autoDeploy, true);
+
+  // a domain of their own goes first, and an address that isn't public gets nothing made up
+  ok(await o.h('live.put', { repo: 'evil/site', to: 'coolify', serverId: SRV, name: 'blog', domain: 'blog.shop.example' }));
+  assert.equal(c.apps[1].body.domains, 'https://blog.shop.example');
+  run(app.db, `UPDATE servers SET host = '10.0.0.9' WHERE id = ?`, SRV);
+  ok(await o.h('live.put', { repo: 'evil/site', to: 'coolify', serverId: SRV, name: 'shop' }));
+  assert.equal(c.apps[2].body.domains, undefined);
 });
 
 test('1. move.run says the build waits, and the next run goes on from there', async () => {

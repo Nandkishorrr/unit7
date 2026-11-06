@@ -46,7 +46,7 @@ async function sendZip(ctx: Ctx, acc: string, region: string, app: string, branc
 }
 
 export const amplifyHost: Host = addHost({
-  id: 'amplify', name: 'AWS Amplify', builds: true,
+  id: 'amplify', name: 'AWS Amplify', builds: true, pushes: true,
   costs: 'AWS bills what the site uses: storage, visits and any build minutes.',
   places: (ctx) => accountsOf(ctx, 'amplify', 'aws'),
   fit(site) {

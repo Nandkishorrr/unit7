@@ -1,11 +1,12 @@
-// Put this live (/live): the whole way onto the internet with no terminal. Step one, hand Unit7 the site: drop a folder or a
-// ZIP, pick a folder, or pick a GitHub repo. Step two, what it found and where it can go, best first and why. Step three, a name,
-// maybe a domain, and Go. Then the steps as they happen and the live link. It all lives outside the page, so leaving to connect
-// a host, or to look around during a build, loses nothing.
-import { useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
-import { ArrowRight, Check, ExternalLink, Globe, Globe2, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
+// Put this live (/live): the whole way onto the internet with no terminal. Step one, your code: a GitHub repo, a folder or a ZIP.
+// Step two, make it yours: where it goes, best first and why, then its name, settings, room and build. Step three, the price and
+// Go. Then the steps as they happen and the live link. It all lives outside the page, so leaving to connect a host, or to look
+// around during a build, loses nothing.
+import { useEffect, useState, useSyncExternalStore, type ClipboardEvent, type FormEvent, type ReactNode } from 'react';
+import { ArrowRight, Check, ExternalLink, Globe, Globe2, RefreshCw, Rocket, TriangleAlert, X } from 'lucide-react';
 import { onLive, runTool, type ToolResult } from '../../lib/api';
 import { navigate, useQuery } from '../../lib/router';
+import { parseDotenv } from '../../lib/dotenv';
 import { isPublicKey, nextStep } from '../../lib/nextstep';
 import { BrandLogo, providerName } from '../../brand/BrandLogo';
 import { A, Badge, Button, Card, CopyButton, ErrorLine, Field, Input, PageHeader, Skeleton, StatusMark, Tabs, confirmDialog, cx } from '../../ui';
@@ -16,21 +17,23 @@ import { openDomainLaunch } from '../flow/DomainLaunch';
 import { Note, host } from '../make/parts';
 import { SiteDrop } from './drop';
 
-interface Place { to: string; label: string; accountId?: string; serverId?: string; ok: boolean; why: string; recommended: boolean }
+interface Size { id: string; label: string; price: string; paid?: boolean }
+interface Place { to: string; label: string; accountId?: string; serverId?: string; ok: boolean; why: string; recommended: boolean; costs?: string; price?: string; sizes?: Size[]; pushes?: boolean; tunes?: boolean }
 interface Other { to: string; name: string; ok: boolean; why: string }
-interface Site { name: string; stack: string; runtime: string | null; files: number; mb: number; needs: string[]; settings: string[] }
+interface Site { name: string; stack: string; runtime: string | null; files: number; mb: number; needs: string[]; settings: string[]; buildCommand?: string | null; startCommand?: string | null; output?: string | null; port?: number }
 interface Found { site: Site; places: Place[]; notConnected: Other[]; keysFound?: string; publishRefused?: boolean }
 type Source = { name: string } & ({ uploadId: string } | { repo: string; branch?: string });
 interface Put { url: string; name: string; verified: boolean; autoDeploy: boolean; notes: string[]; domain?: { error?: string }; site: Site }
 interface Run { at: number; where: string; input: Record<string, unknown>; lines: string[]; out?: Put; failed?: Exclude<ToolResult, { status: 'ok' }> }
-interface State { source?: Source; found?: Found; looking?: boolean; error?: string; pick?: string; name: string; domain: string; env: Record<string, string>; run?: Run }
+interface Tune { buildCommand?: string; startCommand?: string; output?: string; port?: string }
+interface State { source?: Source; found?: Found; looking?: boolean; error?: string; pick?: string; name: string; domain: string; env: Record<string, string>; size?: string; tune: Tune; run?: Run }
 
 // a reload (signing in to a host can take the whole tab) keeps the site, so nobody drops it twice
 const SAVED = 'unit7-live-site';
 const saved = (): Source | undefined => { try { return JSON.parse(sessionStorage.getItem(SAVED) ?? 'null') ?? undefined; } catch { return undefined; } };
 const keep = (s?: Source) => { try { if (s) sessionStorage.setItem(SAVED, JSON.stringify(s)); else sessionStorage.removeItem(SAVED); } catch { /* blocked storage: it just isn't kept */ } };
 
-const fresh = (source?: Source): State => ({ source, name: source?.name ?? '', domain: '', env: {} });
+const fresh = (source?: Source): State => ({ source, name: source?.name ?? '', domain: '', env: {}, tune: {} });
 let state: State = fresh(saved());
 const subs = new Set<() => void>();
 const patch = (p: Partial<State>) => { state = { ...state, ...p }; subs.forEach((f) => f()); };
@@ -39,6 +42,9 @@ const useLive = () => useSyncExternalStore((f) => { subs.add(f); return () => su
 const choose = (source?: Source, error?: string) => { keep(source); state = { ...fresh(source), error }; subs.forEach((f) => f()); };
 const inputOf = (s: Source) => ('uploadId' in s ? { uploadId: s.uploadId } : { repo: s.repo, branch: s.branch });
 const placeId = (p: Place) => `${p.to}:${p.accountId ?? ''}:${p.serverId ?? ''}`;
+const sizeOf = (p: Place, s: State) => p.sizes?.find((z) => z.id === s.size) ?? p.sizes?.[0];
+const tuneOf = (t: Tune) => ({ ...(t.buildCommand?.trim() && { buildCommand: t.buildCommand.trim() }), ...(t.startCommand?.trim() && { startCommand: t.startCommand.trim() }), ...(t.output?.trim() && { output: t.output.trim() }), ...(Number(t.port) > 0 && { port: Number(t.port) }) });
+const KEY = /^[A-Za-z_][A-Za-z0-9_]{0,200}$/;
 const unreachable = () => ({ status: 'error', error: { code: 'network', message: 'Unit7 didn’t answer. Check it’s running, then try again.' } }) as const;
 const said = (r: Exclude<ToolResult, { status: 'ok' }>) => (r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : r.status === 'approval_required' ? `It’s waiting for your OK on Approvals. ${r.why}` : 'That didn’t go through.');
 
@@ -62,9 +68,9 @@ const DATA: Record<string, string> = { postgres: 'a Postgres database', mysql: '
 const NAME = /^[a-z0-9][a-z0-9-]{0,51}$/, DOMAIN = /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
 function go(place: Place, update = false) {
-  const { source, name, domain, env } = state;
+  const { source, name, domain, env, tune } = state, size = sizeOf(place, state);
   const filled = Object.fromEntries(Object.entries(env).filter(([, v]) => v.trim()));
-  const input = { ...inputOf(source!), to: place.to, accountId: place.accountId, serverId: place.serverId, name, ...(domain && { domain }), ...(Object.keys(filled).length && { env: filled }), update };
+  const input = { ...inputOf(source!), to: place.to, accountId: place.accountId, serverId: place.serverId, name, ...(domain && { domain }), ...(Object.keys(filled).length && { env: filled }), ...(size && { size: size.id }), ...(place.tunes && tuneOf(tune)), update };
   void putLive(input, place.label);
 }
 async function putLive(input: Record<string, unknown>, where: string) {
@@ -88,7 +94,7 @@ export function LivePage() {
   useEffect(() => { if (wanted && (s.run?.out || s.run?.failed)) choose(); }, [wanted]); // Start free sent them here for a new site, not the last one
   return (
     <div className="mx-auto max-w-[760px]">
-      <PageHeader title="Put this live" subtitle="Your site on the internet, no terminal needed. Hand it over, check where it goes, press Go." />
+      <PageHeader title="Put this live" subtitle="Pick your code, set it up your way, and see the price before you go live. No terminal needed." />
       {s.run ? <RunView s={s} run={s.run} /> : <Steps s={s} wanted={wanted} />}
     </div>
   );
@@ -106,15 +112,15 @@ function Step({ n, title, children, muted }: { n: number; title: string; childre
 }
 
 function Steps({ s, wanted }: { s: State; wanted?: string }) {
-  const [how, setHow] = useState<'files' | 'github'>('files');
+  const [how, setHow] = useState<'files' | 'github'>('github');
   const found = s.found, usable = found?.places.filter((p) => p.ok) ?? [];
   const place = usable.find((p) => placeId(p) === s.pick) ?? usable.find((p) => p.to === wanted) ?? usable[0];
   return (
     <div className="space-y-4">
       {!s.source ? (
-        <Step n={1} title="Your site">
+        <Step n={1} title="Your code">
           {s.error && <div className="mb-3"><Note tone="bad">{s.error}</Note></div>}
-          <Tabs value={how} onChange={setHow} tabs={[{ value: 'files', label: 'A folder or ZIP' }, { value: 'github', label: 'From GitHub' }]} />
+          <Tabs value={how} onChange={setHow} tabs={[{ value: 'github', label: 'From GitHub' }, { value: 'files', label: 'A folder or ZIP' }]} />
           <div className="mt-4">
             {how === 'files' ? <SiteDrop onReady={(u) => choose({ uploadId: u.uploadId, name: u.name })} />
               : <FromGithub onRepo={(r) => choose({ repo: r.fullName, branch: r.defaultBranch, name: r.fullName.split('/')[1]! })} />}
@@ -122,14 +128,15 @@ function Steps({ s, wanted }: { s: State; wanted?: string }) {
         </Step>
       ) : <SiteRow s={s} />}
       {s.source ? (
-        <Step n={2} title="Where it goes">
+        <Step n={2} title="Make it yours">
           {s.error && <Note tone="bad">{s.error}</Note>}
           {s.error && !found && <Button className="mt-3" size="sm" variant="secondary" icon={<RefreshCw size={13} />} onClick={() => void look()}>Try again</Button>}
           {!found && !s.error && <Looking repo={!!s.source && 'repo' in s.source} />}
           {found && <Where found={found} place={place} wanted={wanted} />}
+          {found && place && !found.publishRefused && <Yours s={s} place={place} />}
         </Step>
-      ) : <Step n={2} title="Where it goes" muted />}
-      {found && place && !found.publishRefused ? <Launch s={s} place={place} /> : <Step n={3} title="Name it and go" muted />}
+      ) : <Step n={2} title="Make it yours" muted />}
+      {found && place && !found.publishRefused ? <Launch s={s} place={place} /> : <Step n={3} title="Go live" muted />}
     </div>
   );
 }
@@ -190,6 +197,7 @@ function Where({ found, place, wanted }: { found: Found; place?: Place; wanted?:
                     {p === best && <Badge tone="lime" className="h-5 px-2 text-[11px]">Best fit</Badge>}
                   </span>
                   <span className="block text-[12.5px] leading-snug text-muted">{p.why}</span>
+                  {p.ok && p.price && <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-2">{p.price}</span>}
                 </span>
                 {p.ok && <span aria-hidden className={cx('grid size-5 shrink-0 place-items-center rounded-full border', on ? 'border-blue bg-blue text-white' : 'border-line-strong')}>{on && <Check size={12} strokeWidth={3} />}</span>}
               </button>
@@ -218,23 +226,140 @@ function Where({ found, place, wanted }: { found: Found; place?: Place; wanted?:
   );
 }
 
-function Launch({ s, place }: { s: State; place: Place }) {
+// step two, under where it goes: everything a person may want to change, with what Unit7 found already in place
+function Yours({ s, place }: { s: State; place: Place }) {
+  const site = s.found!.site, repo = s.source && 'repo' in s.source ? s.source : undefined;
   const nameOk = NAME.test(s.name), domainOk = !s.domain || DOMAIN.test(s.domain);
-  const submit = (e: FormEvent) => { e.preventDefault(); if (nameOk && domainOk) go(place); };
   return (
-    <Step n={3} title="Name it and go">
-      <form onSubmit={submit} className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Name" hint={nameOk ? 'It’s part of the free address.' : <span className="text-bad">Lowercase letters, digits and dashes, starting with a letter or digit.</span>}>
-            <Input required maxLength={52} value={s.name} spellCheck={false} autoCapitalize="none" aria-invalid={!nameOk} onChange={(e) => patch({ name: e.target.value.trim().toLowerCase() })} />
-          </Field>
-          <Field label="Your domain (optional)" hint={domainOk ? 'Leave it empty for a free address.' : <span className="text-bad">It should look like shop.example.com.</span>}>
-            <Input value={s.domain} placeholder="shop.example.com" spellCheck={false} autoCapitalize="none" inputMode="url" aria-invalid={!domainOk} onChange={(e) => patch({ domain: e.target.value.trim().toLowerCase() })} />
+    <div className="mt-5 space-y-5 border-t border-line pt-5">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Name" hint={nameOk ? 'It’s part of the free address.' : <span className="text-bad">Lowercase letters, digits and dashes, starting with a letter or digit.</span>}>
+          <Input required maxLength={52} value={s.name} spellCheck={false} autoCapitalize="none" aria-invalid={!nameOk} onChange={(e) => patch({ name: e.target.value.trim().toLowerCase() })} />
+        </Field>
+        <Field label="Your domain (optional)" hint={domainOk ? 'Leave it empty for a free address.' : <span className="text-bad">It should look like shop.example.com.</span>}>
+          <Input value={s.domain} placeholder="shop.example.com" spellCheck={false} autoCapitalize="none" inputMode="url" aria-invalid={!domainOk} onChange={(e) => patch({ domain: e.target.value.trim().toLowerCase() })} />
+        </Field>
+        {repo && <Branch key={repo.branch} now={repo.branch ?? ''} onChange={(branch) => { const source = { ...repo, branch }; keep(source); patch({ source, found: undefined }); }} />}
+      </div>
+      <Variables s={s} keys={site.settings} />
+      {!!place.sizes?.length && <Sizes s={s} place={place} sizes={place.sizes} />}
+      {place.tunes && <Build s={s} site={site} />}
+    </div>
+  );
+}
+
+// a new branch is read again once they've finished typing it
+function Branch({ now, onChange }: { now: string; onChange: (b: string) => void }) {
+  const [v, setV] = useState(now);
+  const ok = /^[\w./-]{1,100}$/.test(v);
+  return (
+    <Field label="Branch" hint={ok ? 'What goes live, and what a push updates.' : <span className="text-bad">That doesn’t look like a branch.</span>}>
+      <Input value={v} spellCheck={false} autoCapitalize="none" aria-invalid={!ok} onChange={(e) => setV(e.target.value.trim())} onBlur={() => { if (ok && v !== now) onChange(v); }} />
+    </Field>
+  );
+}
+
+function Variables({ s, keys }: { s: State; keys: string[] }) {
+  const [name, setName] = useState('');
+  const shown = [...new Set([...keys, ...Object.keys(s.env)])], ok = KEY.test(name.trim());
+  const add = () => { if (ok) { patch({ env: { ...s.env, [name.trim()]: s.env[name.trim()] ?? '' } }); setName(''); } };
+  const paste = (e: ClipboardEvent<HTMLInputElement>) => { const got = parseDotenv(e.clipboardData.getData('text')); if (Object.keys(got).length) { e.preventDefault(); patch({ env: { ...s.env, ...got } }); setName(''); } };
+  const drop = (k: string) => { const { [k]: _, ...env } = s.env; patch({ env }); };
+  return (
+    <section className="space-y-3" aria-label="Settings">
+      <div>
+        <h3 className="text-[14.5px] font-semibold tracking-[-0.015em] text-ink">Settings</h3>
+        <p className="mt-0.5 text-[13px] text-muted">{keys.length ? 'Your code reads these. Leave one empty to set it later.' : 'Unit7 found none in your code. Add any it needs.'} They’re kept on the host, not in your code.</p>
+      </div>
+      {!!shown.length && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {shown.map((k) => (
+            <Field key={k} label={k} hint={isPublicKey(k) ? 'Anyone can read this one: it goes in the page.' : undefined}>
+              <div className="flex items-center gap-1.5">
+                <Input type={isPublicKey(k) ? 'text' : 'password'} autoComplete="off" spellCheck={false} className="font-mono" value={s.env[k] ?? ''} onChange={(e) => patch({ env: { ...s.env, [k]: e.target.value } })} />
+                {!keys.includes(k) && <button type="button" aria-label={`Remove ${k}`} className="grid size-9 shrink-0 place-items-center rounded-full text-muted outline-none transition hover:bg-raised hover:text-ink focus-visible:ring-4 focus-visible:ring-blue-soft" onClick={() => drop(k)}><X size={15} aria-hidden /></button>}
+              </div>
+            </Field>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-0 flex-1 basis-[220px]">
+          <Field label="Add a setting" hint="Or paste a whole .env file here.">
+            <Input value={name} placeholder="API_URL" spellCheck={false} autoCapitalize="none" autoComplete="off" className="font-mono" onChange={(e) => setName(e.target.value)} onPaste={paste} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
           </Field>
         </div>
+        <Button type="button" variant="secondary" disabled={!ok} className="mb-[22px]" onClick={add}>Add</Button>
+      </div>
+    </section>
+  );
+}
+
+function Sizes({ s, place, sizes }: { s: State; place: Place; sizes: Size[] }) {
+  const on = sizeOf(place, s), oneprice = new Set(sizes.map((z) => z.price)).size === 1;
+  return (
+    <section aria-label="How much room it gets">
+      <h3 className="text-[14.5px] font-semibold tracking-[-0.015em] text-ink">How much room it gets</h3>
+      <div role="radiogroup" aria-label="How much room it gets" className="mt-2 grid gap-2 sm:grid-cols-2">
+        {sizes.map((z) => {
+          const here = z.id === on?.id;
+          return (
+            <button key={z.id} type="button" role="radio" aria-checked={here} onClick={() => patch({ size: z.id })}
+              className={cx('flex w-full items-center gap-2.5 rounded-[16px] border p-3 text-left outline-none transition-[border,background] duration-200 focus-visible:ring-4 focus-visible:ring-blue-soft', here ? 'border-blue bg-blue-soft/70 shadow-[inset_0_0_0_1px_var(--blue)]' : 'border-line bg-surface hover:border-line-strong hover:bg-raised/70')}>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13.5px] font-medium text-ink">{z.label}</span>
+                {!oneprice && <span className="block text-[12.5px] text-muted">{z.price}</span>}
+              </span>
+              <span aria-hidden className={cx('grid size-5 shrink-0 place-items-center rounded-full border', here ? 'border-blue bg-blue text-white' : 'border-line-strong')}>{here && <Check size={12} strokeWidth={3} />}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function Build({ s, site }: { s: State; site: Site }) {
+  const set = (k: keyof Tune, v: string) => patch({ tune: { ...s.tune, [k]: v } });
+  return (
+    <details className="rounded-[16px] border border-line p-3.5">
+      <summary className="cursor-pointer text-[13.5px] font-medium text-ink-2 outline-none focus-visible:underline">How it builds</summary>
+      <p className="mt-2 text-[13px] text-muted">Unit7 worked this out from your code. Change a line only if the build needs it.</p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <Field label="Build command"><Input className="font-mono" spellCheck={false} autoCapitalize="none" maxLength={500} placeholder={site.buildCommand ?? 'None found'} value={s.tune.buildCommand ?? ''} onChange={(e) => set('buildCommand', e.target.value)} /></Field>
+        <Field label="Start command"><Input className="font-mono" spellCheck={false} autoCapitalize="none" maxLength={500} placeholder={site.startCommand ?? 'None found'} value={s.tune.startCommand ?? ''} onChange={(e) => set('startCommand', e.target.value)} /></Field>
+        <Field label="Output folder"><Input className="font-mono" spellCheck={false} autoCapitalize="none" maxLength={200} placeholder={site.output ?? 'None found'} value={s.tune.output ?? ''} onChange={(e) => set('output', e.target.value)} /></Field>
+        <Field label="Port"><Input className="font-mono" inputMode="numeric" maxLength={5} placeholder={site.port ? String(site.port) : 'None found'} value={s.tune.port ?? ''} onChange={(e) => set('port', e.target.value.replace(/\D/g, ''))} /></Field>
+      </div>
+    </details>
+  );
+}
+
+function Launch({ s, place }: { s: State; place: Place }) {
+  const nameOk = NAME.test(s.name), domainOk = !s.domain || DOMAIN.test(s.domain);
+  const size = sizeOf(place, s), price = size?.price ?? place.price ?? place.costs, paid = !!place.costs || !!size?.paid;
+  const branch = s.source && 'repo' in s.source ? s.source.branch : undefined;
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!nameOk || !domainOk) return;
+    if (paid && !(await confirmDialog({ title: 'This costs money', body: `${place.label}. ${price ?? ''} The host bills you for it, not Unit7.`, confirm: 'Go live' }))) return;
+    go(place);
+  };
+  const rows: [string, ReactNode][] = [
+    ['Goes to', place.label],
+    ['Price', price ?? 'See the host’s own price page.'],
+    ['Address', s.domain || 'A free address, made for you. You can add your domain later.'],
+    ['After this', place.pushes ? `Every push${branch ? ` to ${branch}` : ''} goes live by itself.` : 'Bring a new version here to update it.'],
+  ];
+  return (
+    <Step n={3} title="Go live">
+      <form onSubmit={(e) => void submit(e)} className="space-y-4">
+        <dl className="grid gap-x-4 gap-y-1.5 text-[13.5px] sm:grid-cols-[96px_1fr]">
+          {rows.map(([k, v]) => <div key={k} className="contents"><dt className="text-muted">{k}</dt><dd className="mb-1 min-w-0 text-ink [overflow-wrap:anywhere] sm:mb-0">{v}</dd></div>)}
+        </dl>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-          <p className="min-w-0 text-[13px] text-muted" aria-live="polite">Goes to <b className="font-medium text-ink-2">{place.label}</b></p>
-          <Button size="lg" variant="primary" icon={<Rocket size={16} />} disabled={!nameOk || !domainOk} className="max-sm:w-full">Go</Button>
+          <p className="min-w-0 flex-1 basis-[220px] text-[12.5px] text-muted">Prices are from each host’s own page in November 2026. Its bill is what counts.</p>
+          <Button size="lg" variant="primary" icon={<Rocket size={16} />} disabled={!nameOk || !domainOk} className="max-sm:w-full">{paid ? 'Go live and pay' : 'Go'}</Button>
         </div>
       </form>
     </Step>

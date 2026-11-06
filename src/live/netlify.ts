@@ -67,7 +67,7 @@ CHANGE_UNDO['live.netlify'] = async (ctx, c) => {
 };
 
 export const netlifyHost: Host = addHost({
-  id: 'netlify', name: 'Netlify', builds: false,
+  id: 'netlify', name: 'Netlify', builds: false, price: 'Free to start, up to a monthly limit.',
   places: (ctx) => accountsOf(ctx, 'netlify', 'netlify'),
   fit: (site) => fitFinished(site, 'Netlify', 'Free, with HTTPS and a free address. It takes the finished files as they are.', ' Netlify can also build it itself once the repo is linked there, which takes one step in the browser.'),
   async put(ctx, p) {

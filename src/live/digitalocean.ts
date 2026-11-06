@@ -27,7 +27,7 @@ function spec(p: Put, repo: string, branch: string) {
   const d = p.site.detection, github = { repo, branch, deploy_on_push: true };
   const envs = p.env.map((e) => ({ key: e.key, value: e.value, type: e.secret ? 'SECRET' : 'GENERAL', scope: 'RUN_AND_BUILD_TIME' }));
   if (d.builder === 'static') return { name: p.name, envs, static_sites: [{ name: 'web', github, ...(d.buildCommand && { build_command: d.buildCommand }), ...(d.staticDir !== '.' && { output_dir: d.staticDir }) }] };
-  return { name: p.name, envs, services: [{ name: 'web', github, http_port: d.port, instance_count: 1, instance_size_slug: 'apps-s-1vcpu-0.5gb', ...(d.dockerfile ? { dockerfile_path: d.dockerfile } : { run_command: d.startCommand }) }] };
+  return { name: p.name, envs, services: [{ name: 'web', github, http_port: d.port, instance_count: 1, instance_size_slug: p.size?.id ?? 'apps-s-1vcpu-0.5gb', ...(d.dockerfile ? { dockerfile_path: d.dockerfile } : { run_command: d.startCommand }) }] };
 }
 const latest = async (ctx: Ctx, acc: string, app: string) => (await read(ctx, acc, `/apps/${app}/deployments?per_page=1`, 'say how the build is going')).deployments?.[0] as { id: string; phase?: string } | undefined;
 
@@ -43,7 +43,8 @@ async function lines(ctx: Ctx, acc: string, app: string, deployment?: string) {
 }
 
 export const digitaloceanHost: Host = addHost({
-  id: 'digitalocean', name: 'DigitalOcean App Platform', builds: true, envNow: true,
+  id: 'digitalocean', name: 'DigitalOcean App Platform', builds: true, envNow: true, pushes: true, tunes: true,
+  sizes: [{ id: 'apps-s-1vcpu-0.5gb', label: '512 MB', price: '$5 a month' }, { id: 'apps-s-1vcpu-1gb', label: '1 GB', price: '$12 a month' }],
   costs: 'DigitalOcean charges from $5 a month for an app with a server. Up to three plain websites are free.',
   places: (ctx) => accountsOf(ctx, 'digitalocean', 'digitalocean'),
   fit(site) {

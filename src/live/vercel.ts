@@ -8,7 +8,7 @@ import { vc, vercel, vercelBase } from '../connectors/clouds.ts';
 import { assertReachable } from '../netguard.ts';
 import { Unit7Error } from '../errors.ts';
 import type { Ctx } from '../tools/runtime.ts';
-import { accountsOf, addHost, type Host, type Put, type Ref } from './hosts.ts';
+import { accountsOf, addHost, type Host, type Put, type Ref, type Tuned } from './hosts.ts';
 
 export const liveTiming = { pollMs: 3000, buildMs: 25 * 60_000, answerMs: 15_000 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -35,6 +35,8 @@ async function scopeOf(ctx: Ctx, acc: string, team?: string) {
   return me?.user?.defaultTeamId ?? undefined;
 }
 
+const settingsOf = (t?: Tuned) => ({ ...(t?.buildCommand && { buildCommand: t.buildCommand }), ...(t?.staticDir && { outputDirectory: t.staticDir }) });
+
 async function project(ctx: Ctx, p: Put, acc: string, team: string | undefined) {
   const found = await send(ctx, acc, `/v9/projects/${encodeURIComponent(p.name)}`, { team });
   if (found.status === 200) {
@@ -42,7 +44,7 @@ async function project(ctx: Ctx, p: Put, acc: string, team: string | undefined) 
     return { id: String(found.data.id), notes: [] as string[] };
   }
   const framework = FRAMEWORK[p.site.detection.stack];
-  const base = { name: p.name, ...(framework !== undefined && { framework }) };
+  const base = { name: p.name, ...(framework !== undefined && { framework }), ...settingsOf(p.tuned) };
   const repo = p.site.repo && { gitRepository: { type: 'github', repo: `${p.site.repo.owner}/${p.site.repo.name}` } };
   let made = await send(ctx, acc, '/v11/projects', { team, body: { ...base, ...repo } });
   const notes: string[] = [];
@@ -93,7 +95,8 @@ async function live(ctx: Ctx, acc: string, team: string | undefined, id: string,
 }
 
 export const vercelHost: Host = addHost({
-  id: 'vercel', name: 'Vercel', builds: true,
+  id: 'vercel', name: 'Vercel', builds: true, pushes: true, tunes: true,
+  price: 'Free on Hobby, for personal projects. Business use needs Pro, $20 a month per person.',
   places: (ctx) => accountsOf(ctx, 'vercel', 'vercel'),
   fit(site) {
     const d = site.detection;
@@ -111,7 +114,7 @@ export const vercelHost: Host = addHost({
     const bySha = new Map<string, string>();
     const list = files.map((f) => { const sha = createHash('sha1').update(readFileSync(f.abs)).digest('hex'); bySha.set(sha, f.abs); return { file: f.path, sha, size: f.size }; });
     const framework = FRAMEWORK[d.stack];
-    const body = { name: p.name, project: pj.id, target: 'production', files: list, projectSettings: framework === undefined ? {} : { framework } };
+    const body = { name: p.name, project: pj.id, target: 'production', files: list, projectSettings: { ...(framework !== undefined && { framework }), ...settingsOf(p.tuned) } };
     ctx.progress(`Sending ${list.length} file${list.length === 1 ? '' : 's'} to Vercel…`);
     let made: Sent | undefined;
     for (let tries = 0; tries < 5; tries++) {

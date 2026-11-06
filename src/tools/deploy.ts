@@ -489,10 +489,11 @@ defineTool({
 
 defineTool({
   name: 'service.settings', title: 'Change how a service builds and deploys', risk: (i) => (i.buildCommand !== undefined || i.startCommand !== undefined ? 'destructive' : 'write'), action: 'service_write',
-  description: 'Turn push-to-deploy or pull-request previews on/off, or override the port, build or start command. Takes effect on the next deploy.',
+  description: 'Turn push-to-deploy or pull-request previews on/off, or override the port, build or start command or memory cap. Takes effect on the next deploy.',
   input: z.object({
     serviceId: fid('svc'), autoDeploy: z.boolean().optional(), previews: z.boolean().optional(),
     port: z.number().int().min(1).max(65535).optional(), buildCommand: z.string().max(500).optional(), startCommand: z.string().max(500).optional(),
+    memoryMb: z.number().int().min(64).max(1_048_576).optional().describe('A memory cap, used from the next deploy'),
     runTests: z.boolean().optional().describe('Run the app’s tests before each deploy (on by default when it has tests). Only a person can turn it off.'),
     testTimeoutMin: z.number().int().min(1).max(60).optional().describe('How long the tests may take, in minutes (10 by default)'),
   }),

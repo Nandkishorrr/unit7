@@ -7,7 +7,7 @@ import { Unit7Error } from '../errors.ts';
 import type { Source } from '../deploy/deployer.ts';
 import type { Ctx } from '../tools/runtime.ts';
 import { step } from './coolify.ts';
-import { addHost, type Host, type Put } from './hosts.ts';
+import { addHost, OWN_PRICE, OWN_SIZES, type Host, type Put } from './hosts.ts';
 
 async function productionOf(ctx: Ctx, name: string) {
   const had = get<{ id: string }>(ctx.db, `SELECT e.id FROM environments e JOIN projects p ON p.id = e.project_id WHERE p.org_id = ? AND p.name = ? AND e.kind = 'production'`, ctx.orgId, name);
@@ -23,7 +23,7 @@ async function sourceOf(ctx: Ctx, p: Put): Promise<Source> {
 }
 
 export const serverHost: Host = addHost({
-  id: 'server', name: 'Your own server', builds: true,
+  id: 'server', name: 'Your own server', builds: true, price: OWN_PRICE, sizes: OWN_SIZES, pushes: true, tunes: true,
   // a server with Coolify connected builds through Coolify, which has its own place
   places: (ctx) => all<{ id: string; name: string }>(ctx.db, `SELECT id, name FROM servers s WHERE org_id = ? AND status = 'ready' AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.org_id = s.org_id AND a.provider = 'coolify' AND json_extract(a.meta, '$.serverId') = s.id) ORDER BY name`, ctx.orgId)
     .map((s) => ({ host: 'server', serverId: s.id, label: s.name })),
@@ -31,7 +31,7 @@ export const serverHost: Host = addHost({
     const d = site.detection;
     if (d.builder === 'compose') return { ok: false, why: 'This runs from a compose file, which Unit7’s own deploy doesn’t read. Coolify on your server does, or add a Dockerfile.' };
     if (d.stack === 'unknown') return { ok: false, why: 'Unit7 can’t tell how to build this. Add a Dockerfile, or an index.html for a plain website.' };
-    return { ok: true, best: !!d.dockerfile || !!d.needs.length, why: 'It runs on your own server, so it costs nothing extra.' };
+    return { ok: true, best: !!d.dockerfile || !!d.needs.length, why: 'It runs on your own server.' };
   },
   async put(ctx, p) {
     const environmentId = await productionOf(ctx, p.name);
@@ -41,6 +41,8 @@ export const serverHost: Host = addHost({
     // a service made on an earlier try already holds its source
     const source = had && !live ? undefined : await sourceOf(ctx, p);
     const serviceId = had?.id ?? (await step<{ serviceId: string }>(ctx, 'service.create', { environmentId, name: p.name, serverId: p.place.serverId, source })).serviceId;
+    const { staticDir: _, ...tuned } = p.tuned ?? {}, how = { ...tuned, ...(p.size?.memoryMb && { memoryMb: p.size.memoryMb }) };
+    if (Object.keys(how).length) await step(ctx, 'service.settings', { serviceId, ...how });
     for (const e of p.env) await step(ctx, 'env.set', { serviceId, key: e.key, value: e.value, secret: e.secret });
     const fresh = live && source?.type === 'upload' ? { source } : {};
     const d = await step<{ deploymentId: string; url?: string; previousDeploymentId?: string }>(ctx, 'deployment.create', { serviceId, ...fresh });

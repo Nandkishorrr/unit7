@@ -30,6 +30,7 @@ async function apisOn(ctx: Ctx, acc: string, project: string) {
 
 export const cloudRunHost: Host = addHost({
   id: 'cloudrun', name: 'Google Cloud Run', builds: true, envNow: true,
+  sizes: [{ id: '512mb', label: '512 MB', price: 'Billed by use', memoryMb: 512 }, { id: '1gb', label: '1 GB', price: 'Billed by use', memoryMb: 1024 }, { id: '2gb', label: '2 GB', price: 'Billed by use', memoryMb: 2048 }],
   costs: 'Google bills by use after a free allowance, and the project needs billing turned on.',
   places: (ctx) => [...accountsOf(ctx, 'cloudrun', 'gcp'), ...accountsOf(ctx, 'cloudrun', 'firebase')],
   fit(site) {
@@ -59,7 +60,7 @@ export const cloudRunHost: Host = addHost({
       if (p.env.length) writeFileSync(file, JSON.stringify(Object.fromEntries(p.env.map((e) => [e.key, e.value]))), { mode: 0o600 });
       ctx.progress('Google is building it. This takes a few minutes…');
       await cli('gcloud', ['run', 'deploy', p.name, '--source', copy.dir, '--project', project, '--region', REGION, '--allow-unauthenticated', '--quiet', '--format=json',
-        ...(c.account ? [`--account=${c.account}`] : []), ...(p.env.length ? ['--env-vars-file', file] : []), ...(d.dockerfile ? ['--port', String(d.port)] : [])], liveTiming.buildMs);
+        ...(c.account ? [`--account=${c.account}`] : []), ...(p.env.length ? ['--env-vars-file', file] : []), ...(d.dockerfile ? ['--port', String(d.port)] : []), ...(p.size?.memoryMb ? ['--memory', `${p.size.memoryMb}Mi`] : [])], liveTiming.buildMs);
     } catch (e) {
       if (/billing/i.test((e as Error).message)) throw new Unit7Error('payment_needed', `Cloud Run needs billing turned on for ${project}: https://console.cloud.google.com/billing/linkedaccount?project=${project}. Then run this again.`, 402);
       throw e;

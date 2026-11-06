@@ -90,7 +90,7 @@ CHANGE_UNDO['live.pages'] = async (ctx, c) => {
 };
 
 export const pagesHost: Host = addHost({
-  id: 'cloudflare-pages', name: 'Cloudflare Pages', builds: false,
+  id: 'cloudflare-pages', name: 'Cloudflare Pages', builds: false, price: 'Free for plain sites, with no limit on visitors.',
   places: (ctx) => accountsOf(ctx, 'cloudflare-pages', 'cloudflare'),
   fit(site) {
     const files = finished(site)?.files ?? [];

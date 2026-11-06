@@ -15,8 +15,8 @@ function refused(what: string, r: Sent) {
 }
 
 // the shape `fly launch` starts with: small, HTTPS at the edge, asleep until someone visits
-const shape = (image: string, port: number) => ({
-  image, guest: { cpu_kind: 'shared', cpus: 1, memory_mb: 256 },
+const shape = (image: string, port: number, memory = 256) => ({
+  image, guest: { cpu_kind: 'shared', cpus: 1, memory_mb: memory },
   services: [{ protocol: 'tcp', internal_port: port, autostart: true, autostop: 'stop', min_machines_running: 0, ports: [{ port: 80, handlers: ['http'], force_https: true }, { port: 443, handlers: ['tls', 'http'] }] }],
 });
 async function copied(ctx: Ctx, acc: string, from: string) {
@@ -48,6 +48,11 @@ async function firstApp(ctx: Ctx, acc: string, p: Put) {
 
 export const flyHost: Host = addHost({
   id: 'fly', name: 'Fly.io', builds: false, noCode: true, envNow: true,
+  sizes: [
+    { id: '256mb', label: '256 MB', price: 'About $2.19 a month running all the time. It sleeps with no visitors, so often less.', memoryMb: 256 },
+    { id: '512mb', label: '512 MB', price: 'About $3.69 a month running all the time. It sleeps with no visitors, so often less.', memoryMb: 512 },
+    { id: '1gb', label: '1 GB', price: 'About $6.70 a month running all the time. It sleeps with no visitors, so often less.', memoryMb: 1024 },
+  ],
   costs: 'Fly.io bills each running machine by the second: the smallest is about $2 a month.',
   places: (ctx) => accountsOf(ctx, 'fly', 'fly'),
   fit: (site) => (site.image || site.copyOf
@@ -58,7 +63,7 @@ export const flyHost: Host = addHost({
     const had = await call(ctx, acc, `/apps/${app}`);
     if (had.status === 401) throw refused('read the app', had);
     if (had.status < 400 && !p.update) throw taken('Fly.io', app);
-    const config = site.copyOf ? await copied(ctx, acc, site.copyOf) : shape(site.image!, p.port ?? 8080);
+    const config = site.copyOf ? await copied(ctx, acc, site.copyOf) : shape(site.image!, p.tuned?.port ?? p.port ?? 8080, p.size?.memoryMb);
     ctx.progress('Getting the app ready on Fly.io…');
     if (had.status >= 400) await firstApp(ctx, acc, p);
     if (p.env.length) await fly.setSecrets(ctx, acc, app, p.env);

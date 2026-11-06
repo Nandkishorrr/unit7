@@ -31,7 +31,8 @@ async function lines(ctx: Ctx, acc: string, t: Target, deployment?: string) {
 }
 
 export const railwayHost: Host = addHost({
-  id: 'railway', name: 'Railway', builds: true,
+  id: 'railway', name: 'Railway', builds: true, pushes: true,
+  price: 'From $5 a month, which includes $5 of use. More use is billed, about $10 per GB of memory a month.',
   costs: 'Railway bills what a running app uses, after a small monthly credit.',
   places: (ctx) => accountsOf(ctx, 'railway', 'railway'),
   fit(site) {

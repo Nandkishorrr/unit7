@@ -21,7 +21,7 @@ const settings = async (ctx: Ctx, acc: string, path: string) => (await armSend<{
 const saveSettings = (ctx: Ctx, acc: string, path: string, properties: Record<string, string>) => armSend(ctx, acc, `${path}/config/appsettings?${API}`, { method: 'PUT', body: { properties } });
 
 export const azureHost: Host = addHost({
-  id: 'azure', name: 'Azure Static Web Apps', builds: true,
+  id: 'azure', name: 'Azure Static Web Apps', builds: true, pushes: true, price: 'Free for small sites.',
   places: (ctx) => accountsOf(ctx, 'azure', 'azure'),
   fit(site) {
     const d = site.detection;
