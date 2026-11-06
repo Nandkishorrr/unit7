@@ -12,7 +12,7 @@ import type { App } from '../app.ts';
 import { all, get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { makeRef } from '../vault.ts';
-import { accountName, startOAuth, type OAuthProvider } from './mcp-oauth.ts';
+import { accountName, HOSTED_MCP, startOAuth, type OAuthProvider } from './mcp-oauth.ts';
 import { alertState, ensureReplies, newTopic } from '../sentinel/phone.ts';
 import { addGoogleSignIn, cliFor, forgetSignedIn, signInsFor, TOOLS_FOR, TOOL_LABEL } from './cloudcli.ts';
 
@@ -87,6 +87,7 @@ export const CATALOG: Provider[] = [
 ];
 
 export const provider = (id: string) => CATALOG.find((p) => p.id === id);
+for (const p of CATALOG) if (p.method.kind === 'mcp') HOSTED_MCP[p.id] = p.method.mcpUrl;
 
 // --- what the Connections page shows --------------------------------------------------------------
 

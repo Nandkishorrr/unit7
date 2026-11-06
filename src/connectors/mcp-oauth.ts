@@ -138,21 +138,31 @@ export function accountName(app: App, orgId: string, provider: string, base: str
   }
 }
 
-// One MCP client per signed-in account, shared by every tool. The bearer is read (and refreshed and
+// One MCP client per connected account, shared by every tool. The bearer is read (and refreshed and
 // written back) from the vault on each request, through the caller's broker so account boundaries hold.
-interface ToolInfo { name: string; description?: string; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean } }
+export interface ToolInfo { name: string; description?: string; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean }; inputSchema?: { properties?: Record<string, unknown> } }
 const clients = new Map<string, { client: HttpMcp; lastUsed: number; tools?: ToolInfo[] }>();
 setInterval(() => { for (const [k, p] of clients) if (Date.now() - p.lastUsed > 5 * 60_000) { p.client.close(); clients.delete(k); } }, 60_000).unref();
+// each account's last listing outlives the idle close above, so a tool listed as a read stays a read
+const listed = new Map<string, ToolInfo[]>();
+// each provider's hosted MCP (the catalogue fills this): where a pasted key goes too
+export const HOSTED_MCP: Record<string, string> = {};
+// a server that keeps Bearer for its own sign-in takes a pasted token here instead
+const KEY_HEADER: Record<string, string> = { sentry: 'sentry-bearer' };
 export function oauthMcp(ctx: Ctx, accountId: string) {
   const acc = get<{ meta: string; provider: string; name: string }>(ctx.db, 'SELECT meta, provider, name FROM accounts WHERE id = ? AND org_id = ?', accountId, ctx.orgId);
-  if (!acc || !isOAuthAccount(acc.meta)) throw new Unit7Error('no_account', 'That signed-in account was not found.', 404);
+  if (!acc) throw new Unit7Error('no_account', 'That account was not found.', 404);
+  const signedIn = isOAuthAccount(acc.meta);
+  // Hostinger's own local server takes a pasted token, and hostinger.do judges each operation
+  if (!signedIn && acc.provider === 'hostinger') throw new Unit7Error('use_hostinger_do', 'This Hostinger account has a pasted token: use hostinger.search and hostinger.do for it.', 409);
+  const url = signedIn ? json<{ mcpUrl: string }>(acc.meta, { mcpUrl: '' }).mcpUrl : HOSTED_MCP[acc.provider];
+  if (url === undefined) throw new Unit7Error('no_hosted_tools', `${acc.name} has no hosted tools to call. Use Unit7’s own tools for it (tools.find).`, 409);
   const { ref } = ctx.credentialFor(acc.provider, accountId); // enforces the environment's account boundary
   let p = clients.get(accountId);
   if (!p) {
-    const meta = json<{ mcpUrl: string }>(acc.meta, { mcpUrl: '' });
     const client = new HttpMcp({
-      url: meta.mcpUrl, name: acc.name,
-      bearer: () => accessToken(`${ctx.orgId}:${ref}`, () => ctx.app.vault.resolve(ctx.orgId, ref), (s) => ctx.app.vault.put(ctx.orgId, ref, JSON.stringify(s), { kind: 'oauth', accountId, by: 'token refresh' })),
+      url, name: acc.name, pasted: !signedIn, header: signedIn ? undefined : KEY_HEADER[acc.provider],
+      bearer: async () => (signedIn ? accessToken(`${ctx.orgId}:${ref}`, () => ctx.app.vault.resolve(ctx.orgId, ref), (s) => ctx.app.vault.put(ctx.orgId, ref, JSON.stringify(s), { kind: 'oauth', accountId, by: 'token refresh' })) : ctx.app.vault.resolve(ctx.orgId, ref)),
     });
     clients.set(accountId, (p = { client, lastUsed: Date.now() }));
   }
@@ -160,13 +170,13 @@ export function oauthMcp(ctx: Ctx, accountId: string) {
   const pooled = p;
   return {
     client: pooled.client,
-    tools: async (): Promise<ToolInfo[]> => (pooled.tools ??= await pooled.client.listTools() as ToolInfo[]),
+    tools: async (): Promise<ToolInfo[]> => { if (!pooled.tools) { pooled.tools = await pooled.client.listTools() as ToolInfo[]; listed.set(accountId, pooled.tools); } return pooled.tools; },
   };
 }
 // The provider's own hint for a tool, from the last listing. Like the MCP spec, a tool is destructive unless it
 // says otherwise, and one Unit7 hasn't listed yet (a cold cache) is too.
 export function toolHint(accountId: string, tool: string): 'read' | 'write' | 'destructive' {
-  const a = clients.get(accountId)?.tools?.find((t) => t.name === tool)?.annotations;
+  const a = listed.get(accountId)?.find((t) => t.name === tool)?.annotations;
   return a?.readOnlyHint === true ? 'read' : a?.destructiveHint === false ? 'write' : 'destructive';
 }
-export function closeOauthMcp(accountId: string) { clients.get(accountId)?.client.close(); clients.delete(accountId); }
+export function closeOauthMcp(accountId: string) { clients.get(accountId)?.client.close(); clients.delete(accountId); listed.delete(accountId); }

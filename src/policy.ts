@@ -161,7 +161,12 @@ DEFAULT_RULES.production.status_publish = 'allowed';
 // people-only for an AI, never even with an approval, and a person's own write goes through provider_purchase. Matched
 // on the operation id or tool name, which covers Hostinger's whole `billing_*` category and its purchase/renew verbs;
 // anything that only might be money counts as money.
-export const MONEY_OP = /purchase|order|payment|billing|subscription|renew|cancel|refund|payout|invoice|checkout|charge|buy|upgrade|cost/i;
+export const MONEY_OP = /purchase|order|payment|billing|subscription|renew|cancel|refund|payout|invoice|checkout|charge|buy|upgrade|cost|money|transfer|recipient|convert_currency/i;
+// A money tool that only looks: it starts with a read verb (after one provider prefix, as in planetscale_list_invoices) and
+// nothing in its name acts. The provider's own read-only hint has to agree: a hint is their word, the name is the check on it.
+const READ_VERB = /^(?:[a-z0-9]+[_.-])?(?:list|get|read|retrieve|search|find|fetch|show|view|describe|count)(?:[_.-]|$)/i;
+const ACTS = /(?:^|[_.-])(?:and|or|then|create|update|set|add|delete|remove|cancel|pay|buy|purchase|renew|upgrade|downgrade|confirm|finalize|void)(?:[_.-]|$)/i;
+export const plainRead = (name: string) => { const n = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2'); return READ_VERB.test(n) && !ACTS.test(n); };
 
 // Uptime Kuma monitors (uptime.sync): an HTTP check for each site Unit7 knows, tagged "unit7", never changing or removing
 // the person's own. A person adds Uptime Kuma (or gives Unit7 its login); keeping its monitors in step with new sites
