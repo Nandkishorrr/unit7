@@ -9,6 +9,8 @@
 Self-hosted control room for your servers, Coolify apps, domains, databases and backups.<br>
 Talk to it in plain words. It does the work, and asks before anything risky.
 
+**V2.1** · Free and open source · Apache 2.0 · [signull.cloud](https://signull.cloud)
+
 <br>
 
 [![GitHub stars](https://img.shields.io/github/stars/Nandkishorrr/unit7?style=for-the-badge&logo=github&color=FFDD00&labelColor=111)](https://github.com/Nandkishorrr/unit7/stargazers)
@@ -17,18 +19,20 @@ Talk to it in plain words. It does the work, and asks before anything risky.
 [![Last commit](https://img.shields.io/github/last-commit/Nandkishorrr/unit7?style=for-the-badge&labelColor=111)](https://github.com/Nandkishorrr/unit7/commits/main)
 <br>
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-2F80ED?style=for-the-badge&labelColor=111)](LICENSE)
-![Node 24.15+](https://img.shields.io/badge/node-24.15%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white&labelColor=111)
+![Node 24.22+](https://img.shields.io/badge/node-24.22%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white&labelColor=111)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white&labelColor=111)
-![MCP server](https://img.shields.io/badge/MCP-400%2B%20tools-8A2BE2?style=for-the-badge&labelColor=111)
+![MCP server](https://img.shields.io/badge/MCP-480%2B%20tools-8A2BE2?style=for-the-badge&labelColor=111)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-22C55E?style=for-the-badge&labelColor=111)](https://github.com/Nandkishorrr/unit7/pulls)
 
 <br>
 
-[**Quick start**](#-quick-start) · [**Screenshots**](#-screenshots) · [**Features**](#-features) · [**How it stays safe**](#-how-it-stays-safe) · [**Support**](#-support-unit7)
+[**Watch the film**](https://signull.cloud/#film) · [**What's new**](#-whats-new) · [**Quick start**](#-quick-start) · [**Screenshots**](#-screenshots) · [**Features**](#-features) · [**How it stays safe**](#-how-it-stays-safe) · [**Support**](#-support-unit7)
 
 <br>
 
-<img src="assets/screenshots/01-ai-chat.png" alt="Ask Unit7 in plain words: it reads the logs, explains the crash and asks before rolling back" width="920">
+<a href="https://signull.cloud/#film"><img src="assets/launch-film.jpg" alt="Your AI writes the code. Unit 7 runs the rest. Watch the 60-second film." width="920"></a>
+
+<sub>Your AI writes the code. Unit 7 runs the rest. <a href="https://signull.cloud/#film"><b>Watch the 60-second film</b></a></sub>
 
 <br>
 
@@ -54,7 +58,7 @@ safety gate.
 
 <div align="center">
 
-| 🧰 **400+** tools (or a small profile) | 🧪 **900+** tests, many on real SSH + Docker | 🔌 **20+** providers | 📦 **1** process, **1** SQLite file |
+| 🧰 **480+** tools (or a small profile) | 🧪 **1,000+** tests, many on real SSH + Docker | 🔌 **30+** providers | 📦 **1** process, **1** SQLite file |
 |:---:|:---:|:---:|:---:|
 
 </div>
@@ -64,6 +68,29 @@ safety gate.
 <p>
 <img src="https://cdn.simpleicons.org/claude" height="28" alt="Claude Code" title="Claude Code">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/googlegemini" height="28" alt="Gemini CLI" title="Gemini CLI">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/cursor/_/white" height="28" alt="Cursor" title="Cursor">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/coolify" height="28" alt="Coolify" title="Coolify">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/docker" height="28" alt="Docker" title="Docker">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/hostinger" height="28" alt="Hostinger" title="Hostinger">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/cloudflare" height="28" alt="Cloudflare" title="Cloudflare">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/vercel/_/white" height="28" alt="Vercel" title="Vercel">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/netlify" height="28" alt="Netlify" title="Netlify">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/render/_/white" height="28" alt="Render" title="Render">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/railway/_/white" height="28" alt="Railway" title="Railway">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/flydotio" height="28" alt="Fly.io" title="Fly.io">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/supabase" height="28" alt="Supabase" title="Supabase">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/postgresql" height="28" alt="PostgreSQL" title="PostgreSQL">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/redis" height="28" alt="Redis" title="Redis">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/googlecloud" height="28" alt="Google Cloud" title="Google Cloud">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/hetzner" height="28" alt="Hetzner" title="Hetzner">&nbsp;&nbsp;<img src="https://cdn.simpleicons.org/github/_/white" height="28" alt="GitHub" title="GitHub">
 </p>
+
+## 🆕 What's new
+
+**V2.1 is the latest version.**
+
+- **V2 has already done the job when you open the app.** It checks by itself, protects your data by itself and proves its fixes. See [Is everything OK?](#-is-everything-ok)
+- **V2.1 adds Seven,** an agent on shift. It does the safe work and asks one clear question. See [Seven](#-seven-the-agent-that-works-by-itself).
+- **Since V2.1, it can start things too,** not just look after what already exists:
+
+| New | What it does |
+|---|---|
+| **Put this live** | Drop a folder or a ZIP, pick a GitHub repo, or run `unit7 live`. It picks the best host you've connected, from 16: Vercel, Netlify, Cloudflare Pages, GitHub Pages, Hostinger, Coolify, your own server, Render, Railway, Fly.io, DigitalOcean, Firebase, Heroku, Cloud Run, Amplify and Azure Static Web Apps. |
+| **Your real databases** | Tables, safe queries, import and export on any Postgres, MySQL, MariaDB, Redis or MongoDB it finds on your server, Supabase included. Personal columns stay hidden from an AI. |
+| **Supabase and Neon** | Projects, SQL, functions, secrets, auth, storage and logs, hosted or self-hosted. |
+| **Domains and DNS** | Records, redirects, wildcards and one-step domains on Coolify apps. Mail records wait for a person. |
+| **Files** | Browse, edit, upload and download on a server. A removed file waits 7 days in a trash. |
+| **Server care** | Snapshots, ports, SSH keys, users and moving to a new server. Buying and deleting stay with a person. |
+| **WordPress** | Sites on your server. A broken site? It finds the plugin and offers to switch it off. |
+| **Coolify, with no setup** | Its servers, apps and projects, plus deploy on push, previews, storage and scaling. |
+| **One-click tools** | More than 30 open-source tools, with the admin login claimed first, and any Coolify template one search away. |
+
+> [!NOTE]
+> Everything in this table is **in testing**. It's built and tested against fake servers, and first runs on real accounts come next. [LIMITS.md](LIMITS.md) says where each one stops.
 
 ## 🧭 Is everything OK?
 
@@ -86,7 +113,7 @@ Open [Claude Code](https://claude.com/claude-code) in any folder, paste this, an
 ```text
 Set up Unit7 for me from https://github.com/Nandkishorrr/unit7
 
-1. Check that Node.js 24.15 or newer is installed. If not, install it (nvm, or Homebrew on macOS).
+1. Check that Node.js 24.22 or newer is installed. If not, install it (nvm, or Homebrew on macOS).
 2. Clone the repo into ~/unit7, then run `npm install` and `npm run build` there.
 3. Run `node bin/unit7.mjs service start` to run Unit7 in the background, and check that http://localhost:4800 answers.
 4. Tell me to open http://localhost:4800 and create my owner account, and wait until I say I'm done.
@@ -116,12 +143,15 @@ node bin/unit7.mjs connect        # pick: claude, cursor, antigravity, windsurf,
 ```
 
 > [!NOTE]
-> Needs **Node 24.15+** (Unit7 runs its TypeScript directly, no build step for the server). On macOS the vault key
+> Needs **Node 24.22+** on macOS or Linux (Unit7 runs its TypeScript directly, no build step for the server). On macOS the vault key
 > lives in the Keychain; elsewhere it's a key file in `UNIT7_HOME` or `UNIT7_MASTER_KEY` (see [Environment](#-environment)).
 
 ## 📸 Screenshots
 
 <table>
+  <tr>
+    <td colspan="2"><img src="assets/screenshots/01-ai-chat.png" alt="Ask Unit7 in plain words: it reads the logs, explains the crash and asks before rolling back"><br><sub><b>Ask in plain words.</b> It reads the logs, explains the crash and asks before rolling back.</sub></td>
+  </tr>
   <tr>
     <td width="50%"><img src="assets/screenshots/02-server.png" alt="Server overview"><br><sub><b>Server X-ray.</b> Health, usage, risks and what can be cleaned up.</sub></td>
     <td width="50%"><img src="assets/screenshots/03-server-coolify-apps.png" alt="Coolify apps on a server"><br><sub><b>Inside Coolify.</b> Projects, domains, databases and cron jobs, found from Docker labels.</sub></td>
@@ -195,6 +225,38 @@ unit7 seven look     # have it look now
 <tr>
 <td width="50%" valign="top">
 
+**🤖 The AI you already use**<br>
+Ask in the web app, or plug in Claude Code, Cursor, Codex, Windsurf or Antigravity over MCP. Same tools, same gate,
+same approvals. AI is optional: the checks and the safety rules run without it.
+
+</td>
+<td width="50%" valign="top">
+
+**🔌 Every app, every account**<br>
+Connect 30+ providers: hosts, domains, databases, clouds and AI. Add as many accounts per provider as you need, and
+each environment picks which one it uses.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🖥️ Server X-ray**<br>
+Every project on a server and who runs each part, with health, disk, memory and risks. Connect a server and it looks
+inside, with nothing to install.
+
+</td>
+<td valign="top">
+
+**⚙️ Environment variables**<br>
+Saved, encrypted and versioned, per environment. Copy them across, import a `.env`, or bring back any older value.
+Settings inherit from organisation to project to environment to app.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
 **🚢 Deploys**<br>
 Any app from a git repo or a folder. Detects the stack (Next, Vite, Node, FastAPI, Django, Go, Rust, PHP/Laravel,
 static, Docker…), builds it and switches **blue-green**: the new version only takes traffic after it passes a
@@ -229,8 +291,8 @@ so **there is no token for it to leak**. Multi-account from day one.
 <td valign="top">
 
 **🛡️ Warden**<br>
-An always-on guard with no AI in the loop. Restarts crashed containers, rolls back bad deploys, frees full disks,
-blocks scanners and runs scheduled backups. It only calls the AI when something is genuinely new.
+An always-on guard with no AI in the loop. Restarts crashed containers, rolls back bad deploys, blocks scanners and
+runs scheduled backups. When a disk fills up, it asks you. It only calls the AI when something is genuinely new.
 
 </td>
 <td valign="top">
@@ -285,6 +347,7 @@ security updates); one that already runs things is shared, never reconfigured by
 
 ```bash
 unit7 login --url https://your-unit7   # paste a token from Settings → API tokens when asked
+unit7 live                         # put this folder on the internet, on the best connected host
 unit7 deploy --service <id>        # deploy the current folder
 unit7 logs <serviceId>
 unit7 agent "add redis and wire it into the api"
@@ -311,6 +374,9 @@ To keep it awake all the time, run it on a separate box from what it manages. Se
 ```bash
 docker compose up -d
 ```
+
+> [!NOTE]
+> The image is published with the first tagged release, which hasn't happened yet. Until then, use the steps in [Quick start](#-quick-start) on that box.
 
 ### Use Unit7 from Claude Code / Cursor (MCP)
 
