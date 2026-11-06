@@ -10,6 +10,11 @@ import { openSource, type Site } from '../live/source.ts';
 import { allHosts, hostOf, type Fit, type Place } from '../live/hosts.ts';
 import { step } from '../live/coolify.ts';
 import { liveTiming } from '../live/vercel.ts';
+import '../live/netlify.ts';
+import '../live/cloudflare.ts';
+import '../live/github-pages.ts';
+import '../live/hostinger.ts';
+import '../live/server.ts';
 import { createRepo, githubToken, parseRepo, pushFolder, repoExists } from '../connectors/github.ts';
 
 const NAME = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,51}$/, 'lowercase letters, digits and dashes, up to 52');
@@ -20,7 +25,7 @@ const SOURCE = {
 };
 const oneSource = (i: { folder?: string; uploadId?: string; repo?: string }) => [i.folder, i.uploadId, i.repo].filter(Boolean).length === 1;
 const needsPerson = (i: { folder?: string }) => !!i.folder;
-const WHERE = { to: z.string().regex(/^[a-z-]{2,30}$/).optional().describe('A host from live.options: vercel, coolify…'), accountId: fid('acc').optional(), serverId: fid('srv').optional() };
+const WHERE = { to: z.string().regex(/^[a-z-]{2,30}$/).optional().describe('A host from live.options: vercel, coolify, netlify, cloudflare-pages, github-pages, hostinger, server…'), accountId: fid('acc').optional(), serverId: fid('srv').optional() };
 
 const facts = (s: Site) => ({ name: s.name, stack: s.detection.stack, runtime: s.detection.runtime ?? null, files: s.files.length, mb: +(s.bytes / 1024 / 1024).toFixed(1), needs: s.detection.needs, settings: s.detection.envKeys.slice(0, 40) });
 const placesFor = (ctx: Ctx, site: Site) => allHosts().flatMap((h) => { const fit = h.fit(site); return h.places(ctx).map((place) => ({ place, fit, host: h })); });
@@ -59,10 +64,11 @@ defineTool({
 });
 
 defineTool({
-  name: 'live.put', title: 'Put this live', risk: 'write', action: 'deploy', timeoutMs: 40 * 60_000, sensitive: ['env'], peopleOnly: needsPerson,
+  // replacing a Hostinger website has no way back, so an AI waits for a person there
+  name: 'live.put', title: 'Put this live', risk: (i) => (i.update && i.to === 'hostinger' ? 'destructive' : 'write'), action: 'deploy', timeoutMs: 40 * 60_000, sensitive: ['env'], peopleOnly: needsPerson,
   // a brand-new project only creates: nothing that exists changes
   green: (i) => !i.update,
-  description: 'Create a project and put a site live from an upload or a GitHub repo, on any connected host (see live.options), then check it answers. Builds it where the host can. name is the project’s name. domain points your domain at it. env sets settings: a value may be a credential:// reference. update: true replaces what’s live on an existing project. Keys found in a plain website stop it.',
+  description: 'Create a project and put a site live from an upload or a GitHub repo, on any connected host (see live.options), then check it answers. Builds it where the host can. name is the project’s name. domain points your domain at it; on Hostinger web hosting it picks which of your websites this goes on. env sets settings: a value may be a credential:// reference. update: true replaces what’s live on an existing project. Keys found in a plain website stop it.',
   input: z.object({ ...SOURCE, ...WHERE, name: NAME.optional(), domain: z.string().trim().toLowerCase().regex(/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/).optional(), env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,200}$/), z.string().max(65_536)).optional(), update: z.boolean().default(false), team: z.string().max(100).optional() }).refine(oneSource, 'Give one of folder, uploadId or repo.'),
   async run(ctx, i) {
     const site = await openSource(ctx, i, i.name);
@@ -78,15 +84,16 @@ defineTool({
       const placed = await chosen.host.put(ctx, { name, site, place: chosen.place, env, domain: i.domain, update: i.update, team: i.team });
       ctx.emit('live.placed', `${name} is live on ${chosen.host.name}: ${placed.url}`, { severity: 'success', resource: placed.project, data: { host: chosen.host.id, url: placed.url } });
       const answered = placed.url ? await answers(placed.url) : false;
-      const domain = i.domain ? await pointDomain(ctx, i.domain, chosen.place, name, i.team).catch((e: Error) => ({ error: e.message })) : undefined;
+      const domain = i.domain && placed.point !== false ? await pointDomain(ctx, i.domain, chosen.place, name, i.team, placed.point).catch((e: Error) => ({ error: e.message })) : undefined;
       return { url: placed.url, name, host: chosen.host.id, project: placed.project, deployment: placed.deployment, verified: answered !== false, status: answered || undefined, autoDeploy: !!placed.autoDeploy, site: facts(site),
-        ...(domain && { domain }), notes: [...(placed.notes ?? []), ...(w ? [`These files hold keys, so they shouldn’t be in the code: ${w.list}.`] : []), ...(site.detection.envKeys.length && !i.env ? [`The code reads ${site.detection.envKeys.length} setting${site.detection.envKeys.length === 1 ? '' : 's'}. Set them with live.env or the site may not work: ${site.detection.envKeys.slice(0, 12).join(', ')}.`] : [])],
+        ...(domain && { domain }), notes: [...(placed.notes ?? []), ...(w ? [`These files hold keys, so they shouldn’t be in the code: ${w.list}.`] : []), ...(site.detection.envKeys.length && !i.env && chosen.host.env ? [`The code reads ${site.detection.envKeys.length} setting${site.detection.envKeys.length === 1 ? '' : 's'}. Set them with live.env or the site may not work: ${site.detection.envKeys.slice(0, 12).join(', ')}.`] : [])],
         next: answered === false ? 'It says it’s live but didn’t answer yet. Check again in a minute with live.status.' : undefined };
     } finally { site.done(); }
   },
 });
 
-function pointDomain(ctx: Ctx, hostname: string, p: Place, name: string, team?: string) {
+function pointDomain(ctx: Ctx, hostname: string, p: Place, name: string, team?: string, target?: Record<string, unknown>) {
+  if (target) return step(ctx, 'domain.point', { hostname, ...target });
   if (p.host === 'vercel') return step(ctx, 'domain.point', { hostname, vercel: { accountId: p.accountId, project: name, team } });
   if (p.serverId) return step(ctx, 'domain.point', { hostname, server: { serverId: p.serverId } });
   return step(ctx, 'domain.point', { hostname, [p.host]: { accountId: p.accountId, ...(p.host === 'netlify' ? { site: name } : { service: name }) } });

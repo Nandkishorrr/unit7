@@ -17,6 +17,7 @@ import { hostsOf } from '../connectors/coolify.ts';
 import { act, need, setDomains } from './coolify.ts';
 import { CHANGE_UNDO, keepChange } from './manage.ts';
 import { wildcardCertificate } from './redirects.ts';
+import { githubToken, pagesDomain, parseRepo } from '../connectors/github.ts';
 import { verifiers } from './core.ts';
 import { fid, isAgent } from './helpers.ts';
 import { routeService, replicaNames, type ServiceConfig, type ServiceRow } from '../deploy/deployer.ts';
@@ -49,6 +50,7 @@ const pagesTarget = z.object({ accountId: fid('acc'), project: z.string().regex(
 const hostingerTarget = z.object({ accountId: fid('acc'), website: z.string().toLowerCase().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/, 'the website’s domain') });
 const coolifyTarget = z.object({ serverId: fid('srv'), uuid: z.string().regex(/^[a-zA-Z0-9_-]{3,64}$/, 'a Coolify uuid'), kind: z.enum(['application', 'service']).default('application'), part: z.string().regex(/^[\w.-]{1,60}$/).optional() })
   .refine((t) => t.kind === 'application' || !!t.part, 'A Coolify service needs part: which of its parts gets the domain.');
+const githubTarget = z.object({ accountId: fid('acc'), repo: z.string().regex(/^[\w-]+\/(?!\.+$)[\w.-]+$/, 'owner/name') });
 // adding a domain on a host: it says what DNS should be; Unit7 writes it wherever the domain's DNS lives
 const HOSTS = {
   netlify: { name: 'Netlify', attach: (ctx: Ctx, t: z.infer<typeof netlifyTarget>, d: string) => netlify.addDomain(ctx, t.accountId, t.site, d), confirm: (ctx: Ctx, t: z.infer<typeof netlifyTarget>) => netlify.ssl(ctx, t.accountId, t.site) },
@@ -56,16 +58,13 @@ const HOSTS = {
   railway: { name: 'Railway', attach: (ctx: Ctx, t: z.infer<typeof railwayTarget>, d: string) => railway.addDomain(ctx, t.accountId, t, d), confirm: async () => undefined },
   fly: { name: 'Fly.io', attach: (ctx: Ctx, t: z.infer<typeof flyTarget>, d: string) => fly.addDomain(ctx, t.accountId, t.app, d), confirm: (ctx: Ctx, t: z.infer<typeof flyTarget>, d: string) => fly.check(ctx, t.accountId, t.app, d) },
   heroku: { name: 'Heroku', attach: (ctx: Ctx, t: z.infer<typeof herokuTarget>, d: string) => heroku.addDomain(ctx, t.accountId, t.app, d), confirm: async () => undefined }, // Heroku issues HTTPS by itself (ACM)
+  pages: { name: 'Cloudflare Pages', attach: (ctx: Ctx, t: z.infer<typeof pagesTarget>, d: string) => cloudflare.addPagesDomain(ctx, t.accountId, t.project, d), confirm: (ctx: Ctx, t: z.infer<typeof pagesTarget>, d: string) => cloudflare.confirmPagesDomain(ctx, t.accountId, t.project, d) },
+  github: { name: 'GitHub Pages', attach: async (ctx: Ctx, t: z.infer<typeof githubTarget>, d: string) => pagesDomain(parseRepo(t.repo)!, d, await githubToken(ctx, t.accountId)), confirm: async () => undefined },
   // Supabase: a custom domain for the project's API and auth (paid add-on, subdomains only)
   supabase: { name: 'Supabase', attach: async (ctx: Ctx, t: z.infer<typeof supabaseTarget>, d: string) => {
     if ((await dnsHost(d)).zone === d) throw new Unit7Error('unsupported', 'Supabase custom domains must be a subdomain (like api.example.com), not the bare domain.', 400);
     return supabase.addDomain(ctx, t.accountId, t.ref, d);
   }, confirm: (ctx: Ctx, t: z.infer<typeof supabaseTarget>) => supabase.confirmDomain(ctx, t.accountId, t.ref) },
-  // Cloudflare Pages: a CNAME to the project's pages.dev name (a bare domain only on Cloudflare's own DNS, which flattens it)
-  pages: { name: 'Cloudflare Pages', attach: async (ctx: Ctx, t: z.infer<typeof pagesTarget>, d: string): Promise<Rec[]> => {
-    await cloudflare.pagesDomain(ctx, t.accountId, t.project, d);
-    return [{ type: (await domainDns.host(d)).zone === d ? 'ALIAS' : 'CNAME', name: d, content: `${t.project}.pages.dev` }];
-  }, confirm: async () => undefined },
   // Hostinger web hosting: parked on the website, so it serves the same pages, at the address the website answers on
   hostinger: { name: 'Hostinger', attach: async (ctx: Ctx, t: z.infer<typeof hostingerTarget>, d: string): Promise<Rec[]> => {
     const call = async (operation: string, params: Record<string, unknown>) => JSON.parse(await hostinger(ctx.app).call(ctx, t.accountId, 'execute', { operation, params }, 60_000)) as any;
@@ -164,13 +163,13 @@ async function pointCoolify(ctx: Ctx, hostname: string, t: CoolifyPoint, prefer:
 defineTool({
   // pointing at an app here is routine; at an outside host the name leaves Unit7's hands
   name: 'domain.point', title: 'Point a domain at an app', risk: (i) => (i.serviceId || i.server || i.coolify ? 'write' : 'destructive'), action: 'dns_write', timeoutMs: 20 * 60_000,
-  description: 'Point a hostname (e.g. app.example.com) at an app: one deployed here (serviceId); a Coolify app (coolify: its serverId and uuid; a service needs kind service and part), in one step: the name goes on the app, DNS is written, the app restarts so Coolify’s proxy picks the name up, Unit7 waits for HTTPS and reports (Undo takes it back); or on Vercel, Netlify, Render, Railway, Heroku, Fly.io, Cloudflare Pages (pages) or Hostinger web hosting (hostinger: the website it should show); or at a Supabase project\u2019s API (supabase, a paid add-on there); or at one of your servers itself (server: an A record to its address, for something that answers behind its own proxy there, like Coolify\u2019s dashboard). Unit7 finds where the domain\u2019s DNS lives (Hostinger, Cloudflare…), writes the records with your connected account there (or tells you exactly what to add, and finishes by itself once it\u2019s live), and gets HTTPS working. A wildcard (*.example.com) works on your own server and on a Coolify app: the result says exactly what its certificate needs (a wildcard certificate takes the DNS-01 challenge).',
+  description: 'Point a hostname (e.g. app.example.com) at an app: one deployed here (serviceId); GitHub Pages (github); a Coolify app (coolify: its serverId and uuid; a service needs kind service and part), in one step: the name goes on the app, DNS is written, the app restarts so Coolify’s proxy picks the name up, Unit7 waits for HTTPS and reports (Undo takes it back); or on Vercel, Netlify, Render, Railway, Heroku, Fly.io, Cloudflare Pages (pages) or Hostinger web hosting (hostinger: the website it should show); or at a Supabase project\u2019s API (supabase, a paid add-on there); or at one of your servers itself (server: an A record to its address, for something that answers behind its own proxy there, like Coolify\u2019s dashboard). Unit7 finds where the domain\u2019s DNS lives (Hostinger, Cloudflare…), writes the records with your connected account there (or tells you exactly what to add, and finishes by itself once it\u2019s live), and gets HTTPS working. A wildcard (*.example.com) works on your own server and on a Coolify app: the result says exactly what its certificate needs (a wildcard certificate takes the DNS-01 challenge).',
   input: z.object({ hostname: z.string().min(3).max(253), serviceId: fid('svc').optional(), vercel: vercelTarget.optional(), netlify: netlifyTarget.optional(), render: renderTarget.optional(), railway: railwayTarget.optional(), supabase: supabaseTarget.optional(), heroku: herokuTarget.optional(), fly: flyTarget.optional(),
-    server: z.object({ serverId: fid('srv') }).optional(), coolify: coolifyTarget.optional(), pages: pagesTarget.optional(), hostinger: hostingerTarget.optional(),
+    server: z.object({ serverId: fid('srv') }).optional(), coolify: coolifyTarget.optional(), pages: pagesTarget.optional(), github: githubTarget.optional(), hostinger: hostingerTarget.optional(),
     also: z.array(z.string().min(3).max(253)).max(3).optional().describe('Coolify only: more names to add in the same step, so the app restarts once'),
     wait: z.boolean().optional().describe('Coolify only: false to skip the wait for HTTPS'),
     provider: z.string().max(40).optional(), accountId: fid('acc').optional() })
-    .refine((i) => [i.serviceId, i.vercel, i.netlify, i.render, i.railway, i.supabase, i.heroku, i.fly, i.server, i.coolify, i.pages, i.hostinger].filter(Boolean).length === 1, 'Give exactly one target: serviceId (an app here), coolify, vercel, netlify, render, railway, heroku, fly, pages, hostinger, supabase or server.'),
+    .refine((i) => [i.serviceId, i.vercel, i.netlify, i.render, i.railway, i.supabase, i.heroku, i.fly, i.server, i.coolify, i.pages, i.github, i.hostinger].filter(Boolean).length === 1, 'Give exactly one target: serviceId (an app here), coolify, vercel, netlify, render, railway, heroku, fly, pages, hostinger, supabase or server.'),
   async run(ctx, i) {
     const hostname = i.hostname.toLowerCase();
     // a name already serving one app is moved to another only by a person (it may be production's address)
@@ -188,7 +187,7 @@ defineTool({
       return pointCoolify(ctx, hostname, i.coolify, prefer, (i.also ?? []).map((h) => h.toLowerCase()), i.wait !== false);
     }
 
-    for (const kind of ['netlify', 'render', 'railway', 'supabase', 'heroku', 'fly', 'pages', 'hostinger'] as const) {
+    for (const kind of ['netlify', 'render', 'railway', 'supabase', 'heroku', 'fly', 'pages', 'github', 'hostinger'] as const) {
       const t = i[kind];
       if (!t) continue;
       const host = HOSTS[kind];
@@ -270,7 +269,7 @@ export async function checkDomain(ctx: Ctx, domainId: string) {
   // a Vercel domain also has to be confirmed on Vercel's side (it re-checks the ownership record)
   const t = json<{ kind?: string; accountId?: string; project?: string; team?: string }>(d.target ?? '{}', {});
   if (resolves && d.status !== 'active' && t.kind === 'vercel') await vercel.verify(ctx, t.accountId!, t.project!, t.team, d.hostname);
-  if (resolves && d.status !== 'active' && (t.kind === 'netlify' || t.kind === 'render' || t.kind === 'railway' || t.kind === 'supabase' || t.kind === 'fly')) await (HOSTS[t.kind].confirm as (c: Ctx, t: unknown, d: string) => Promise<unknown>)(ctx, t, d.hostname);
+  if (resolves && d.status !== 'active' && (t.kind === 'netlify' || t.kind === 'render' || t.kind === 'railway' || t.kind === 'supabase' || t.kind === 'fly' || t.kind === 'pages')) await (HOSTS[t.kind].confirm as (c: Ctx, t: unknown, d: string) => Promise<unknown>)(ctx, t, d.hostname);
   const wild = d.hostname.startsWith('*.');
   const https = resolves && await domainDns.https(reachable(d.hostname));
   const status = resolves ? 'active' : d.status === 'active' || d.status === 'broken' ? 'broken' : d.status;

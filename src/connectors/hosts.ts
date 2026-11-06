@@ -13,23 +13,24 @@ const hostOf = (url?: string | null) => { try { return url ? new URL(url.include
 const isApex = async (domain: string) => (await dnsHost(domain)).zone === domain;
 
 // --- Netlify -----------------------------------------------------------------------------------------
-const NETLIFY = 'https://api.netlify.com/api/v1';
+const NETLIFY_API = () => process.env.UNIT7_NETLIFY_API ?? 'https://api.netlify.com/api/v1'; // overridable for offline tests
+export const netlifyApi = NETLIFY_API;
 const nl = async (ctx: Ctx, acc: string) => ({ authorization: `Bearer ${await bearerFor(ctx, 'netlify', acc)}` });
 export interface NetlifySite { id: string; name: string; account_id: string; custom_domain?: string | null; domain_aliases?: string[]; ssl_url?: string; url?: string; published_deploy?: { id: string } | null }
 export const netlify = {
   async sites(ctx: Ctx, acc: string) {
     const out: NetlifySite[] = [];
     for (let page = 1; page < 50; page++) {
-      const r = await rest<NetlifySite[]>('Netlify', `${NETLIFY}/sites?filter=all&per_page=100&page=${page}`, { headers: await nl(ctx, acc) });
+      const r = await rest<NetlifySite[]>('Netlify', `${NETLIFY_API()}/sites?filter=all&per_page=100&page=${page}`, { headers: await nl(ctx, acc) });
       out.push(...r);
       if (r.length < 100) break;
     }
     return out;
   },
-  site: async (ctx: Ctx, acc: string, id: string) => rest<NetlifySite>('Netlify', `${NETLIFY}/sites/${id}`, { headers: await nl(ctx, acc) }),
+  site: async (ctx: Ctx, acc: string, id: string) => rest<NetlifySite>('Netlify', `${NETLIFY_API()}/sites/${id}`, { headers: await nl(ctx, acc) }),
   // one value per key: the "all" or production context
   async env(ctx: Ctx, acc: string, s: NetlifySite) {
-    const r = await rest<{ key: string; values: { value?: string; context: string }[] }[]>('Netlify', `${NETLIFY}/accounts/${s.account_id}/env?site_id=${s.id}`, { headers: await nl(ctx, acc) });
+    const r = await rest<{ key: string; values: { value?: string; context: string }[] }[]>('Netlify', `${NETLIFY_API()}/accounts/${s.account_id}/env?site_id=${s.id}`, { headers: await nl(ctx, acc) });
     const out: Record<string, string> = {};
     for (const v of r) out[v.key] = (v.values.find((x) => x.context === 'all') ?? v.values.find((x) => x.context === 'production') ?? v.values[0])?.value ?? '';
     return out;
@@ -37,14 +38,15 @@ export const netlify = {
   async setEnv(ctx: Ctx, acc: string, s: NetlifySite, vars: { key: string; value: string; secret: boolean }[]) {
     const headers = await nl(ctx, acc), have = await netlify.env(ctx, acc, s);
     const fresh = vars.filter((v) => !(v.key in have));
-    if (fresh.length) await rest('Netlify', `${NETLIFY}/accounts/${s.account_id}/env?site_id=${s.id}`, { headers, body: fresh.map((v) => ({ key: v.key, values: [{ context: 'all', value: v.value }] })) });
-    for (const v of vars.filter((x) => x.key in have)) await rest('Netlify', `${NETLIFY}/accounts/${s.account_id}/env/${encodeURIComponent(v.key)}?site_id=${s.id}`, { method: 'PATCH', headers, body: { context: 'all', value: v.value } });
+    if (fresh.length) await rest('Netlify', `${NETLIFY_API()}/accounts/${s.account_id}/env?site_id=${s.id}`, { headers, body: fresh.map((v) => ({ key: v.key, values: [{ context: 'all', value: v.value }] })) });
+    for (const v of vars.filter((x) => x.key in have)) await rest('Netlify', `${NETLIFY_API()}/accounts/${s.account_id}/env/${encodeURIComponent(v.key)}?site_id=${s.id}`, { method: 'PATCH', headers, body: { context: 'all', value: v.value } });
   },
-  build: async (ctx: Ctx, acc: string, siteId: string) => rest('Netlify', `${NETLIFY}/sites/${siteId}/builds`, { method: 'POST', headers: await nl(ctx, acc), body: {} }),
+  unsetEnv: async (ctx: Ctx, acc: string, s: NetlifySite, key: string) => rest('Netlify', `${NETLIFY_API()}/accounts/${s.account_id}/env/${encodeURIComponent(key)}?site_id=${s.id}`, { method: 'DELETE', headers: await nl(ctx, acc) }),
+  build: async (ctx: Ctx, acc: string, siteId: string) => rest('Netlify', `${NETLIFY_API()}/sites/${siteId}/builds`, { method: 'POST', headers: await nl(ctx, acc), body: {} }),
   async addDomain(ctx: Ctx, acc: string, siteId: string, domain: string): Promise<DnsRec[]> {
     const s = await netlify.site(ctx, acc, siteId);
     const body = !s.custom_domain ? { custom_domain: domain } : s.custom_domain === domain || s.domain_aliases?.includes(domain) ? undefined : { domain_aliases: [...(s.domain_aliases ?? []), domain] };
-    if (body) await rest('Netlify', `${NETLIFY}/sites/${siteId}`, { method: 'PATCH', headers: await nl(ctx, acc), body });
+    if (body) await rest('Netlify', `${NETLIFY_API()}/sites/${siteId}`, { method: 'PATCH', headers: await nl(ctx, acc), body });
     // apex: Netlify's load balancer address (no CNAME at a bare domain); subdomain: the site's own name
     return [await isApex(domain) ? { type: 'A', name: domain, content: '75.2.60.5' } : { type: 'CNAME', name: domain, content: `${s.name}.netlify.app` }];
   },
@@ -52,9 +54,9 @@ export const netlify = {
   // isn't an alias of its own (docs.netlify.com/manage/domains/manage-domains/manage-multiple-domains)
   async setPrimary(ctx: Ctx, acc: string, siteId: string, main: string, other: string) {
     const s = await netlify.site(ctx, acc, siteId);
-    await rest('Netlify', `${NETLIFY}/sites/${siteId}`, { method: 'PATCH', headers: await nl(ctx, acc), body: { custom_domain: main, domain_aliases: (s.domain_aliases ?? []).filter((d) => d !== main && d !== other) } });
+    await rest('Netlify', `${NETLIFY_API()}/sites/${siteId}`, { method: 'PATCH', headers: await nl(ctx, acc), body: { custom_domain: main, domain_aliases: (s.domain_aliases ?? []).filter((d) => d !== main && d !== other) } });
   },
-  ssl: async (ctx: Ctx, acc: string, siteId: string) => { await rest('Netlify', `${NETLIFY}/sites/${siteId}/ssl`, { method: 'POST', headers: await nl(ctx, acc), body: {} }).catch(() => undefined); },
+  ssl: async (ctx: Ctx, acc: string, siteId: string) => { await rest('Netlify', `${NETLIFY_API()}/sites/${siteId}/ssl`, { method: 'POST', headers: await nl(ctx, acc), body: {} }).catch(() => undefined); },
 };
 
 // --- Render ------------------------------------------------------------------------------------------
@@ -359,7 +361,7 @@ export { hostOf };
 // Each is the provider's own delete call, checked against its API reference (2026-10). Reads first where the
 // delete would take data with it (Fly volumes, Heroku add-ons, a Render disk), so Unit7 can say so before.
 export const hostRemoval = {
-  netlifySite: async (ctx: Ctx, acc: string, site: string) => rest('Netlify', `${NETLIFY}/sites/${encodeURIComponent(site)}`, { method: 'DELETE', headers: await nl(ctx, acc) }),
+  netlifySite: async (ctx: Ctx, acc: string, site: string) => rest('Netlify', `${NETLIFY_API()}/sites/${encodeURIComponent(site)}`, { method: 'DELETE', headers: await nl(ctx, acc) }),
   renderService: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER}/services/${encodeURIComponent(id)}`, { method: 'DELETE', headers: await rn(ctx, acc) }),
   renderPostgres: async (ctx: Ctx, acc: string, id: string) => rest('Render', `${RENDER}/postgres/${encodeURIComponent(id)}`, { method: 'DELETE', headers: await rn(ctx, acc) }),
   renderDisk: async (ctx: Ctx, acc: string, id: string) => (await rest<{ serviceDetails?: { disk?: { name?: string; sizeGB?: number } } }>('Render', `${RENDER}/services/${encodeURIComponent(id)}`, { headers: await rn(ctx, acc) })).serviceDetails?.disk,
@@ -400,9 +402,8 @@ export { rw as railwayQuery, RENDER as RENDER_API, rn as renderAuth };
 //   GET  /services/{id}/deploys/{deployId}    status: live, deactivated (was live), build_failed, … (retrieve-deploy)
 //   POST /services/{id}/rollback { deployId } (201) the deploy's build again; auto-deploys stay on (rollback-deploy)
 //   POST /services/{id}/deploys               (201 the deploy, or 202 queued) a new build of the latest commit (create-deploy)
-const NETLIFY_API = () => process.env.UNIT7_NETLIFY_API ?? NETLIFY; // overridable for offline tests
 const RENDER_DEPLOY_API = () => process.env.UNIT7_RENDER_API ?? RENDER;
-export interface NetlifyDeploy { id: string; state?: string; context?: string; published_at?: string | null; error_message?: string | null }
+export interface NetlifyDeploy { id: string; state?: string; context?: string; published_at?: string | null; error_message?: string | null; required?: string[] }
 export const netlifyDeploys = {
   live: async (ctx: Ctx, acc: string, site: string) => (await rest<NetlifySite>('Netlify', `${NETLIFY_API()}/sites/${encodeURIComponent(site)}`, { headers: await nl(ctx, acc) })).published_deploy?.id,
   list: async (ctx: Ctx, acc: string, site: string) => rest<NetlifyDeploy[]>('Netlify', `${NETLIFY_API()}/sites/${encodeURIComponent(site)}/deploys?production=true&state=ready&per_page=20`, { headers: await nl(ctx, acc) }),

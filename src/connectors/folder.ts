@@ -71,11 +71,17 @@ export function inspectFolder(path: string, unit7Home: string) {
 
 // The folder as a .tgz, leaving out the usual heavy and secret files (the server rebuilds from source anyway)
 export const MAX_PACK = 90 * 1024 * 1024;
-export async function packFolder(dir: string, max = MAX_PACK, o: { keepBuild?: boolean } = {}): Promise<Buffer> {
+export const packFolder = (dir: string, max = MAX_PACK, o: { keepBuild?: boolean } = {}) =>
+  tgz(['-cf', '-', '--exclude=.git', '--exclude=node_modules', '--exclude=.next', ...(o.keepBuild ? [] : ['--exclude=dist']), '--exclude=.env', '--exclude=.env.*', '--exclude=._*', '--exclude=.DS_Store', '-C', dir, '.'], max);
+// These files and nothing else: what a host gets when the folder or upload could hold more than Unit7 checked (a .pem, an .npmrc)
+export const packFiles = (dir: string, paths: string[], max = MAX_PACK) => tgz(['--null', '-cf', '-', '-C', dir, '-T', '-'], max, paths.join('\0'));
+
+async function tgz(args: string[], max: number, list?: string): Promise<Buffer> {
   // COPYFILE_DISABLE: macOS tar otherwise adds hidden ._ "AppleDouble" files next to every file
-  const tar = spawn('tar', ['-cf', '-', '--exclude=.git', '--exclude=node_modules', '--exclude=.next', ...(o.keepBuild ? [] : ['--exclude=dist']), '--exclude=.env', '--exclude=.env.*', '--exclude=._*', '--exclude=.DS_Store', '-C', dir, '.'],
-    { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, COPYFILE_DISABLE: '1' } });
-  const gz = tar.stdout.pipe(createGzip());
+  const tar = spawn('tar', args, { stdio: [list === undefined ? 'ignore' : 'pipe', 'pipe', 'inherit'], env: { ...process.env, COPYFILE_DISABLE: '1' } });
+  tar.stdin?.on('error', () => undefined); // tar gone early: reading its output below says so
+  tar.stdin?.end(list);
+  const gz = tar.stdout!.pipe(createGzip());
   tar.once('error', (e) => gz.destroy(e)); // no tar at all: fail this deploy, not the whole server
   const chunks: Buffer[] = [];
   let size = 0;

@@ -53,12 +53,12 @@ export async function rest<T = any>(who: string, url: string, init: { method?: s
   let data: any = {};
   try { data = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
   if (who === 'GoDaddy' && res.status === 403) throw new Unit7Error('dns_error', 'GoDaddy refused this key. It limits its DNS API by account (how many domains, or a paid plan), so a good key can still be refused. Ask GoDaddy about API access, or move this domain’s DNS to Cloudflare (free; Unit7 can do it).', 403);
-  if (!res.ok || data?.status === 'ERROR') throw new Unit7Error('dns_error', `${who}: ${data?.message ?? data?.error?.message ?? data?.id ?? res.statusText ?? res.status}`.slice(0, 300), res.status === 403 || res.status === 401 ? 403 : 502);
+  if (!res.ok || data?.status === 'ERROR') throw new Unit7Error('dns_error', `${who}: ${data?.message ?? data?.error?.message ?? data?.id ?? (data?.errors ? JSON.stringify(data.errors) : res.statusText || res.status)}`.slice(0, 300), res.status === 403 || res.status === 401 ? 403 : 502);
   return data as T;
 }
 
 // one URL path segment: encoded, and never empty, "." or ".." (a URL parser would walk up the path with those)
-const seg = (v: string | number | undefined) => {
+export const seg = (v: string | number | undefined) => {
   const s = v === undefined ? '' : String(v);
   if (!s || s === '.' || s === '..') throw new Unit7Error('invalid_input', `“${s}” isn’t a name Unit7 can look up.`, 400);
   return encodeURIComponent(s);

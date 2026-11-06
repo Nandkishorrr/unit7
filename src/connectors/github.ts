@@ -12,6 +12,7 @@ import { promisify } from 'node:util';
 import type { Ctx } from '../tools/runtime.ts';
 import { get, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
+import { dnsHost } from './dnsinfo.ts';
 import { githubAppToken } from './oneclick.ts';
 import { sysBin } from './shell.ts';
 
@@ -55,16 +56,20 @@ export function headSha(repo: Repo, branch: string | undefined, token?: string):
   });
 }
 
-async function api<T>(token: string | undefined, path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function githubApi<T>(token: string | undefined, path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const r = await fetch(`${API()}${path}`, {
     method: init.method ?? 'GET',
     headers: { accept: 'application/vnd.github+json', 'user-agent': 'Unit7', 'x-github-api-version': '2022-11-28', ...(token && { authorization: `Bearer ${token}` }), ...(init.body !== undefined && { 'content-type': 'application/json' }) },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
     signal: AbortSignal.timeout(20_000),
   });
-  if (!r.ok) throw new Unit7Error('github_api', `GitHub said ${r.status} for ${path}`, 502);
+  if (!r.ok) {
+    const why = (await r.json().catch(() => ({})) as { message?: string }).message;
+    throw new Unit7Error('github_api', `GitHub said ${r.status} for ${path}${why ? `: ${why}` : ''}`, 502);
+  }
   return r.status === 204 ? (undefined as T) : r.json() as Promise<T>;
 }
+const api = githubApi;
 
 // Files that mention a term, for "where to look". Code search needs a token, and it indexes the default branch.
 export const searchCode = (repo: Repo, term: string, token: string) => api<{ items?: { path: string }[] }>(token, `/search/code?q=${encodeURIComponent(`${term} repo:${repo.owner}/${repo.name}`)}&per_page=5`).then((r) => (r.items ?? []).map((x) => x.path));
@@ -157,6 +162,12 @@ export async function createRepo(token: string, name: string, o: { private: bool
   const r = await api<{ owner: { login: string }; name: string }>(token, o.org ? `/orgs/${encodeURIComponent(o.org)}/repos` : '/user/repos', { method: 'POST', body: { name, private: o.private, ...(o.description && { description: o.description }) } })
     .catch((e: Unit7Error) => { throw /422/.test(e.message) ? new Unit7Error('already_exists', `You already have a repo called ${name}. Choose another name, or say you want to update it.`, 409) : e; });
   return { owner: r.owner.login, name: r.name };
+}
+// GitHub Pages on a domain: GitHub is told the name, then DNS points at the owner's github.io
+// ponytail: one of GitHub's four addresses for a bare domain; DNS writers replace a name's record, so add the others when they can keep several
+export async function pagesDomain(repo: Repo, domain: string, token: string | undefined): Promise<{ type: 'A' | 'CNAME'; name: string; content: string }[]> {
+  await api(token, `/repos/${repo.owner}/${repo.name}/pages`, { method: 'PUT', body: { cname: domain } });
+  return [(await dnsHost(domain)).zone === domain ? { type: 'A', name: domain, content: '185.199.108.153' } : { type: 'CNAME', name: domain, content: `${repo.owner.toLowerCase()}.github.io` }];
 }
 export async function repoExists(token: string, name: string): Promise<Repo | undefined> {
   const me = await api<{ login: string }>(token, '/user');

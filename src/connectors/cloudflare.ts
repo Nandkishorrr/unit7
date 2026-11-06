@@ -2,21 +2,23 @@
 import type { Ctx } from '../tools/runtime.ts';
 import { Unit7Error } from '../errors.ts';
 import { assertReachable } from '../netguard.ts';
+import { dnsHost } from './dnsinfo.ts';
 
 export const cfApi = () => process.env.UNIT7_CLOUDFLARE_API ?? 'https://api.cloudflare.com/client/v4';
 
-async function cf(ctx: Ctx, accountId: string | undefined, path: string, init: { method?: string; body?: unknown } = {}) {
+// jwt: Pages' own upload token, for the calls made with it instead of the account's token
+export async function cf(ctx: Ctx, accountId: string | undefined, path: string, init: { method?: string; body?: unknown; form?: FormData; jwt?: string; timeoutMs?: number } = {}) {
   const { value } = ctx.credentialFor('cloudflare', accountId);
   await assertReachable(new URL(cfApi()).hostname);
   const res = await fetch(`${cfApi()}${path}`, {
-    method: init.method ?? (init.body ? 'POST' : 'GET'),
-    headers: { authorization: `Bearer ${value}`, 'content-type': 'application/json' },
-    body: init.body ? JSON.stringify(init.body) : undefined,
-    signal: AbortSignal.timeout(20_000),
+    method: init.method ?? (init.body || init.form ? 'POST' : 'GET'),
+    headers: { authorization: `Bearer ${init.jwt ?? value}`, ...(!init.form && { 'content-type': 'application/json' }) },
+    body: init.form ?? (init.body ? JSON.stringify(init.body) : undefined),
+    signal: AbortSignal.timeout(init.timeoutMs ?? 20_000),
   });
   const data = await res.json().catch(() => ({})) as { success?: boolean; result?: any; errors?: { message: string }[] };
   if (!res.ok || data.success === false) {
-    throw new Unit7Error('cloudflare_error', `Cloudflare: ${data.errors?.map((e) => e.message).join('; ') || res.statusText}`, 502);
+    throw new Unit7Error('cloudflare_error', `Cloudflare: ${data.errors?.map((e) => e.message).join('; ') || res.statusText}`, res.status === 403 || res.status === 404 ? res.status : 502);
   }
   return data.result;
 }
@@ -56,17 +58,21 @@ export const cloudflare = {
   },
   addRecord: (ctx: Ctx, accountId: string, zoneId: string, r: { type: string; name: string; content?: string; data?: object; ttl?: number; priority?: number; proxied?: boolean }) =>
     cf(ctx, accountId, `/zones/${zoneId}/dns_records`, { body: { ...r, ttl: r.ttl ?? 1, proxied: r.proxied ?? false } }).catch((e: Unit7Error) => { if (!/already exists|identical record/i.test(e.message)) throw e; }),
-  // a custom domain on a Pages project (POST /accounts/{id}/pages/projects/{name}/domains), in whichever account has it;
-  // the key needs "Cloudflare Pages: Edit", which Unit7's DNS key doesn't ask for
-  async pagesDomain(ctx: Ctx, accountId: string, project: string, domain: string) {
-    const name = encodeURIComponent(project);
-    for (const a of await cf(ctx, accountId, '/accounts?per_page=50') as { id: string }[]) {
-      if (!(await cf(ctx, accountId, `/accounts/${a.id}/pages/projects/${name}`).then(() => true, () => false))) continue;
-      await cf(ctx, accountId, `/accounts/${a.id}/pages/projects/${name}/domains`, { body: { name: domain } }).catch((e: Unit7Error) => { if (!/already/i.test(e.message)) throw e; });
-      return;
-    }
-    throw new Unit7Error('not_found', `Cloudflare has no Pages project called ${project} that this key can reach. A key needs “Cloudflare Pages: Edit” for this: add one in Connections.`, 404);
+  // the Cloudflare account a token belongs to: Pages projects live under it, not under a zone
+  async accountOf(ctx: Ctx, accountId: string): Promise<string> {
+    const [account] = await cf(ctx, accountId, '/accounts?per_page=5') as { id: string }[];
+    if (!account) throw new Unit7Error('cloudflare_error', 'This Cloudflare token can’t see an account. In Connections, add a new Cloudflare key (the button pre-fills the right permissions).', 403);
+    return account.id;
   },
+  // a Pages project answers on a domain once Cloudflare knows the name and DNS points at its pages.dev address. A bare
+  // domain needs a flattened CNAME (Cloudflare does it) or ALIAS, as on Heroku
+  async addPagesDomain(ctx: Ctx, accountId: string, project: string, domain: string): Promise<{ type: 'CNAME' | 'ALIAS'; name: string; content: string }[]> {
+    const base = `/accounts/${await cloudflare.accountOf(ctx, accountId)}/pages/projects/${encodeURIComponent(project)}`;
+    await cf(ctx, accountId, `${base}/domains`, { body: { name: domain } }).catch((e: Unit7Error) => { if (!/already/i.test(e.message)) throw e; });
+    return [{ type: (await dnsHost(domain)).zone === domain ? 'ALIAS' : 'CNAME', name: domain, content: (await cf(ctx, accountId, base)).subdomain }];
+  },
+  // asks Cloudflare to check the domain again now DNS points there
+  confirmPagesDomain: async (ctx: Ctx, accountId: string, project: string, domain: string) => { await cf(ctx, accountId, `/accounts/${await cloudflare.accountOf(ctx, accountId)}/pages/projects/${encodeURIComponent(project)}/domains/${encodeURIComponent(domain)}`, { method: 'PATCH' }).catch(() => undefined); },
   zonePlan: (ctx: Ctx, accountId: string, zoneId: string) => cf(ctx, accountId, `/zones/${zoneId}`).then((z: { plan?: { name: string; price: number; currency: string; frequency?: string } }) => z.plan),
   async zones(ctx: Ctx, accountId: string) {
     const out: { id: string; name: string; status: string }[] = [];

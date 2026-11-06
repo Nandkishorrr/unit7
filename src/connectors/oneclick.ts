@@ -28,7 +28,7 @@ export interface Provider { id: string; name: string; group: string; what: strin
 
 const cfToken = 'https://dash.cloudflare.com/profile/api-tokens?' + new URLSearchParams({
   name: 'Unit7',
-  permissionGroupKeys: JSON.stringify([{ key: 'zone', type: 'edit' }, { key: 'dns', type: 'edit' }, { key: 'zone_settings', type: 'edit' }, { key: 'cache_purge', type: 'edit' }]),
+  permissionGroupKeys: JSON.stringify([{ key: 'zone', type: 'edit' }, { key: 'dns', type: 'edit' }, { key: 'zone_settings', type: 'edit' }, { key: 'cache_purge', type: 'edit' }, { key: 'page', type: 'edit' }, { key: 'account_settings', type: 'read' }]),
   accountId: '*', zoneId: 'all',
 });
 
@@ -38,7 +38,7 @@ const mcp = (id: string, name: string, group: string, what: string, mcpUrl: stri
 export const CATALOG: Provider[] = [
   { id: 'hostinger', name: 'Hostinger', group: 'Servers & domains', what: 'Your VPS, domains and DNS. Unit7 sets up servers for you.', method: { kind: 'mcp', mcpUrl: 'https://mcp.hostinger.com' },
     alt: { kind: 'key', keyUrl: 'https://hpanel.hostinger.com/profile/api', hint: 'Create a token, then paste it here.' } },
-  { id: 'cloudflare', name: 'Cloudflare', group: 'Servers & domains', what: 'DNS and HTTPS for domains on Cloudflare.', method: { kind: 'key', keyUrl: cfToken, hint: 'Permissions are pre-filled. Click Continue, Create, then paste the token here.' } },
+  { id: 'cloudflare', name: 'Cloudflare', group: 'Servers & domains', what: 'DNS and HTTPS for domains on Cloudflare, and websites on Cloudflare Pages.', method: { kind: 'key', keyUrl: cfToken, hint: 'Permissions are pre-filled. Click Continue, Create, then paste the token here.' } },
   { id: 'godaddy', name: 'GoDaddy', group: 'Servers & domains', what: 'DNS for domains on GoDaddy. Unit7 points them at your apps.', method: { kind: 'key', keyUrl: 'https://developer.godaddy.com/personal-access-token', hint: 'Create a personal access token with DNS update permission, then paste it here.' } },
   { id: 'porkbun', name: 'Porkbun', group: 'Servers & domains', what: 'DNS for domains on Porkbun.', method: { kind: 'key', keyUrl: 'https://porkbun.com/account/api', hint: 'Create an API key, then paste it as KEY:SECRET (both parts, colon between). Also switch on API Access for each domain.', pattern: '^pk1_[^:]+:sk1_' } },
   { id: 'namecom', name: 'Name.com', group: 'Servers & domains', what: 'DNS for domains on Name.com.', method: { kind: 'key', keyUrl: 'https://www.name.com/account/settings/api', hint: 'Create a token, then paste it as USERNAME:TOKEN. With 2FA on, also switch on API access under Security.', pattern: '^[^:]+:.+' } },

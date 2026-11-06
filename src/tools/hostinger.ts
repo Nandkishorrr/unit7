@@ -88,8 +88,8 @@ defineTool({
 function tryJson(s: string): unknown { try { return JSON.parse(s); } catch { return s; } }
 
 // For other tools (Doctor): run one Hostinger operation and get its data back.
-export async function hostingerExec(ctx: Ctx, accountId: string, operation: string, params: Record<string, unknown> = {}): Promise<any> {
-  return unwrap(tryJson(await hostinger(ctx.app).call(ctx, accountId, 'execute', { operation, params }, 120_000)));
+export async function hostingerExec(ctx: Ctx, accountId: string, operation: string, params: Record<string, unknown> = {}, timeoutMs = 120_000): Promise<any> {
+  return unwrap(tryJson(await hostinger(ctx.app).call(ctx, accountId, 'execute', { operation, params }, timeoutMs)));
 }
 export { account as hostingerAccount };
 
