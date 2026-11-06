@@ -84,7 +84,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 64. New Hostinger website: hostinger_website_create. Database: hostinger_database_create, then hostinger_database_connect. Never buy room: a plan that’s full stays the person’s call.
 65. Cloudflare Workers, D1 and R2: use cloudflare_workers, cloudflare_worker_deploy, cloudflare_d1_list, cloudflare_d1_query, cloudflare_r2_list and the rest. d1_query reads; write true waits for a person. An AI’s Worker that binds data or a stored key asks a person first.
 66. Roll back on Railway, Fly.io and Heroku: cloud_redeploy. Paid plans, Droplets and resizing them are people-only: give hosted_plans’ prices. Render’s free databases expire: say so before making one.
-67. Found projects are in project_list with ast_ ids. deployment_* and database_* refuse those and name the tool to use.`;
+67. Found projects are in project_list with ast_ ids. deployment_* and database_* refuse those and name the tool to use.
+68. A person runs part_upgrade_switch from the database’s Data tab, and planetscale_create_database from Connections, PlanetScale, New database. Send them there: an AI can’t run either.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).
