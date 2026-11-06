@@ -609,7 +609,7 @@ test('Seven’s copies obey the same brakes as every automatic copy', async () =
 });
 
 // --- what a real first day found ------------------------------------------------------------------------------------------------
-const watchRow = (app: ReturnType<typeof testApp>, orgId: string, host: string, status: string, detail: string) => run(app.db, `INSERT INTO watch (org_id, host, kind, status, detail, streak, checked_at) VALUES (?, ?, 'site', ?, ?, 3, ?)`, orgId, host, status, detail, new Date().toISOString());
+const watchRow = (app: ReturnType<typeof testApp>, orgId: string, host: string, status: string, detail: string, lastOk: string | null = new Date(Date.now() - 3600_000).toISOString()) => run(app.db, `INSERT INTO watch (org_id, host, kind, status, detail, streak, last_ok, checked_at) VALUES (?, ?, 'site', ?, ?, 3, ?, ?)`, orgId, host, status, detail, lastOk, new Date().toISOString());
 
 test('a site that’s down right now reaches Seven, however fresh the check-up that says all is well', async () => {
   const { app, o } = await world([]);
@@ -622,6 +622,13 @@ test('a site that’s down right now reaches Seven, however fresh the check-up t
   assert.equal(r!.level, 'act');
   run(app.db, `UPDATE watch SET status = 'up' WHERE host = 'crm.example.com'`);
   assert.equal(briefingOf(app.db, o.orgId, checkup([])).facts.has('down:crm.example.com'), false, 'and it goes when the site is back');
+});
+
+test('a name that has never answered isn’t an outage, so it doesn’t take over every shift', async () => {
+  const { app, o } = await world([]);
+  watchRow(app, o.orgId, 'rally.example.com', 'down', 'does not resolve', null);
+  assert.equal(briefingOf(app.db, o.orgId, checkup([])).facts.has('down:rally.example.com'), false);
+  assert.doesNotMatch((await runShift(app, o.orgId, { kind: 'round' }))!.line, /rally\.example\.com/);
 });
 
 test('a ban on this computer reaches Seven too, and goes when it’s lifted', async () => {

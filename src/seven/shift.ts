@@ -19,7 +19,7 @@ import { knownRepos } from './knowledge.ts';
 import { lastXray } from '../tools/xray.ts';
 import { distrusted, playbookFor, toldWrong } from '../care/judge.ts';
 import { mayCopy, protectionOf } from '../care/safetynet.ts';
-import { watchIssues } from '../sentinel/watch.ts';
+import { watchIssues, watchRows } from '../sentinel/watch.ts';
 import { FINISH_DESCRIPTION, FINISH_SCHEMA, SYSTEM } from './prompt.ts';
 import { mindFor, type Effort, type Mind, type Spec, type Step, type Usage } from './brain.ts';
 
@@ -49,9 +49,13 @@ export function factsOf(c: Checkup | undefined): Fact[] {
   return out;
 }
 const fingerprintOf = (facts: Fact[]) => createHash('sha1').update(facts.filter((f) => f.severity !== 'info').map((f) => `${f.id}:${f.severity}`).sort().join('|')).digest('hex').slice(0, 16);
-// what's wrong this minute. A check-up can be hours old, and its "all fine" mustn't outlive it.
+// what's wrong this minute. A check-up can be hours old, and its "all fine" mustn't outlive it. A name that has never answered isn't an
+// outage: it's waiting for DNS or a certificate, and saying so every shift would bury what's new.
 const OPEN = /^(down:|blocked$)/;
-export const openFacts = (db: DB, orgId: string): Fact[] => watchIssues({ db }, orgId).filter((w) => OPEN.test(w.key)).map((w) => ({ id: w.key, severity: w.severity === 'critical' ? 'critical' : 'medium', measured: true, text: w.text }));
+export const openFacts = (db: DB, orgId: string): Fact[] => {
+  const never = new Set(watchRows({ db }, orgId).filter((w) => w.kind === 'site' && !w.last_ok).map((w) => `down:${w.host}`));
+  return watchIssues({ db }, orgId).filter((w) => OPEN.test(w.key) && !never.has(w.key)).map((w) => ({ id: w.key, severity: w.severity === 'critical' ? 'critical' : 'medium', measured: true, text: w.text }));
+};
 
 export function briefingOf(db: DB, orgId: string, c: Checkup | undefined, nowMs = Date.now()): Briefing {
   const list = [...openFacts(db, orgId), ...factsOf(c)], facts = new Map(list.map((f) => [f.id, f]));
