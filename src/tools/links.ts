@@ -143,7 +143,7 @@ SOURCES.supabase = {
     const { accountId, ref } = e as { accountId: string; ref: string };
     return (await supabase.projects(ctx, accountId)).find((p) => p.id === ref)?.name ?? ref;
   },
-  async vars(ctx, e, consumer) {
+  async vars(ctx, e, consumer, linkId) {
     const { accountId, ref } = e as { accountId: string; ref: string };
     const [reads, url, keys] = await Promise.all([consumerReads(ctx, consumer), supabase.url(ctx, accountId, ref), supabase.publicKey(ctx, accountId, ref)]);
     const vars = supabaseVars(reads, url, keys.anon, keys.publishable);
@@ -151,12 +151,16 @@ SOURCES.supabase = {
     // never into a NEXT_PUBLIC_/VITE_… name: those are compiled into the page every visitor downloads
     const wantsSecret = reads.keys.filter((k) => /SUPABASE_(SERVICE_ROLE|SECRET)_KEY$/.test(k) && !isPublicKey(k));
     let note: string | undefined;
-    if (wantsSecret.length && isAgent(ctx) && !ctx.approvalId) note = `The code reads ${wantsSecret.join(', ')}, a key that skips row-level security, so a person adds it: connect these two on Unit7's Wiring page, or put it in the Vault page.`;
-    else if (wantsSecret.length) {
+    // a person gave this link its key, so a rotated one follows it. A new one waits for a person
+    const had = json<{ key: string }[]>(get<{ vars: string }>(ctx.db, 'SELECT vars FROM links WHERE id = ?', linkId)?.vars ?? '[]', []).map((v) => v.key);
+    const waits = isAgent(ctx) && !ctx.approvalId ? wantsSecret.filter((k) => !had.includes(k)) : [];
+    const fetched = wantsSecret.filter((k) => !waits.includes(k));
+    if (waits.length) note = `The code reads ${waits.join(', ')}, a key that skips row-level security, so a person adds it: connect these two on Unit7's Wiring page, or put it in the Vault page.`;
+    if (fetched.length) {
       try {
         const sk = await supabase.secretKeys(ctx, accountId, ref);
-        for (const k of wantsSecret) vars.push({ key: k, value: /SERVICE_ROLE/.test(k) ? sk.serviceRole ?? sk.secret! : sk.secret ?? sk.serviceRole!, secret: true });
-      } catch (e) { note = `The code reads ${wantsSecret.join(', ')}, which Unit7 couldn't fetch (${(e as Error).message.slice(0, 120)}). Put it in Unit7's Vault page (never in a chat) from supabase.com/dashboard/project/${ref}/settings/api-keys.`; }
+        for (const k of fetched) vars.push({ key: k, value: /SERVICE_ROLE/.test(k) ? sk.serviceRole ?? sk.secret! : sk.secret ?? sk.serviceRole!, secret: true });
+      } catch (e) { note = [note, `The code reads ${fetched.join(', ')}, which Unit7 couldn't fetch (${(e as Error).message.slice(0, 120)}). Put it in Unit7's Vault page (never in a chat) from supabase.com/dashboard/project/${ref}/settings/api-keys.`].filter(Boolean).join(' '); }
     }
     if (reads.keys.some((k) => /^(DATABASE_URL|POSTGRES_URL)$/.test(k))) note = [note, `The code also reads a database URL. Supabase never reveals the database password, so set it once from supabase.com/dashboard/project/${ref}/database/settings (in Unit7's Vault page, never in a chat).`].filter(Boolean).join(' ');
     return { consumer: vars, note };

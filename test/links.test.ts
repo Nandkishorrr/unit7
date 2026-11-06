@@ -171,6 +171,10 @@ test('an AI can wire public keys, but a database login or service key waits for 
     const p = ok(await o.h('link.create', end));
     assert.equal(asked, 1, 'a person connecting them does');
     assert.ok(p.set.includes('SUPABASE_SERVICE_ROLE_KEY'));
+    // once a person has given it, a rotated key still follows, so Warden's daily check keeps it working
+    Object.assign(supabase, { secretKeys: async () => ({ serviceRole: 'eyJrotated', secret: 'sb_secret_y' }) });
+    assert.deepEqual(ok(await o.a('link.sync', { linkId: p.linkId })).set, ['SUPABASE_SERVICE_ROLE_KEY']);
+    assert.equal(await reveal(o, api, 'SUPABASE_SERVICE_ROLE_KEY'), 'eyJrotated');
   } finally { v.close(); }
 });
 
