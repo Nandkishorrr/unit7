@@ -18,7 +18,7 @@ import { CURL, coolifyTiming } from '../src/connectors/coolify.ts';
 import { XRAY_PROBE } from '../src/discovery/xray.ts';
 import { decideApproval, execute, type ToolResult } from '../src/tools/runtime.ts';
 import { anonymizeSql, liveReason, piiColumns, piiOf } from '../src/tools/staging.ts';
-import { addonDns, claimResult, claimScript, gateRoute } from '../src/tools/addons.ts';
+import { ADDONS, addonDns, claimResult, claimScript, gateRoute } from '../src/tools/addons.ts';
 import { COOLIFY_HOST } from './xray-fixtures.ts';
 import { fakeKuma, isKumaTrip, runInKuma } from './kuma-fixture.ts';
 
@@ -444,7 +444,7 @@ test('the catalog: room for each tool, how it’s added, Plausible off, a subdom
     const cat = ok(await o.a('addon.catalog', {}));
     assert.equal(cat.server.id, srv, 'the server with Coolify connected');
     assert.deepEqual([cat.freeMb, cat.root], [1024, 'example.com']);
-    assert.equal(cat.items.length, 13);
+    assert.equal(cat.items.length, ADDONS.length);
     const by = Object.fromEntries(cat.items.map((x: any) => [x.id, x]));
     assert.deepEqual([by.umami.how, by.umami.fits, by.umami.suggest], ['coolify', true, 'analytics.example.com']);
     assert.equal(by.glitchtip.fits, false, '1 GB needed, 1 GB free: no room to spare');

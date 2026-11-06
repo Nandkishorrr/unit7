@@ -94,8 +94,10 @@ export async function makePlan(api: Coolify, s: ServerRow, it: Intent): Promise<
   const envThere = envs.some((e) => e?.name === it.environment);
   const there = project && envThere ? await envResources(api, project.uuid, it.environment) : { application: [], database: [], service: [] };
   const where = { serverId: s.id, project: '$project', environment: it.environment };
-  const steps: Step[] = [{ tool: 'coolify.create_project', title: `Set up the project ${it.project}`, input: { serverId: s.id, name: it.project, environment: it.environment }, keep: { project: 'project' } }];
-  const changes: Plan['card']['changes'] = [
+  // catalog tools go in the Tools project, so a sentence with nothing else needs no project of its own
+  const onlyTools = !it.app && !it.databases.length && !!it.services.length && it.services.every((t) => ADDONS.some((x) => x.id === t && x.template));
+  const steps: Step[] = onlyTools ? [] : [{ tool: 'coolify.create_project', title: `Set up the project ${it.project}`, input: { serverId: s.id, name: it.project, environment: it.environment }, keep: { project: 'project' } }];
+  const changes: Plan['card']['changes'] = onlyTools ? [] : [
     { label: 'Project in Coolify', after: `${it.project}${project ? ', already there' : ', new'}` },
     { label: 'Environment', after: `${it.environment}${envThere ? ', already there' : ', new'}` },
   ];
