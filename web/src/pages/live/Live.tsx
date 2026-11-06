@@ -39,13 +39,13 @@ const useLive = () => useSyncExternalStore((f) => { subs.add(f); return () => su
 const choose = (source?: Source, error?: string) => { keep(source); state = { ...fresh(source), error }; subs.forEach((f) => f()); };
 const inputOf = (s: Source) => ('uploadId' in s ? { uploadId: s.uploadId } : { repo: s.repo, branch: s.branch });
 const placeId = (p: Place) => `${p.to}:${p.accountId ?? ''}:${p.serverId ?? ''}`;
-const unreachable = (e: Error) => ({ status: 'error', error: { code: 'network', message: `Unit7 didn’t answer: ${e.message}. Check it’s running, then try again.` } }) as const;
+const unreachable = () => ({ status: 'error', error: { code: 'network', message: 'Unit7 didn’t answer. Check it’s running, then try again.' } }) as const;
 const said = (r: Exclude<ToolResult, { status: 'ok' }>) => (r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : r.status === 'approval_required' ? `It’s waiting for your OK on Approvals. ${r.why}` : 'That didn’t go through.');
 
 let asked = 0; // only the latest look counts
 async function look() {
   const source = state.source, me = ++asked;
-  if (!source) return;
+  if (!source || state.run) return; // once it's going, what it found stays as it was
   patch({ looking: true, error: undefined });
   const r = await runTool('live.options', inputOf(source)).catch(unreachable);
   if (me !== asked) return;
@@ -85,6 +85,7 @@ export function LivePage() {
   const key = s.source && JSON.stringify(inputOf(s.source));
   useEffect(() => { void look(); }, [key]);
   useEffect(() => onLive((e) => { if (e.type.startsWith('account.')) void look(); }), []); // a host connected in another tab
+  useEffect(() => { if (wanted && (s.run?.out || s.run?.failed)) choose(); }, [wanted]); // Start free sent them here for a new site, not the last one
   return (
     <div className="mx-auto max-w-[760px]">
       <PageHeader title="Put this live" subtitle="Your site on the internet, no terminal needed. Hand it over, check where it goes, press Go." />
@@ -284,7 +285,7 @@ function Settings({ s, keys, title, note, saveLabel, onSave }: { s: State; keys:
         <p className="mt-0.5 text-[13px] text-muted">{note}</p>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        {keys.slice(0, 24).map((k) => (
+        {keys.map((k) => (
           <Field key={k} label={k} hint={isPublicKey(k) ? 'Anyone can read this one: it goes in the page.' : undefined}>
             <Input type={isPublicKey(k) ? 'text' : 'password'} autoComplete="off" spellCheck={false} className="font-mono" value={s.env[k] ?? ''} onChange={(e) => set(k, e.target.value)} />
           </Field>

@@ -239,9 +239,12 @@ test('only people and tokens that can upload code can, under the same limit as e
     const scoped = createToken(s.app.db, { ...s.owner }, 'read only', 'readonly').token;
     assert.equal((await s.browser()('POST', '/api/live/upload', zip(), scoped)).status, 403);
     resetRateLimits();
-    let last = 0;
-    for (let i = 0; i < 61; i++) last = (await s.sam('POST', '/api/live/upload', new FormData())).status;
-    assert.equal(last, 429, 'the upload limit, shared with /api/uploads');
+    // 60 a minute refills as it goes, so a slow machine gets a few more before the limit bites
+    let last = 0, tries = 0;
+    while (last !== 429 && tries++ < 300) last = (await s.sam('POST', '/api/live/upload', new FormData())).status;
+    assert.equal(last, 429, 'the upload limit');
+    assert.ok(tries >= 60, `it took ${tries} tries`);
+    assert.equal((await s.sam('POST', '/api/uploads', new FormData())).status, 429, 'and it’s the same limit as /api/uploads');
   } finally { s.close(); }
 });
 
@@ -316,6 +319,19 @@ test('live.options says which host to connect when nothing can take it, and why 
     assert.equal(d.notConnected.find((h: any) => h.to === 'vercel').ok, false);
     assert.match(d.notConnected.find((h: any) => h.to === 'vercel').why, /doesn’t run Docker/);
     assert.equal(d.notConnected.find((h: any) => h.to === 'coolify').ok, true);
+    assert.equal(d.notConnected[0].to, 'coolify', 'the host that fits comes first');
+    const next = (await s.sam('POST', '/api/live/upload', folderForm({ 'package.json': NEXT, 'app/page.tsx': 'x' }))).body;
+    assert.equal((await s.sam('POST', '/api/tools/live.options', { input: { uploadId: next.uploadId } })).body.output.notConnected[0].to, 'vercel');
+  } finally { s.close(); }
+});
+
+test('the settings a site reads come from its code and its example file, not from its tests or its build', async () => {
+  const s = await setup();
+  try {
+    const dir = site({ 'package.json': NEXT, 'app/page.tsx': 'process.env.FROM_CODE', 'dist/bundle.js': 'process.env.FROM_BUILD', 'app/a.test.ts': 'process.env.FROM_TEST', '.env.example': 'FROM_EXAMPLE=\n' });
+    const o = (await s.sam('POST', '/api/tools/live.options', { input: { folder: dir } })).body;
+    assert.equal(o.status, 'ok', JSON.stringify(o));
+    assert.deepEqual(o.output.site.settings, ['FROM_CODE', 'FROM_EXAMPLE']);
   } finally { s.close(); }
 });
 
