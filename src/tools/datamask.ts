@@ -9,7 +9,7 @@
 // shaped like an email or a phone number is hidden wherever it shows up.
 import { Unit7Error } from '../errors.ts';
 
-export type Dialect = 'pg' | 'my';
+export type Dialect = 'pg' | 'my' | 'lite'; // lite: SQLite, which D1 runs
 export interface Tok { k: 'word' | 'name' | 'str' | 'op' | 'cmd' | 'note'; v: string; at: number } // cmd: a backslash outside everything. note: a comment
 const refuse = (why: string) => new Unit7Error('bad_statement', why, 400);
 const SPACE = new Set([' ', '\t', '\n', '\r', '\f', '\v']);
@@ -40,7 +40,7 @@ export function* lex(sql: string, d: Dialect, pos = { i: 0 }): Generator<Tok> {
     const i = pos.i, c = sql[i]!;
     if (SPACE.has(c)) { pos.i++; continue; }
     if (d === 'pg' && sql.startsWith('--', i) && word?.at === i - 1 && /^e$/i.test(word.v) && afterNumber(sql, word.at)) throw refuse(GLUED);
-    if ((sql.startsWith('--', i) && (d === 'pg' || SPACE.has(sql[i + 2] ?? ' '))) || (d === 'my' && c === '#')) { pos.i = lineEnd(sql, i, d); yield { k: 'note', v: sql.slice(i, pos.i), at: i }; continue; }
+    if ((sql.startsWith('--', i) && (d !== 'my' || SPACE.has(sql[i + 2] ?? ' '))) || (d === 'my' && c === '#')) { pos.i = lineEnd(sql, i, d); yield { k: 'note', v: sql.slice(i, pos.i), at: i }; continue; }
     if (sql.startsWith('/*', i)) {
       // MySQL runs what's in these, so they're code, not comments
       if (d === 'my' && /^\/\*M?!/.test(sql.slice(i, i + 4))) throw refuse('Comments that run code aren’t allowed here.');
@@ -56,7 +56,9 @@ export function* lex(sql: string, d: Dialect, pos = { i: 0 }): Generator<Tok> {
       if (d === 'pg' && !e && ODD_SLASH.test(sql.slice(i + 1, j))) throw refuse('A backslash right before a quote can be read two ways. Double it, or write the string as E\'…\'.');
       pos.i = j; yield { k: 'str', v: sql.slice(i + 1, j - 1), at: i }; continue;
     }
-    if (c === '"' || (d === 'my' && c === '`')) { const j = quoted(i, c, false); pos.i = j; yield { k: 'name', v: sql.slice(i + 1, j - 1).split(c + c).join(c), at: i }; continue; }
+    if (c === '"' || (d !== 'pg' && c === '`')) { const j = quoted(i, c, false); pos.i = j; yield { k: 'name', v: sql.slice(i + 1, j - 1).split(c + c).join(c), at: i }; continue; }
+    // SQLite's other way to write a name, which can hold a quote: read as anything else, what follows it looks like a string
+    if (d === 'lite' && c === '[') { const j = sql.indexOf(']', i); if (j < 0) throw refuse('A bracket isn’t closed.'); pos.i = j + 1; yield { k: 'name', v: sql.slice(i + 1, j), at: i }; continue; }
     if (d === 'pg' && c === '$') {
       const tag = matched(TAG, sql, i);
       if (tag) { const e = sql.indexOf(tag, i + tag.length); if (e < 0) throw refuse('A quote isn’t closed.'); pos.i = e + tag.length; yield { k: 'str', v: sql.slice(i + tag.length, e), at: i }; continue; }
@@ -91,7 +93,9 @@ export function statement(sql: string, d: Dialect) {
   return { first: body[0].v.toLowerCase(), text: sql.slice(0, semi >= 0 ? toks[semi]!.at : sql.length).trim(), toks: body };
 }
 const has = (toks: Tok[], ...words: string[]) => toks.some((t) => t.k === 'word' && words.includes(t.v.toLowerCase()));
-const READS: Record<Dialect, string[]> = { pg: ['select', 'with', 'values', 'table', 'show', 'explain'], my: ['select', 'with', 'values', 'table', 'show', 'explain', 'desc', 'describe'] };
+// the words outside every bracket: what the statement itself does, not what its subqueries do
+export const topWords = (toks: Tok[]) => { let depth = 0; return toks.flatMap((t) => { if (t.k === 'op' && t.v === '(') depth++; if (t.k === 'op' && t.v === ')') depth--; return t.k === 'word' && !depth ? [t.v.toLowerCase()] : []; }); };
+const READS: Record<Dialect, string[]> = { pg: ['select', 'with', 'values', 'table', 'show', 'explain'], my: ['select', 'with', 'values', 'table', 'show', 'explain', 'desc', 'describe'], lite: ['select', 'values', 'explain'] };
 export const isRead = (first: string, d: Dialect) => READS[d].includes(first);
 // a cursor (or LIMIT) can hold these; SHOW and EXPLAIN return what they return
 export const isRows = (first: string) => ['select', 'with', 'values', 'table'].includes(first);
@@ -208,19 +212,34 @@ export function readMask(st: { first: string; toks: Tok[] }, plan: unknown, colu
 // (MySQL) no outputs in its plan, so the statement has to prove it: one plain SELECT, item by item, each lined up with its column.
 // A subquery or a union can put anything under any name, and only the database knows what a view renamed.
 const word = (t: Tok | undefined, ...w: string[]) => t?.k === 'word' && w.includes(t.v.toLowerCase());
+// a function in FROM (json_each in SQLite, JSON_TABLE in MySQL) hands back any column's value under a plain name. toks start at FROM
+function tableCall(toks: Tok[]) {
+  let depth = 0;
+  for (const [k, t] of toks.entries()) {
+    if (!depth && word(t, 'where', 'group', 'having', 'order', 'limit', 'window')) return false;
+    if (t.k !== 'op') continue;
+    if (t.v === ')') depth--;
+    if (t.v !== '(') continue;
+    depth++;
+    const fn = toks[k - 1], before = toks[k - 2];
+    if ((fn?.k === 'word' || fn?.k === 'name') && (word(before, 'from', 'join') || (before?.k === 'op' && (before.v === ',' || before.v === '.')))) return true;
+  }
+  return false;
+}
 export function textMask(toks: Tok[], columns: string[]): Mask {
   const words = toks.filter((t) => t.k === 'word' || t.k === 'name').map((t) => t.v), people = peopleIn(words), m = NONE();
   columns.forEach((c, i) => { if (personal(c, people)) m.hide.add(i); });
   if (word(toks[0], 'desc', 'describe', 'explain')) return m; // names and numbers about a table, never its rows
   if (!word(toks[0], 'select') || toks.slice(1).some((t) => word(t, 'select', 'union', 'except', 'intersect'))) return { ...m, all: true };
-  const items: Tok[][] = [[]];
-  let depth = 0;
-  for (const t of word(toks[1], 'distinct') ? toks.slice(2) : toks.slice(1)) {
+  const items: Tok[][] = [[]], list = word(toks[1], 'distinct') ? toks.slice(2) : toks.slice(1);
+  let depth = 0, tables: Tok[] = [];
+  for (const [k, t] of list.entries()) {
     if (t.k === 'op' && t.v === '(') depth++;
     if (t.k === 'op' && t.v === ')') depth--;
-    if (!depth && word(t, 'from')) break;
+    if (!depth && word(t, 'from')) { tables = list.slice(k); break; }
     if (!depth && t.k === 'op' && t.v === ',') items.push([]); else items.at(-1)!.push(t);
   }
+  if (tableCall(tables)) return { ...m, all: true };
   if (items.length === 1 && items[0]!.at(-1)?.v === '*' && items[0]!.at(-1)?.k === 'op' && items[0]!.length <= 3) return m; // SELECT *: the columns are what they're called
   if (items.length !== columns.length) return { ...m, all: true };
   const shape = (x: Tok[]) => x.map((t) => (t.k === 'op' ? t.v : t.k === 'str' ? 's' : 'w')).join('');

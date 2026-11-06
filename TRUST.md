@@ -81,3 +81,4 @@ See [SECURITY.md](SECURITY.md).
 - Logins from PlanetScale, Turso and Upstash go only to the vault and the app’s settings, and an AI’s link waits for a person.
 - Client secrets for Google and GitHub sign-in arrive by reference, go to Supabase, and are never read back. domain.move_dns always asks a person, even on full autopilot.
 - An AI waits for a person before a Hostinger database password reaches an app.
+- D1 has no read-only login, so an AI’s reads rest on Unit7’s reading of the query, with Cloudflare’s changed_db checked after. A view that renames a column isn’t seen through.

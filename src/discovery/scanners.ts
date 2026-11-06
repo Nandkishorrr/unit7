@@ -22,6 +22,8 @@ import type { ServerRow } from '../connectors/ssh.ts';
 // a missing piece is skipped, but a refusal or "slow down" stops the whole scan: the account is then left
 // alone instead of being asked once per project, domain and record
 const or = <T>(fallback: T) => (e: unknown): T => { if (providerTrouble(e)) throw e; return fallback; };
+// a key without one permission is still a good key: Cloudflare says "unauthorized" for it, which isn't a refused account
+const lacks = <T>(fallback: T) => (e: unknown): T => { if ((e as { status?: number }).status === 403) return fallback; return or(fallback)(e); };
 // settings that couldn't be read are unknown (envKeys left out), never "none": the map doesn't show them as
 // empty and autoconnect doesn't write over what may already be there
 type Env = Record<string, string> | undefined;
@@ -265,6 +267,22 @@ export const SCANNERS: Record<string, Scanner> = {
       const recs = await cloudflare.listRecords(ctx, acc, z.id) as { name: string; type: string; content: string }[];
       zoneScan(found, refs, 'cloudflare', acc, z.name, recs.map((r) => ({ name: r.name, type: r.type, value: r.content })));
     });
+    // a key made before Workers, D1 and R2 can't see them, and that's no reason to lose its DNS from the map
+    const cid = await cloudflare.accountOf(ctx, acc).catch(lacks(undefined));
+    if (!cid) return { found, refs };
+    const dash = `https://dash.cloudflare.com/${cid}`;
+    const [workers, sub, domains, databases, buckets] = await Promise.all([cloudflare.workers(ctx, acc, cid).catch(lacks([])), cloudflare.workersSubdomain(ctx, acc, cid).catch(lacks(undefined)), cloudflare.workerDomains(ctx, acc, cid).catch(lacks([])), cloudflare.d1(ctx, acc, cid).catch(lacks([])), cloudflare.r2(ctx, acc, cid).catch(lacks([]))]);
+    await pool(workers, 4, async (w) => {
+      const custom = domains.filter((d) => d.service === w.id).map((d) => d.hostname.toLowerCase());
+      const dev = sub && await cloudflare.workerOnDev(ctx, acc, cid, w.id).catch(lacks(false)) ? `${w.id}.${sub}.workers.dev` : undefined;
+      found.push({ provider: 'cloudflare', kind: 'app', extId: `worker:${w.id}`, name: w.id, accountId: acc, url: custom[0] ? `https://${custom[0]}` : dev ? `https://${dev}` : undefined, hosts: [...custom, ...(dev ? [dev] : [])], platform: 'cloudflare' });
+      refs.push(...custom.map((h): Ref => ({ from: `cloudflare:worker:${w.id}`, kind: 'domain', via: 'added on Cloudflare', host: h })));
+    });
+    await pool(databases, 4, async (d) => {
+      const size = await cloudflare.d1Size(ctx, acc, cid, d.uuid).catch(lacks(undefined));
+      found.push({ provider: 'cloudflare', kind: 'database', extId: `d1:${d.uuid}`, name: d.name, accountId: acc, url: `${dash}/workers/d1/databases/${d.uuid}`, engine: 'sqlite', platform: 'cloudflare', ...(size !== undefined && { size }) });
+    });
+    for (const b of buckets) found.push({ provider: 'cloudflare', kind: 'service', extId: `r2:${b.name}`, name: b.name, accountId: acc, url: `${dash}/r2/default/buckets/${b.name}`, status: 'R2 storage', platform: 'cloudflare' });
     return { found, refs };
   },
   async godaddy(ctx, acc) {

@@ -6,8 +6,9 @@ import { dnsHost } from './dnsinfo.ts';
 
 export const cfApi = () => process.env.UNIT7_CLOUDFLARE_API ?? 'https://api.cloudflare.com/client/v4';
 
-// jwt: Pages' own upload token, for the calls made with it instead of the account's token
-export async function cf(ctx: Ctx, accountId: string | undefined, path: string, init: { method?: string; body?: unknown; form?: FormData; jwt?: string; timeoutMs?: number } = {}) {
+// jwt: Pages' own upload token, for the calls made with it instead of the account's token. whole: the answer itself, for
+// what sits beside result (a cursor) or instead of it (GraphQL)
+export async function cf(ctx: Ctx, accountId: string | undefined, path: string, init: { method?: string; body?: unknown; form?: FormData; jwt?: string; timeoutMs?: number; whole?: boolean } = {}) {
   const { value } = ctx.credentialFor('cloudflare', accountId);
   await assertReachable(new URL(cfApi()).hostname);
   const res = await fetch(`${cfApi()}${path}`, {
@@ -15,13 +16,16 @@ export async function cf(ctx: Ctx, accountId: string | undefined, path: string, 
     headers: { authorization: `Bearer ${init.jwt ?? value}`, ...(!init.form && { 'content-type': 'application/json' }) },
     body: init.form ?? (init.body ? JSON.stringify(init.body) : undefined),
     signal: AbortSignal.timeout(init.timeoutMs ?? 20_000),
-  });
+  }).catch((e: Error) => { throw new Unit7Error('cloudflare_unreachable', `Unit7 couldn\u2019t reach Cloudflare (${e.name === 'TimeoutError' ? 'it took too long' : 'no answer'}). Check the internet connection and try again.`, 502); });
   const data = await res.json().catch(() => ({})) as { success?: boolean; result?: any; errors?: { message: string }[] };
   if (!res.ok || data.success === false) {
-    throw new Unit7Error('cloudflare_error', `Cloudflare: ${data.errors?.map((e) => e.message).join('; ') || res.statusText}`, res.status === 403 || res.status === 404 ? res.status : 502);
+    const said = data.errors?.map((e) => e.message).join('; ') || res.statusText;
+    throw new Unit7Error('cloudflare_error', res.status === 401 ? `Cloudflare refused this key (${said}). Check it in Connections \u2192 Cloudflare, or add a new one.` : res.status === 429 ? 'Cloudflare asked Unit7 to slow down (429). Try again in a minute.' : `Cloudflare: ${said}`, [401, 403, 404, 429].includes(res.status) ? res.status : 502);
   }
-  return data.result;
+  return init.whole ? data : data.result;
 }
+
+const R2_SIZE = 'query ($accountTag: string!, $startDate: Time, $endDate: Time, $bucketName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { r2StorageAdaptiveGroups(limit: 1, filter: { datetime_geq: $startDate, datetime_leq: $endDate, bucketName: $bucketName }, orderBy: [datetime_DESC]) { max { objectCount payloadSize metadataSize } dimensions { datetime } } } } }';
 
 export const cloudflare = {
   async verify(ctx: Ctx, accountId: string) {
@@ -80,6 +84,21 @@ export const cloudflare = {
   },
   // asks Cloudflare to check the domain again now DNS points there
   confirmPagesDomain: async (ctx: Ctx, accountId: string, project: string, domain: string) => { await cf(ctx, accountId, `/accounts/${await cloudflare.pagesAccount(ctx, accountId, project)}/pages/projects/${encodeURIComponent(project)}/domains/${encodeURIComponent(domain)}`, { method: 'PATCH' }).catch(() => undefined); },
+  // Workers, D1 and R2 live under the account, each behind its own permission, so one can fail alone
+  workers: (ctx: Ctx, accountId: string, cid: string) => cf(ctx, accountId, `/accounts/${cid}/workers/scripts`) as Promise<{ id: string; created_on?: string; modified_on?: string; handlers?: string[] }[]>,
+  workersSubdomain: async (ctx: Ctx, accountId: string, cid: string) => (await cf(ctx, accountId, `/accounts/${cid}/workers/subdomain`))?.subdomain as string | undefined,
+  workerOnDev: async (ctx: Ctx, accountId: string, cid: string, name: string) => !!(await cf(ctx, accountId, `/accounts/${cid}/workers/scripts/${encodeURIComponent(name)}/subdomain`))?.enabled,
+  workerDomains: (ctx: Ctx, accountId: string, cid: string) => cf(ctx, accountId, `/accounts/${cid}/workers/domains`) as Promise<{ hostname: string; service: string }[]>,
+  // ponytail: one page of 1000 for both; page through for an account with more
+  d1: (ctx: Ctx, accountId: string, cid: string) => cf(ctx, accountId, `/accounts/${cid}/d1/database?per_page=1000`) as Promise<{ uuid: string; name: string; created_at?: string; version?: string }[]>,
+  d1Size: async (ctx: Ctx, accountId: string, cid: string, id: string) => (await cf(ctx, accountId, `/accounts/${cid}/d1/database/${encodeURIComponent(id)}`))?.file_size as number | undefined,
+  r2: async (ctx: Ctx, accountId: string, cid: string) => ((await cf(ctx, accountId, `/accounts/${cid}/r2/buckets?per_page=1000`))?.buckets ?? []) as { name: string; creation_date?: string; location?: string }[],
+  // a bucket's size is only in the analytics API, a little behind what's there; a key without Account Analytics just gets no size
+  async r2Size(ctx: Ctx, accountId: string, cid: string, bucket: string): Promise<{ bytes: number; objects: number } | undefined> {
+    const to = new Date(), r = await cf(ctx, accountId, '/graphql', { whole: true, body: { query: R2_SIZE, variables: { accountTag: cid, bucketName: bucket, startDate: new Date(to.getTime() - 7 * 86400_000).toISOString(), endDate: to.toISOString() } } }).catch(() => undefined);
+    const max = r?.data?.viewer?.accounts?.[0]?.r2StorageAdaptiveGroups?.[0]?.max;
+    return max && { bytes: Number(max.payloadSize) + Number(max.metadataSize), objects: Number(max.objectCount) };
+  },
   zonePlan: (ctx: Ctx, accountId: string, zoneId: string) => cf(ctx, accountId, `/zones/${zoneId}`).then((z: { plan?: { name: string; price: number; currency: string; frequency?: string } }) => z.plan),
   async zones(ctx: Ctx, accountId: string) {
     const out: { id: string; name: string; status: string }[] = [];

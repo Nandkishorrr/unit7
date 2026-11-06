@@ -146,7 +146,7 @@ export const reasonWords = (why: string) => tidy(why).replace(/^Warden: /, '')
 export function approvalWords(a: { tool: string; input?: any; actor?: any; environment?: string | null; why?: string; reason?: string | null }, name: (id?: string) => string | undefined = () => undefined) {
   const i = a.input ?? {};
   const app = name(i.serviceId), server = name(i.serverId);
-  const thing = a.tool.startsWith('part.') ? (i.part ? partName(i.part) : undefined) : app ?? server ?? name(i.projectId);
+  const thing = a.tool.startsWith('part.') ? (i.part ? partName(i.part) : undefined) : a.tool.startsWith('cloudflare.') ? i.name ?? i.database ?? i.bucket : app ?? server ?? name(i.projectId);
   const title = a.tool === 'domain.point' && i.hostname ? `Point ${i.hostname} at ${app ?? 'an app'}`
     : a.tool === 'domain.remove' && i.hostname ? `Remove ${i.hostname}`
     : a.tool === 'database.create' && i.engine ? `Create a ${providerName(i.engine)} database`
@@ -298,6 +298,11 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
     case 'domain.point': return `${i.hostname ?? 'The domain'} will open ${name(i.serviceId) ?? 'your app'}${String(i.hostname ?? '').startsWith('*.') ? '. Its certificate needs one more step from you' : ', with HTTPS'}.`;
     case 'domain.remove': return `${i.hostname ?? 'The domain'} stops pointing at your app.`;
     case 'domain.redirect': return i.remove ? `${i.from ?? 'It'} stops sending visitors elsewhere.` : `${i.from ?? 'The domain'} sends visitors to ${i.to ?? 'the new address'}.`;
+    case 'cloudflare.worker_deploy': return i.update ? `${i.name} gets new code, live. What it has and this doesn’t name stays, and Undo puts the version before it back.` : `A new Worker, ${i.name}, goes up on Cloudflare.`;
+    case 'cloudflare.worker_remove': return `${i.name} stops answering, and its code and settings go for good.`;
+    case 'cloudflare.d1_query': return `One statement runs on ${i.database}: ${String(i.sql ?? '').slice(0, 200)} Undo puts the whole database back to just before, so anything written since goes too.`;
+    case 'cloudflare.d1_remove': return `Every row in ${i.database} goes for good. Cloudflare can’t bring it back, and any Worker bound to it starts failing.`;
+    case 'cloudflare.r2_remove': return `The bucket ${i.bucket} goes. Cloudflare only does this when it’s empty.`;
     case 'dns.set': return `${i.name ?? 'The name'} gets a ${i.type ?? 'DNS'} record: ${i.value ?? ''}. Undo puts the old one back.`;
     case 'dns.remove': return `The ${i.type ?? 'DNS'} record at ${i.name ?? 'that name'} goes. Undo puts it back.`;
     case 'client.subdomain': return `${i.name ?? 'The client'}.${i.domain ?? 'your domain'} opens the client’s app, with HTTPS.`;
@@ -486,6 +491,17 @@ Object.assign(NAMED, {
 // Staging → Production (tools/promote.ts), and the chat's Delete card (tools/ui.ts)
 Object.assign(TOOL_WORDS, { 'deployment.promote': 'Promote to Production', 'ui.delete': 'Ask about deleting it', 'ui.folder': 'Ask for the site to put live', 'live.options': 'See where a site can go', 'live.put': 'Put a site live' });
 Object.assign(NAMED, { 'deployment.promote': (x: string) => `Promote ${x} to Production` });
+
+// Workers, D1 and R2 (tools/cloudflare.ts)
+Object.assign(TOOL_WORDS, {
+  'cloudflare.workers': 'See your Cloudflare Workers', 'cloudflare.worker_deploy': 'Deploy a Cloudflare Worker', 'cloudflare.worker_errors': 'See a Worker’s errors', 'cloudflare.worker_remove': 'Remove a Cloudflare Worker',
+  'cloudflare.d1_list': 'See your D1 databases', 'cloudflare.d1_create': 'Create a D1 database', 'cloudflare.d1_query': 'Run a query on a D1 database', 'cloudflare.d1_remove': 'Remove a D1 database',
+  'cloudflare.r2_list': 'See your R2 buckets', 'cloudflare.r2_create': 'Create an R2 bucket', 'cloudflare.r2_objects': 'See what’s in an R2 bucket', 'cloudflare.r2_remove': 'Remove an R2 bucket',
+});
+Object.assign(NAMED, {
+  'cloudflare.worker_deploy': (x: string, i: any) => (i.update ? `Update the Worker ${x}` : `Deploy the Worker ${x}`), 'cloudflare.worker_remove': (x: string) => `Remove the Worker ${x}`,
+  'cloudflare.d1_query': (x: string, i: any) => (i.write ? `Change data in ${x}` : `Run a query on ${x}`), 'cloudflare.d1_remove': (x: string) => `Remove the D1 database ${x}`, 'cloudflare.r2_remove': (x: string) => `Remove the R2 bucket ${x}`,
+});
 
 // A raw error (often with a build log under it) as ONE plain sentence for a toast or a chat line, and the whole text
 // for "Show details". line: the first line that reads like words (not a log line), tidied, one sentence, cut on a word

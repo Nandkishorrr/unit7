@@ -93,7 +93,7 @@ test('X5: an AI’s delete waits 48 hours after a yes, a person can stop it, and
 });
 
 test('X6: each profile is small, every tool in it exists, and the key can reach nothing else', async () => {
-  for (const [name, list] of Object.entries(PROFILES)) { assert.ok(list.length <= 37, `${name}: ${list.length}`); for (const t of list) assert.ok(getTool(t), `${name}: ${t} exists`); assert.ok(list.includes('tools.find')); }
+  for (const [name, list] of Object.entries(PROFILES)) { assert.ok(list.length <= 38, `${name}: ${list.length}`); for (const t of list) assert.ok(getTool(t), `${name}: ${t} exists`); assert.ok(list.includes('tools.find')); }
   assert.ok(allTools().length > 300);
   assert.deepEqual(Object.keys(scopes).sort(), ['deploy', 'findings', 'ops', 'read']);
   assert.ok(findTools('rotate a database password').some((t) => t.name.includes('rotate')));

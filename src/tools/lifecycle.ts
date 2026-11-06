@@ -299,6 +299,7 @@ function plan(ctx: Ctx, t: Target, inv?: Inventory): Plan {
     return { can: true, how: 'Unit7 asks Coolify to delete it', dataGoes: 'optional', what: t.xproject ? [`The Coolify project and ${plural(pr!.parts.length, 'thing')} in it`, 'Their containers and settings'] : ['Its containers and settings in Coolify'] };
   }
   if (t.server) return { can: false, dataGoes: 'never', what: [], why: `Unit7 found ${t.name} on the server but didn’t set it up, so it won’t delete it. You can stop it instead, or remove it on the server yourself.` };
+  if (t.provider === 'cloudflare') return { can: false, dataGoes: 'never', what: [], why: `Ask Unit7 to remove ${t.name}: a Worker, a D1 database or an R2 bucket has its own remove step, and you say yes to it. Or delete it in Cloudflare’s dashboard${t.url ? ` (${t.url})` : ''}.` };
   if (!end && !['render'].includes(t.provider)) return { can: false, dataGoes: 'never', what: [], why: DASHBOARD(t) };
   switch (t.provider) {
     case 'vercel': return { can: true, how: 'Unit7 asks Vercel to delete the project', dataGoes: 'never', what: ['The project, all its deployments and settings', 'Its domains’ link to this project'] };

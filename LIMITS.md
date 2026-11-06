@@ -101,6 +101,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - A Hostinger plan with no website yet can’t be seen, so Unit7 can’t make the first website on an empty plan. Hostinger is retiring the website route Unit7 uses, and its replacement is an order route. Firebase logs are visitor requests only, once Cloud Logging is linked.
 
+## Cloudflare
+
+- Workers take finished JavaScript: there’s no build, and routes are made on Cloudflare. D1 runs one statement at a time, with no triggers. New Workers get Workers Logs on, which can bill past Cloudflare’s free allowance on a paid plan.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

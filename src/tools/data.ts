@@ -163,10 +163,10 @@ const PG_FETCH = (text: string, first: string, n: number) => (isRows(first)
 // the time limit for each server: MySQL reads the first comment, MariaDB the second
 const MY_READ = (text: string, n: number) => `/*!50708 SET SESSION max_execution_time = ${SECONDS * 1000} */;\n/*M!100108 SET SESSION max_statement_time = ${SECONDS} */;\nSET SESSION sql_select_limit = ${n};\nSTART TRANSACTION READ ONLY;\n${text}\n;\nROLLBACK;\n`;
 type Read = { columns: string[]; rows: string[][]; more: boolean; masked?: string[]; as: string; note?: string };
-const page = (columns: string[], rows: string[][], limit: number, r: { truncated?: boolean }) => ({ columns, rows: rows.slice(0, limit).map((x) => x.map((c) => (c.length > 4000 ? `${c.slice(0, 4000)}…` : c))), more: rows.length > limit || !!r.truncated });
+export const page = (columns: string[], rows: string[][], limit: number, r: { truncated?: boolean }) => ({ columns, rows: rows.slice(0, limit).map((x) => x.map((c) => (c.length > 4000 ? `${c.slice(0, 4000)}…` : c))), more: rows.length > limit || !!r.truncated });
 // a column's name comes out of the same pipe as its rows, so it's masked like them
 const named = (ctx: Ctx, c: string) => ctx.redactor.redact(hideShapes(c));
-const masked = (ctx: Ctx, p: ReturnType<typeof page>, m: Mask): Read => { const out = maskRows(p.columns, p.rows, m); return { ...p, columns: p.columns.map((c) => named(ctx, c)), rows: out.rows.map((x) => x.map((c) => ctx.redactor.redact(c))), masked: out.masked.map((c) => named(ctx, c)), as: 'a read-only login, with personal columns hidden' }; };
+export const masked = (ctx: Ctx, p: ReturnType<typeof page>, m: Mask): Read => { const out = maskRows(p.columns, p.rows, m); return { ...p, columns: p.columns.map((c) => named(ctx, c)), rows: out.rows.map((x) => x.map((c) => ctx.redactor.redact(c))), masked: out.masked.map((c) => named(ctx, c)), as: 'a read-only login, with personal columns hidden' }; };
 
 async function readPostgres(ctx: Ctx, t: Target, sql: string, db: string | undefined, limit: number): Promise<Read> {
   const st = readStatement(sql, 'pg'), input = PG_FETCH(st.text, st.first, limit + 1), real = seesReal(ctx);
