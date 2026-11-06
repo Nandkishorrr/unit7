@@ -448,7 +448,8 @@ function fakeServices() {
     return undefined;
   }).then((api) => {
     for (const [e, path] of envs.map((n) => [n, n.replace(/^UNIT7_|_API$/g, '').toLowerCase()] as const)) process.env[e] = `${api.base}/${path}`;
-    return Object.assign(api, { st, close: () => { for (const e of envs) delete process.env[e]; api.close(); } });
+    const shut = api.close;
+    return Object.assign(api, { st, close: () => { for (const e of envs) delete process.env[e]; shut(); } });
   });
 }
 const assetsOf = (app: App) => all<{ provider: string; kind: string; ext_id: string; name: string; url: string | null; meta: string }>(app.db, `SELECT provider, kind, ext_id, name, url, meta FROM assets WHERE provider IN ('stripe', 'resend', 'sentry', 'planetscale', 'turso', 'upstash') ORDER BY provider, name`);
@@ -617,7 +618,8 @@ async function stripeWorld() {
     return undefined;
   });
   process.env.UNIT7_STRIPE_API = `${api.base}/stripe`; process.env.UNIT7_VERCEL_API = `${api.base}/vercel`;
-  return Object.assign(api, { st, close: () => { delete process.env.UNIT7_STRIPE_API; delete process.env.UNIT7_VERCEL_API; api.close(); } });
+  const shut = api.close;
+  return Object.assign(api, { st, close: () => { delete process.env.UNIT7_STRIPE_API; delete process.env.UNIT7_VERCEL_API; shut(); } });
 }
 const site = (app: App, orgId: string, acc: string) => run(app.db, `INSERT INTO assets (id, org_id, account_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES ('ast_shop', ?, ?, 'vercel', 'app', 'prj_shop', 'shop', 'https://shop.example.com', ?, '2026-11-06')`, orgId, acc, JSON.stringify({ hosts: ['shop.example.com', 'shop.vercel.app'], envKeys: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'], end: { kind: 'vercel', accountId: acc, project: 'prj_shop' } }));
 
