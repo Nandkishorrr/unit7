@@ -43,9 +43,8 @@ const AT = {
 // Where a write asks a person first, at any autonomy: the operating system, any SSH folder, Coolify's own files, Unit7's copies
 const SYSTEM_PATH = /^\/(etc|boot|bin|sbin|usr|lib(32|64|x32)?|var\/spool\/cron|var\/lib\/docker(?!\/volumes\/)|var\/lib\/unit7|data\/coolify)(\/|$)|(^|\/)\.ssh(\/|$)/;
 const systemPath = (p: string) => SYSTEM_PATH.test(p) || PROTECTED.test(p);
-// The rules classify() uses, plus folders that hold settings and keys in the clear whatever a file is called: Docker's record
-// of each container (its environment) and Coolify's own data (its SSH keys)
-const isSecret = (p: string) => SECRET_FILE.test(p) || /^\/(var\/lib\/docker\/containers|data\/coolify)(\/|$)/.test(p);
+// the rules classify() uses, so a command and a file tool see the same secrets
+const isSecret = (p: string) => SECRET_FILE.test(p);
 const secretWords = (p: string) => `The path ${p} holds secrets. Only a person can open or change it, on Unit7’s Files page. An AI can’t, even with approval.`;
 const secretOf = (...paths: string[]) => { const p = paths.find(isSecret); return p ? secretWords(p) : false; };
 // who can sign in stays a person's choice, like server.exec: an approval could be talked into a new key

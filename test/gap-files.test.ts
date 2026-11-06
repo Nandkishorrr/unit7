@@ -325,7 +325,10 @@ test('system paths wait for a person at any autonomy, people included; other fil
   const w = await world();
   const seen = cannedServer(w.app);
   const write = (path: string) => ({ serverId: w.srv, path, content: 'x = 1\n' });
-  const SYSTEM = ['/etc/nginx/nginx.conf', '/etc/cron.d/backup', '/home/sam/.ssh/known_hosts', '/usr/local/bin/tool', '/lib/systemd/system/x.service', '/var/lib/docker/image/x', '/var/spool/cron/root'];
+  const SYSTEM = ['/etc/nginx/nginx.conf', '/etc/cron.d/backup', '/home/sam/.ssh/known_hosts', '/usr/local/bin/tool', '/lib/systemd/system/x.service', '/var/spool/cron/root'];
+  // Docker's own files hold every container's settings: an AI can't touch them at all, and a person's click waits
+  assert.equal((await w.o.a('file.write', write('/var/lib/docker/image/x'))).status, 'denied');
+  assert.equal((await w.o.h('file.write', write('/var/lib/docker/image/x'))).status, 'approval_required');
   for (const n of [1, 2, 3, 4]) {
     autonomy(w.app, w.o.orgId, n);
     for (const path of SYSTEM) {

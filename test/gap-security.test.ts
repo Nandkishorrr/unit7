@@ -14,6 +14,7 @@ import { coolifyTiming } from '../src/connectors/coolify.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { moveTiming } from '../src/tools/moves.ts';
 import { addHost } from '../src/live/hosts.ts';
+import { classify } from '../src/discovery/actions.ts';
 import { HELD_OPS, HELD_TOOLS, runHeld } from '../src/ops/index.ts';
 import { ROUTINE_AGENT, routineActor } from '../src/tools/routines.ts';
 import { fakeApi, account } from './clouds-fakes.ts';
@@ -418,4 +419,35 @@ test('6. what waits: every delete with nothing to come back from; a trash doesn�
   // a step of something a person already approved isn't asked for again
   const q = ok<any>(await o.h('project.create', { name: 'step', environments: ['staging'] }));
   ok(await o.a('project.delete', { projectId: q.projectId, confirm: 'step' }, { underApproval: 'apr_whole' }));
+});
+
+test('7. where every container’s settings are kept in the clear is secret, a named volume’s data apart, and /proc is nobody’s', async () => {
+  const { app, o } = await world();
+  for (const path of ['/run/containerd/io.containerd.runtime.v2.task/moby/0123abcd/config.json', '/var/run/containerd/x/config.json', '/run/docker/containerd/x/init.pid', '/var/lib/containerd/io.containerd.grpc.v1.cri/containers/x', '/var/lib/docker/containers/0123/config.v2.json',
+    '/var/lib/docker/overlay2/abc/merged/app/config.yml', '/var/snap/docker/common/var-lib-docker/containers/0123/config.v2.json', '/data/coolify/ssh/keys/id.root', '/var/lib/kubelet/pods/x/volumes/y', '/var/backups/unit7/shop/2026.sql.gz', '/var/lib/unit7/undo/1/compose.yml',
+    '/etc/ssh/ssh_host_ed25519_key', '/root/.bash_history', '/etc/mysql/debian.cnf', '/var/www/html/wp-config.php.bak']) {
+    const r = await o.a('file.read', { serverId: SRV, path }) as any;
+    assert.equal(r.status, 'denied', path);
+    assert.match(r.why, /holds secrets|sign in/, path);
+    assert.equal(classify(`cat ${path}`).tier, 4, `the same through a command: ${path}`);
+  }
+  // a volume's own files are what they say they are; a listing of the folder isn't a file
+  const said: string[] = [];
+  ssh(app).exec = async (_s, command) => { said.push(command); return { code: 3, stdout: '', stderr: '', truncated: false }; };
+  assert.equal(code(await o.a('file.read', { serverId: SRV, path: '/var/lib/docker/volumes/shop_uploads/_data/notes.txt' })), 'not_found');
+  assert.equal(classify('du -sh /var/lib/docker').tier, 0);
+  assert.equal(classify('ls /var/lib/docker/volumes').tier, 0);
+
+  // /proc: for everyone, on the server and inside a container, however it's asked for
+  for (const actor of [o.a, o.h]) for (const path of ['/proc/1/environ', '/proc/self/environ', '//proc/1/environ', '/./proc/1/environ']) {
+    assert.equal(code(await actor('file.read', { serverId: SRV, path })), 'invalid_input', path);
+    assert.equal(code(await actor('file.read', { serverId: SRV, path, part: 'c:web', container: 'web-1' })), 'invalid_input', path);
+  }
+  for (const c of ['cat /proc/1/environ', 'cat /proc/1/task/1/environ', 'cat /proc/self/root/etc/hostname']) assert.equal(classify(c).tier, 4, c);
+  // and through a link, which the path alone can't show
+  let leads = '/proc/7/environ';
+  ssh(app).exec = async () => ({ code: 0, stdout: `${leads}\nfile\n`, stderr: '', truncated: false });
+  assert.equal(code(await o.h('file.read', { serverId: SRV, path: '/srv/app/link' })), 'not_a_file');
+  leads = '/run/containerd/x/config.json';
+  assert.equal(code(await o.a('file.read', { serverId: SRV, path: '/srv/app/link' })), 'secret_file');
 });
