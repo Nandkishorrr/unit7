@@ -43,7 +43,7 @@ const needsPerson = (i: { folder?: string }) => !!i.folder;
 export const WHERE = { to: z.string().regex(/^[a-z-]{2,30}$/).optional().describe('A host from live.options: vercel, coolify, netlify, cloudflare-pages, github-pages, hostinger, server…'), accountId: fid('acc').optional(), serverId: fid('srv').optional() };
 // the host, or the size picked on it
 export const costs = (i: { to?: string; size?: string }) => { const h = i.to ? hostOf(i.to) : undefined; return !!h?.costs || !!h?.sizes?.find((s) => s.id === i.size)?.paid; };
-const COMMAND = z.string().trim().min(1).max(500).regex(/^[^\r\n]+$/, 'one line').optional();
+export const COMMAND = z.string().trim().min(1).max(500).regex(/^[^\r\n]+$/, 'one line').optional();
 const TUNE = {
   buildCommand: COMMAND.describe('Runs instead of the build Unit7 found. See live.options for the hosts that take it.'), startCommand: COMMAND.describe('Runs instead of the start Unit7 found.'),
   output: z.string().regex(/^[\w.-]+(\/[\w.-]+)*$/).refine((p) => !p.split('/').includes('..'), 'a folder inside the code').optional().describe('The folder a build leaves its pages in, like dist.'),

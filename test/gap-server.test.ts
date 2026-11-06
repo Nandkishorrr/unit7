@@ -652,7 +652,7 @@ test('a first server: offers with no app, only a person buys, then it connects a
   buyDeps.sleep = async () => undefined;
   try {
     const w = await setup(), { app, o } = w, acc = account(app, o.orgId, 'hetzner', 'hz-test-token');
-    assert.match(ok(await (await setup()).o.a('server.offers', {})).next, /Connect Hostinger or Hetzner/);
+    assert.match(ok(await (await setup()).o.a('server.offers', {})).next, /Connect Hostinger, Hetzner or DigitalOcean/);
     const offers = ok(await o.a('server.offers', {}));
     assert.deepEqual(offers.offers.map((x: any) => [x.plan, x.monthly, x.location]), [['cx22', 4.59, 'nbg1']], 'an AI may look');
     const input = { provider: 'hetzner', accountId: acc, plan: 'cx22', location: 'nbg1' };

@@ -6,12 +6,13 @@
 // and says how it's going until the provider says it's done.
 // Vercel, Netlify and Render apps too: redeploy (a new build, live when it's ready) and roll back (the last good version
 // before the live one, no rebuild), then a look at the live address (verified), with Undo putting back what was live.
+// Railway the same. Fly.io and Heroku only roll back: a new version there comes from live.put.
 import { z } from 'zod';
 import { defineTool, type Ctx } from './runtime.ts';
 import { get, json } from '../db.ts';
 import { assertReachable } from '../netguard.ts';
 import { vercel, vercelDeploys } from '../connectors/clouds.ts';
-import { netlifyDeploys, renderDeploys } from '../connectors/hosts.ts';
+import { flyMachines, herokuReleases, netlifyDeploys, railwayDeploys, renderDeploys, type FlyMachine } from '../connectors/hosts.ts';
 import { Unit7Error } from '../errors.ts';
 import type { Assessment } from '../policy.ts';
 import { cloudRun, appEngine, hosting } from '../connectors/google.ts';
@@ -28,7 +29,7 @@ export const assetRow = (db: Ctx['db'], orgId: string, asset: string) => get<Clo
 // what each kind of thing can do, in words (the buttons show only these)
 export function canDo(a: Pick<CloudAsset, 'provider' | 'kind' | 'ext_id'>): { modes: Mode[]; why?: string } {
   if (a.provider === 'cloudrun') return { modes: ['redeploy', 'rollback'] };
-  if (HOSTS.has(a.provider) && a.kind === 'app') return { modes: ['redeploy', 'rollback'] };
+  if (HOSTS.has(a.provider) && a.kind === 'app') return NO_REBUILD[a.provider] ? { modes: ['rollback'], why: NO_REBUILD[a.provider] } : { modes: ['redeploy', 'rollback'] };
   if (a.provider === 'appengine') return { modes: ['restart'] };
   if (a.provider === 'firebase' && a.ext_id.includes('/hosting/')) return { modes: ['redeploy', 'rollback'] };
   if (a.provider === 'amplify') return { modes: ['redeploy', 'rollback'] };
@@ -39,13 +40,25 @@ export function canDo(a: Pick<CloudAsset, 'provider' | 'kind' | 'ext_id'>): { mo
 }
 const modeOf = (a: CloudAsset, m: Mode): Mode => (m === 'restart' && canDo(a).modes.includes('redeploy') && !canDo(a).modes.includes('restart') ? 'redeploy' : m);
 
-const WORDS: Record<string, string> = { vercel: 'Vercel', netlify: 'Netlify', render: 'Render', cloudrun: 'Cloud Run', appengine: 'App Engine', firebase: 'Firebase Hosting', amplify: 'AWS Amplify', ec2: 'EC2', lightsail: 'Lightsail', azure: 'Azure App Service' };
+const NO_REBUILD: Record<string, string> = {
+  fly: 'Fly.io runs a ready image, so a new version goes live with live.put. Here it can roll back.',
+  heroku: 'Heroku builds what it’s sent, so a new version goes live with live.put (update: true). Here it can roll back.',
+};
+// what else a roll back changes, said before it runs
+const ROLLBACK_ALSO: Record<string, string> = {
+  vercel: ' Until then, new pushes don’t go live by themselves.',
+  render: ' Auto-deploys stay on, so your next push goes live again.',
+  railway: ' Its settings go back too, to what that version had.',
+  heroku: ' Its settings go back too, to what that version had. Add-ons and the data in them don’t change.',
+  fly: ' Every machine restarts on the image before this one. Its settings don’t change.',
+};
+const WORDS: Record<string, string> = { vercel: 'Vercel', netlify: 'Netlify', render: 'Render', railway: 'Railway', fly: 'Fly.io', heroku: 'Heroku', cloudrun: 'Cloud Run', appengine: 'App Engine', firebase: 'Firebase Hosting', amplify: 'AWS Amplify', ec2: 'EC2', lightsail: 'Lightsail', azure: 'Azure App Service' };
 function impactOf(a: CloudAsset, m: Mode, to?: string): string {
   const p = a.provider;
   if (HOSTS.has(p)) {
+    if (NO_REBUILD[p] && m !== 'rollback') return NO_REBUILD[p]!;
     if (m === 'rollback' && to) return `Puts the version of ${a.name} that was live before back on ${WORDS[p]}. Nothing is rebuilt.`;
-    if (m === 'rollback') return `Puts ${a.name}’s last good version before the live one back on ${WORDS[p]}. Nothing is rebuilt; Undo puts today’s back.`
-      + (p === 'vercel' ? ' Until then, new pushes don’t go live by themselves.' : p === 'render' ? ' Auto-deploys stay on, so your next push goes live again.' : '');
+    if (m === 'rollback') return `Puts ${a.name}’s last good version before the live one back on ${WORDS[p]}. Nothing is rebuilt; Undo puts today’s back.${ROLLBACK_ALSO[p] ?? ''}`;
     return `Builds ${a.name} again on ${WORDS[p]} and puts it live when the build is ready. If the build fails, the live site doesn’t change. Undo: the version before.`;
   }
   if (m === 'restart') return p === 'ec2' || p === 'lightsail' ? `Reboots ${a.name} on ${WORDS[p]}: it’s offline for a minute or two, and keeps its disk and address.`
@@ -59,9 +72,9 @@ const recentByAi = (db: Ctx['db'], orgId: string, asset: string) => get<{ n: num
 defineTool({
   name: 'cloud.redeploy', title: 'Redeploy or restart a cloud app', risk: 'write', timeoutMs: 20 * 60_000,
   action: (i) => (i.mode === 'restart' ? 'restart_service' : i.mode === 'rollback' ? 'rollback' : 'deploy'),
-  description: 'For an app on the big clouds (asset: its map item id): redeploy (Cloud Run: a new revision from the same image; Firebase Hosting: the live version released again; Amplify: a new build of the branch), restart (EC2 / Lightsail: reboot; Azure App Service: restart; App Engine: fresh instances) or rollback (Cloud Run: traffic to the revision before; Firebase Hosting: the release before; Amplify: the build before, again). Vercel, Netlify and Render apps: redeploy (a new build, live when ready) or rollback (the last good version before the live one, no rebuild; to: an exact version). Waits and says how it’s going until the provider says it’s done, then checks the live address (verified); the result’s undo puts back what was live.',
+  description: 'For an app on the big clouds (asset: its map item id): redeploy (Cloud Run: a new revision from the same image; Firebase Hosting: the live version released again; Amplify: a new build of the branch), restart (EC2 / Lightsail: reboot; Azure App Service: restart; App Engine: fresh instances) or rollback (Cloud Run: traffic to the revision before; Firebase Hosting: the release before; Amplify: the build before, again). Vercel, Netlify, Render and Railway apps: redeploy (a new build, live when ready) or rollback (the last good version before the live one, no rebuild; to: an exact version). Fly.io and Heroku apps: rollback only (Fly.io: every machine back on the image before this one; Heroku: the release before, as a new release). Railway and Heroku roll settings back too. Waits and says how it’s going until the provider says it’s done, then checks the live address (verified); the result’s undo puts back what was live.',
   input: z.object({ asset: ASSET, mode: z.enum(['redeploy', 'restart', 'rollback']).default('redeploy'),
-    to: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/, 'a version id').optional().describe('Vercel, Netlify, Render: roll back to this exact version (Undo uses it); otherwise the last good one before the live one') }),
+    to: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/, 'a version id').optional().describe('Vercel, Netlify, Render, Railway, Fly.io, Heroku: roll back to this exact version (Undo uses it); otherwise the last good one before the live one') }),
   assess: (c, i): Assessment => {
     const a = assetRow(c.db, c.orgId, i.asset);
     if (!a) return { tier: 2 };
@@ -169,16 +182,16 @@ const RUN: Record<string, (ctx: Ctx, acc: string, a: CloudAsset, mode: Mode) => 
   },
 };
 
-// --- Vercel, Netlify, Render: one flow, each host's own calls ------------------------------------------------------
-const HOSTS = new Set(['vercel', 'netlify', 'render']);
+// --- Vercel, Netlify, Render, Railway, Fly.io, Heroku: one flow, each host's own calls ----------------------------------
+const HOSTS = new Set(['vercel', 'netlify', 'render', 'railway', 'fly', 'heroku']);
 type State = 'ready' | 'failed' | 'busy';
 interface HostOps {
   live(): Promise<string | undefined>;                         // the version live now
   versions(): Promise<{ id: string; good: boolean }[]>;       // production versions, newest first; good = can go live again
   putLive(id: string, undo: boolean): Promise<string>;        // no rebuild; what to wait for (Render makes a new deploy of it)
   isLive(id: string): Promise<boolean>;                        // throws when the switch failed
-  build(): Promise<string>;                                    // a new build; its id
-  state(id: string): Promise<State>;
+  build?(): Promise<string>;                                   // a new build; its id (not on hosts in NO_REBUILD)
+  state?(id: string): Promise<State>;
   ready?(id: string): Promise<void>;                           // after a good build
 }
 // the last good version before the live one (or, when the live one isn't listed, the newest good one that isn't it)
@@ -186,9 +199,79 @@ export function previousGood(versions: { id: string; good: boolean }[], live?: s
   const at = live ? versions.findIndex((v) => v.id === live) : -1;
   return (at >= 0 ? versions.slice(at + 1) : versions.filter((v) => v.id !== live)).find((v) => v.good)?.id;
 }
+const couldnt = (a: CloudAsset, where: string, why: string) => new Unit7Error('build_failed', `${where} couldn’t put that version of ${a.name} back (${why}). The live site didn’t change.`, 502);
+function railwayOps(ctx: Ctx, acc: string, a: CloudAsset, project: string | undefined): HostOps {
+  const [environment = '', service = ''] = a.ext_id.split('/');
+  if (!project) throw new Unit7Error('not_found', `Unit7 doesn’t know ${a.name}’s Railway project yet. Refresh the map and try again.`, 404);
+  const t = { project, environment, service }, list = () => railwayDeploys.list(ctx, acc, t);
+  // a crashed one is still what's on: the version before it is the one to go back to
+  const live = async () => (await list()).find((d) => ['SUCCESS', 'SLEEPING', 'CRASHED'].includes(d.status))?.id;
+  return {
+    live,
+    versions: async () => (await list()).map((d) => ({ id: d.id, good: !!d.canRollback && !['FAILED', 'CRASHED'].includes(d.status) })),
+    putLive: async (id) => (await railwayDeploys.rollback(ctx, acc, id)).id ?? id,
+    isLive: async (id) => {
+      const s = await railwayDeploys.status(ctx, acc, id);
+      if (['FAILED', 'CRASHED'].includes(s)) throw couldnt(a, 'Railway', s.toLowerCase());
+      return s === 'SUCCESS' || s === 'SLEEPING';
+    },
+    build: async () => {
+      const id = await live() ?? (await list())[0]?.id;
+      if (!id) throw new Unit7Error('nothing_live', `${a.name} has nothing deployed on Railway yet.`, 409);
+      return (await railwayDeploys.redeploy(ctx, acc, id)).id;
+    },
+    state: async (id) => { const s = await railwayDeploys.status(ctx, acc, id); return s === 'SUCCESS' || s === 'SLEEPING' ? 'ready' : /FAILED|CRASHED|REMOVED|SKIPPED/.test(s) ? 'failed' : 'busy'; },
+  };
+}
+const herokuOps = (ctx: Ctx, acc: string, a: CloudAsset, app: string): HostOps => ({
+  live: async () => (await herokuReleases.list(ctx, acc, app)).find((r) => r.current)?.id,
+  // the first release of an app has no build in it, and an old one expires
+  versions: async () => (await herokuReleases.list(ctx, acc, app)).map((r) => ({ id: r.id, good: r.status === 'succeeded' && r.eligible_for_rollback !== false && !!(r.slug || r.artifacts?.length) })),
+  putLive: async (id) => (await herokuReleases.rollback(ctx, acc, app, id)).id,
+  isLive: async (id) => {
+    const s = (await herokuReleases.get(ctx, acc, app, id)).status;
+    if (s === 'failed') throw couldnt(a, 'Heroku', 'its release failed');
+    return s === 'succeeded';
+  },
+});
+function flyOps(ctx: Ctx, acc: string, a: CloudAsset, app: string): HostOps {
+  const machines = async () => {
+    const list = (await flyMachines.list(ctx, acc, app)).filter((m) => m.config?.image && m.state !== 'destroyed');
+    if (!list.length) throw new Unit7Error('nothing_live', `${a.name} has no machine on Fly.io to roll back.`, 409);
+    return list;
+  };
+  const imageOf = async (list: FlyMachine[], id: string) => {
+    for (const m of list) { const image = (await flyMachines.versions(ctx, acc, app, m.id)).find((v) => v.version === id)?.user_config?.image; if (image) return image; }
+    throw new Unit7Error('not_found', `Fly.io doesn’t keep that version of ${a.name} anymore.`, 404);
+  };
+  return {
+    live: async () => (await machines())[0]!.instance_id,
+    // a settings change is a version too, with the same image: only a different image is a version to go back to
+    versions: async () => { const [m] = await machines(); return (await flyMachines.versions(ctx, acc, app, m!.id)).map((v) => ({ id: v.version, good: !!v.user_config?.image && v.user_config.image !== m!.config.image })); },
+    async putLive(id) {
+      const list = await machines(), image = await imageOf(list, id);
+      for (const [n, m] of list.entries()) {
+        if (n) await sleep(Math.min(1100, deployTiming.pollMs)); // Fly allows about one update a second
+        await flyMachines.setImage(ctx, acc, app, m, image).catch((e: Error) => {
+          throw n ? new Unit7Error('provider_error', `Fly.io stopped after ${n} of ${list.length} machines, so ${a.name} is running two versions: ${e.message}. Run this again with to: ${id} to finish.`, 502) : e;
+        });
+      }
+      return image;
+    },
+    isLive: async (image) => {
+      const list = await machines();
+      if (list.some((m) => m.state === 'failed')) throw couldnt(a, 'Fly.io', 'a machine failed to start');
+      return list.every((m) => m.config.image === image && ['started', 'stopped', 'suspended'].includes(m.state ?? ''));
+    },
+  };
+}
 function opsFor(ctx: Ctx, acc: string, a: CloudAsset & { meta: string }): HostOps {
+  const end = json<{ end?: { team?: string; project?: string; app?: string } }>(a.meta, {}).end;
+  if (a.provider === 'railway') return railwayOps(ctx, acc, a, end?.project);
+  if (a.provider === 'heroku') return herokuOps(ctx, acc, a, end?.app ?? a.ext_id);
+  if (a.provider === 'fly') return flyOps(ctx, acc, a, end?.app ?? a.name);
   if (a.provider === 'vercel') {
-    const team = json<{ end?: { team?: string } }>(a.meta, {}).end?.team;
+    const team = end?.team;
     const project = () => vercel.project(ctx, acc, a.ext_id, team);
     return {
       live: async () => (await project()).productionDeployment,
@@ -243,11 +326,11 @@ async function hostRun(ctx: Ctx, acc: string, a: CloudAsset, mode: Mode, to?: st
     if (!live) return { said: `${where} is still switching; it finishes by itself`, done: false, version: target, before };
   } else {
     ctx.progress(`Starting a new build of ${a.name} on ${where}…`);
-    target = await ops.build();
+    target = await ops.build!();
     let s: State = 'busy';
     while (s === 'busy' && Date.now() < end) {
       await sleep(deployTiming.pollMs);
-      s = await ops.state(target);
+      s = await ops.state!(target);
       ctx.progress(`${a.name}: ${s === 'busy' ? 'building' : s === 'ready' ? 'the new version is live' : 'the build failed'}…`);
     }
     if (s === 'failed') throw new Unit7Error('build_failed', `${where}’s new build of ${a.name} failed. Its log is on ${where}; the live site didn’t change.`, 502);
@@ -287,14 +370,23 @@ export async function webAppId(ctx: Ctx, acc: string, extId: string) {
   return site.id;
 }
 
+// what a person can start beside an app (tools/hosted.ts): which tool, and where it goes
+function addsTo(ctx: Ctx, a: CloudAsset) {
+  if (a.kind !== 'app' || !a.account_id) return undefined;
+  const accountId = a.account_id;
+  if (a.provider === 'render') return { adds: { database: { tool: 'render.create_database', input: { accountId, into: a.ext_id } }, cron: { tool: 'render.create_cron', input: { accountId } } } };
+  const end = json<{ end?: { project?: string; environment?: string; service?: string } }>(get<{ meta: string }>(ctx.db, 'SELECT meta FROM assets WHERE id = ?', a.id)?.meta, {}).end;
+  return a.provider === 'railway' && end?.project ? { adds: { database: { tool: 'railway.create_database', input: { accountId, project: end.project, environment: end.environment, into: end.service } } } } : undefined;
+}
+
 // what the buttons on a cloud app offer (a database read, no provider call)
 defineTool({
   name: 'cloud.app_actions', title: 'What a cloud app can do', risk: 'read', action: 'read',
-  description: 'For a map item on the big clouds, Vercel, Netlify or Render (asset): which of redeploy, restart and rollback cloud.redeploy can do, or why none.',
+  description: 'For a map item on the big clouds, Vercel, Netlify, Render, Railway, Fly.io or Heroku (asset): which of redeploy, restart and rollback cloud.redeploy can do, or why none.',
   input: z.object({ asset: ASSET }),
   run(ctx, i) {
     const a = assetRow(ctx.db, ctx.orgId, i.asset);
     if (!a) throw new Unit7Error('not_found', 'That isn’t on the map anymore.', 404);
-    return { name: a.name, provider: a.provider, where: WORDS[a.provider] ?? a.provider, ...canDo(a), impact: Object.fromEntries(canDo(a).modes.map((m) => [m, impactOf(a, m)])) };
+    return { name: a.name, provider: a.provider, where: WORDS[a.provider] ?? a.provider, ...canDo(a), impact: Object.fromEntries(canDo(a).modes.map((m) => [m, impactOf(a, m)])), ...addsTo(ctx, a) };
   },
 });

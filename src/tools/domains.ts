@@ -13,7 +13,7 @@ import { hostinger } from '../connectors/hostinger.ts';
 import { googleCred, hosting, type HostingDnsRecord } from '../connectors/google.ts';
 import { isMissing } from '../connectors/cloudcli.ts';
 import { vercel, supabase } from '../connectors/clouds.ts';
-import { netlify, render, railway, heroku, fly } from '../connectors/hosts.ts';
+import { netlify, render, railway, heroku, fly, digitalocean } from '../connectors/hosts.ts';
 import { resolvesTo, dnsHost, publicResolver, spfAdvice } from '../connectors/dnsinfo.ts';
 import { loginHint } from '../care/mail.ts';
 import { hostsOf } from '../connectors/coolify.ts';
@@ -48,6 +48,7 @@ const netlifyTarget = z.object({ accountId: fid('acc'), site: z.string().min(1).
 const renderTarget = z.object({ accountId: fid('acc'), service: z.string().min(1).max(100) });
 const flyTarget = z.object({ accountId: fid('acc'), app: z.string().min(1).max(100) });
 const herokuTarget = z.object({ accountId: fid('acc'), app: z.string().min(1).max(100) });
+const digitaloceanTarget = z.object({ accountId: fid('acc'), app: z.string().min(1).max(100) });
 const supabaseTarget = z.object({ accountId: fid('acc'), ref: z.string().regex(/^[a-z]{20}$/) });
 const railwayTarget = z.object({ accountId: fid('acc'), project: z.string().min(1).max(100), environment: z.string().min(1).max(100), service: z.string().min(1).max(100) });
 const pagesTarget = z.object({ accountId: fid('acc'), project: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'a Pages project name') });
@@ -63,6 +64,7 @@ const HOSTS = {
   railway: { name: 'Railway', attach: (ctx: Ctx, t: z.infer<typeof railwayTarget>, d: string) => railway.addDomain(ctx, t.accountId, t, d), confirm: async () => undefined },
   fly: { name: 'Fly.io', attach: (ctx: Ctx, t: z.infer<typeof flyTarget>, d: string) => fly.addDomain(ctx, t.accountId, t.app, d), confirm: (ctx: Ctx, t: z.infer<typeof flyTarget>, d: string) => fly.check(ctx, t.accountId, t.app, d) },
   heroku: { name: 'Heroku', attach: (ctx: Ctx, t: z.infer<typeof herokuTarget>, d: string) => heroku.addDomain(ctx, t.accountId, t.app, d), confirm: async () => undefined }, // Heroku issues HTTPS by itself (ACM)
+  digitalocean: { name: 'DigitalOcean', attach: (ctx: Ctx, t: z.infer<typeof digitaloceanTarget>, d: string) => digitalocean.addDomain(ctx, t.accountId, t.app, d), confirm: async () => undefined }, // so does App Platform, once DNS points there
   pages: { name: 'Cloudflare Pages', attach: (ctx: Ctx, t: z.infer<typeof pagesTarget>, d: string) => cloudflare.addPagesDomain(ctx, t.accountId, t.project, d), confirm: (ctx: Ctx, t: z.infer<typeof pagesTarget>, d: string) => cloudflare.confirmPagesDomain(ctx, t.accountId, t.project, d) },
   github: { name: 'GitHub Pages', attach: async (ctx: Ctx, t: z.infer<typeof githubTarget>, d: string) => pagesDomain(parseRepo(t.repo)!, d, await githubToken(ctx, t.accountId)), confirm: async () => undefined },
   // Supabase: a custom domain for the project's API and auth (paid add-on, subdomains only)
@@ -204,13 +206,13 @@ const withLoginHint = <I extends { hostname: string }, O extends object>(go: (ct
 defineTool({
   // pointing at an app here is routine; at an outside host the name leaves Unit7's hands
   name: 'domain.point', title: 'Point a domain at an app', risk: (i) => (i.serviceId || i.server || i.coolify ? 'write' : 'destructive'), action: 'dns_write', timeoutMs: 20 * 60_000,
-  description: 'Point a hostname (e.g. app.example.com) at an app: one deployed here (serviceId); GitHub Pages (github); a Coolify app (coolify: its serverId and uuid; a service needs kind service and part), in one step: the name goes on the app, DNS is written, the app restarts so Coolify’s proxy picks the name up, Unit7 waits for HTTPS and reports (Undo takes it back); or on Vercel, Netlify, Render, Railway, Heroku, Fly.io, Firebase Hosting (firebase: its project and site), Cloudflare Pages (pages) or Hostinger web hosting (hostinger: the website it should show); or at a Supabase project\u2019s API (supabase, a paid add-on there); or at one of your servers itself (server: an A record to its address, for something that answers behind its own proxy there, like Coolify\u2019s dashboard). Unit7 finds where the domain\u2019s DNS lives (Hostinger, Cloudflare…), writes the records with your connected account there (or tells you exactly what to add, and finishes by itself once it\u2019s live), and gets HTTPS working. A wildcard (*.example.com) works on your own server and on a Coolify app: the result says exactly what its certificate needs (a wildcard certificate takes the DNS-01 challenge).',
-  input: z.object({ hostname: z.string().min(3).max(253), serviceId: fid('svc').optional(), vercel: vercelTarget.optional(), netlify: netlifyTarget.optional(), render: renderTarget.optional(), railway: railwayTarget.optional(), supabase: supabaseTarget.optional(), heroku: herokuTarget.optional(), fly: flyTarget.optional(), firebase: firebaseTarget.optional(),
+  description: 'Point a hostname (e.g. app.example.com) at an app: one deployed here (serviceId); GitHub Pages (github); a Coolify app (coolify: its serverId and uuid; a service needs kind service and part), in one step: the name goes on the app, DNS is written, the app restarts so Coolify’s proxy picks the name up, Unit7 waits for HTTPS and reports (Undo takes it back); or on Vercel, Netlify, Render, Railway, Heroku, Fly.io, Firebase Hosting (firebase: its project and site), DigitalOcean App Platform (digitalocean: its app id; a change to an app’s spec can make DigitalOcean deploy it again), Cloudflare Pages (pages) or Hostinger web hosting (hostinger: the website it should show); or at a Supabase project\u2019s API (supabase, a paid add-on there); or at one of your servers itself (server: an A record to its address, for something that answers behind its own proxy there, like Coolify\u2019s dashboard). Unit7 finds where the domain\u2019s DNS lives (Hostinger, Cloudflare…), writes the records with your connected account there (or tells you exactly what to add, and finishes by itself once it\u2019s live), and gets HTTPS working. A wildcard (*.example.com) works on your own server and on a Coolify app: the result says exactly what its certificate needs (a wildcard certificate takes the DNS-01 challenge).',
+  input: z.object({ hostname: z.string().min(3).max(253), serviceId: fid('svc').optional(), vercel: vercelTarget.optional(), netlify: netlifyTarget.optional(), render: renderTarget.optional(), railway: railwayTarget.optional(), supabase: supabaseTarget.optional(), heroku: herokuTarget.optional(), fly: flyTarget.optional(), firebase: firebaseTarget.optional(), digitalocean: digitaloceanTarget.optional(),
     server: z.object({ serverId: fid('srv') }).optional(), coolify: coolifyTarget.optional(), pages: pagesTarget.optional(), github: githubTarget.optional(), hostinger: hostingerTarget.optional(),
     also: z.array(z.string().min(3).max(253)).max(3).optional().describe('Coolify only: more names to add in the same step, so the app restarts once'),
     wait: z.boolean().optional().describe('Coolify only: false to skip the wait for HTTPS'),
     provider: z.string().max(40).optional(), accountId: fid('acc').optional() })
-    .refine((i) => [i.serviceId, i.vercel, i.netlify, i.render, i.railway, i.supabase, i.heroku, i.fly, i.firebase, i.server, i.coolify, i.pages, i.github, i.hostinger].filter(Boolean).length === 1, 'Give exactly one target: serviceId (an app here), coolify, vercel, netlify, render, railway, heroku, fly, firebase, pages, hostinger, supabase or server.'),
+    .refine((i) => [i.serviceId, i.vercel, i.netlify, i.render, i.railway, i.supabase, i.heroku, i.fly, i.firebase, i.digitalocean, i.server, i.coolify, i.pages, i.github, i.hostinger].filter(Boolean).length === 1, 'Give exactly one target: serviceId (an app here), coolify, vercel, netlify, render, railway, heroku, fly, firebase, digitalocean, pages, hostinger, supabase or server.'),
   run: withLoginHint(async (ctx, i) => {
     const hostname = i.hostname.toLowerCase();
     // a name already serving one app is moved to another only by a person (it may be production's address)
@@ -228,7 +230,7 @@ defineTool({
       return pointCoolify(ctx, hostname, i.coolify, prefer, (i.also ?? []).map((h) => h.toLowerCase()), i.wait !== false);
     }
 
-    for (const kind of ['netlify', 'render', 'railway', 'supabase', 'heroku', 'fly', 'pages', 'github', 'hostinger', 'firebase'] as const) {
+    for (const kind of ['netlify', 'render', 'railway', 'supabase', 'heroku', 'fly', 'pages', 'github', 'hostinger', 'firebase', 'digitalocean'] as const) {
       const t = i[kind];
       if (!t) continue;
       const host = HOSTS[kind], also: string[] = [], replaced: string[] = []; // what the host wants that Unit7 leaves to the person

@@ -36,7 +36,8 @@ export type End =
   | { kind: 'render'; accountId: string; service: string }
   | { kind: 'railway'; accountId: string; project: string; environment: string; service: string }
   | { kind: 'heroku'; accountId: string; app: string }
-  | { kind: 'fly'; accountId: string; app: string };
+  | { kind: 'fly'; accountId: string; app: string }
+  | { kind: 'digitalocean'; accountId: string; app: string }; // takes a domain; no link reaches it yet
 export interface Var { key: string; value: string; secret: boolean }
 export interface Reads { stack?: string | null; keys: string[] }
 export interface Source { label(ctx: Ctx, e: End): Promise<string>; vars(ctx: Ctx, e: End, consumer: End, linkId: string): Promise<{ consumer: Var[]; provider?: Var[]; note?: string }> }
@@ -493,7 +494,7 @@ const usesFrom = (reads: string[], has: string[], deps: string[]): Uses => ({
 export function thingsFrom(found: Iterable<Found>): Thing[] {
   const out: Thing[] = [];
   for (const f of found) {
-    if (!f.end || (f.kind !== 'app' && f.kind !== 'database')) continue;
+    if (!f.end || (f.kind !== 'app' && f.kind !== 'database') || !(SOURCES[f.end.kind] ?? SINKS[f.end.kind])) continue;
     // an app whose settings couldn't be read (no envKeys) gets no suggestions: it may well have them already
     const uses = f.kind === 'app' && f.envKeys ? usesFrom(f.reads ?? [], f.envKeys, []) : undefined;
     if (uses) Object.assign(uses, { supabase: uses.supabase || !!f.uses?.supabase, postgres: uses.postgres || !!f.uses?.postgres });

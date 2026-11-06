@@ -78,7 +78,7 @@ export const digitaloceanHost: Host = addHost({
       return { state: state.toLowerCase().replace(/_/g, ' '), done: state === 'ACTIVE' || state === 'SUPERSEDED' ? d!.id : undefined };
     });
     const live = (await read(ctx, acc, `/apps/${app}`, 'say the address')).app as { live_url?: string; default_ingress?: string };
-    return { url: live.live_url ?? live.default_ingress ?? '', project: app, deployment, autoDeploy: true, point: 'Add your domain in the app’s Settings on DigitalOcean. Unit7 can’t point domains at App Platform yet.', notes: keptIn(p, repo) };
+    return { url: live.live_url ?? live.default_ingress ?? '', project: app, deployment, autoDeploy: true, point: { digitalocean: { accountId: acc, app } }, notes: keptIn(p, repo) };
   },
   logs: (ctx, r) => lines(ctx, r.place.accountId!, parts(r.project)[0]!, r.deployment && parts(r.deployment)[0]),
   // the whole spec goes back: SECRET values come as sealed values that stay valid, and DigitalOcean rebuilds it by itself

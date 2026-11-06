@@ -51,7 +51,7 @@ export const TYPES: { value: Type; label: string; one: string }[] = [
 // DNS hosts Unit7 can move to Cloudflare (it can read every record there)
 export const MOVABLE = new Set(['hostinger', 'godaddy', 'porkbun', 'namecom', 'digitalocean', 'vercel']);
 // hosts domain.point can add a domain on, by the shape of the app's `end`
-const POINTABLE = new Set(['unit7', 'vercel', 'netlify', 'render', 'railway', 'heroku', 'fly']);
+const POINTABLE = new Set(['unit7', 'vercel', 'netlify', 'render', 'railway', 'heroku', 'fly', 'digitalocean']);
 export const pointable = (a: Asset) => a.kind === 'app' && !!a.end && POINTABLE.has(a.end.kind);
 export function pointInput(hostname: string, a: Asset) {
   const { kind, ...rest } = a.end!;

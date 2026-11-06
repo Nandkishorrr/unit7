@@ -252,7 +252,7 @@ export const SCANNERS: Record<string, Scanner> = {
       const key = `digitalocean:app-${a.id}`;
       const custom = (a.domains ?? []).map((d) => d.spec.domain.toLowerCase());
       const env = Object.fromEntries([...(a.spec.envs ?? []), ...(a.spec.services ?? []).flatMap((x) => x.envs ?? []), ...(a.spec.static_sites ?? []).flatMap((x) => x.envs ?? [])].map((e) => [e.key, e.value ?? '']));
-      found.push({ provider: 'digitalocean', kind: 'app', extId: `app-${a.id}`, name: a.spec.name, accountId: acc, url: a.default_ingress, hosts: [...(hostOf(a.default_ingress) ? [hostOf(a.default_ingress)!] : []), ...custom], envKeys: Object.keys(env), platform: 'digitalocean', status: a.active_deployment?.phase === 'ERROR' ? 'error' : undefined });
+      found.push({ provider: 'digitalocean', kind: 'app', extId: `app-${a.id}`, name: a.spec.name, accountId: acc, url: a.default_ingress, hosts: [...(hostOf(a.default_ingress) ? [hostOf(a.default_ingress)!] : []), ...custom], envKeys: Object.keys(env), end: { kind: 'digitalocean', accountId: acc, app: a.id }, platform: 'digitalocean', status: a.active_deployment?.phase === 'ERROR' ? 'error' : undefined });
       refs.push(...custom.map((h): Ref => ({ from: key, kind: 'domain', via: 'added on DigitalOcean', host: h })), ...envRefs(key, env));
     }
     for (const db of await digitalocean.databases(ctx, acc).catch(or([]))) found.push({ provider: 'digitalocean', kind: 'database', extId: `db-${db.id}`, name: db.name, accountId: acc, hosts: [db.connection?.host, db.private_connection?.host].filter(Boolean).map((h) => h!.toLowerCase()), status: db.status === 'online' ? undefined : db.status });

@@ -231,7 +231,7 @@ export interface SourceOption {
   state?: { tone: 'ok' | 'warn' | 'bad' | 'idle'; text: string }; use: Record<string, unknown>;
 }
 const DB_KINDS = new Set(['postgres', 'mysql', 'mariadb', 'redis', 'mongo']);
-const POINTABLE = new Set(['unit7', 'vercel', 'netlify', 'render', 'railway', 'heroku', 'fly', 'supabase']);
+const POINTABLE = new Set(['unit7', 'vercel', 'netlify', 'render', 'railway', 'heroku', 'fly', 'digitalocean', 'supabase']);
 // a Coolify application from a server's X-ray ("<server>/coolify:<uuid>"), or a Hostinger website: their domain.point target
 const coolifyPart = /^(srv_[\w-]+)\/coolify:([\w-]{3,64})$/;
 const pointFound = (a: { provider: string; ext_id: string; name: string; account_id: string | null; m: Found }) => {

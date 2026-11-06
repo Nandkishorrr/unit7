@@ -1,15 +1,16 @@
 // Redeploy, restart and roll back an app on the big clouds (Cloud Run, App Engine, Firebase Hosting, Amplify, EC2,
-// Lightsail, Azure App Service) and on Vercel, Netlify and Render, as small buttons for the Map's and Overview's pop-ups. Only what the platform can do is
-// shown; each says what happens first, and goes through the gate (an AI asks first for anything but a restart).
+// Lightsail, Azure App Service) and on Vercel, Netlify, Render, Railway, Fly.io and Heroku, as small buttons for the Map's and Overview's pop-ups. Only what
+// the platform can do is shown; each says what happens first, and goes through the gate (an AI asks first for anything but a restart).
 import { useEffect, useState } from 'react';
-import { History, RefreshCw, RotateCcw } from 'lucide-react';
+import { CalendarClock, Database, History, RefreshCw, RotateCcw } from 'lucide-react';
 import { runTool } from '../../lib/api';
 import { act, Button, confirmDialog, toast } from '../../ui';
 import { verifiedOf } from '../../lib/alertActions';
+import { AddDialog, type Adds } from './add';
 
 type Mode = 'redeploy' | 'restart' | 'rollback';
-interface Can { name: string; where: string; modes: Mode[]; why?: string; impact: Partial<Record<Mode, string>> }
-const CLOUD = new Set(['vercel', 'netlify', 'render', 'cloudrun', 'appengine', 'firebase', 'amplify', 'ec2', 'lightsail', 'azure']);
+interface Can { name: string; where: string; modes: Mode[]; why?: string; impact: Partial<Record<Mode, string>>; adds?: Adds }
+const CLOUD = new Set(['vercel', 'netlify', 'render', 'railway', 'fly', 'heroku', 'cloudrun', 'appengine', 'firebase', 'amplify', 'ec2', 'lightsail', 'azure']);
 const LABEL: Record<Mode, string> = { redeploy: 'Redeploy', restart: 'Restart', rollback: 'Roll back' };
 const ICON: Record<Mode, typeof RefreshCw> = { redeploy: RefreshCw, restart: RotateCcw, rollback: History };
 const DONE: Record<Mode, string> = { redeploy: 'Redeployed', restart: 'Restarting', rollback: 'Rolled back' };
@@ -19,6 +20,7 @@ const SWAP_IN_ONE_STEP = new Set(['vercel', 'netlify', 'render']);
 export function CloudAppActions({ asset, size = 'sm', onDone }: { asset: { id: string; provider: string; name?: string }; size?: 'sm' | 'md'; onDone?: () => void }) {
   const [can, setCan] = useState<Can | null>(null);
   const [busy, setBusy] = useState<Mode | null>(null);
+  const [adding, setAdding] = useState<keyof Adds | null>(null);
   useEffect(() => {
     if (!CLOUD.has(asset.provider)) return;
     let live = true;
@@ -43,7 +45,10 @@ export function CloudAppActions({ asset, size = 'sm', onDone }: { asset: { id: s
     <>
       <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`${can.name} on ${can.where}`}>
         {can.modes.map((m) => { const I = ICON[m]; return <Button key={m} size={size} variant={m === 'rollback' ? 'ghost' : 'soft'} icon={<I size={13} />} loading={busy === m} disabled={!!busy} onClick={() => go(m)}>{LABEL[m]}</Button>; })}
+        {can.adds?.database && <Button size={size} variant="ghost" icon={<Database size={13} />} onClick={() => setAdding('database')}>Add a database</Button>}
+        {can.adds?.cron && <Button size={size} variant="ghost" icon={<CalendarClock size={13} />} onClick={() => setAdding('cron')}>Add a cron job</Button>}
       </div>
+      {adding && can.adds?.[adding] && <AddDialog what={adding} add={can.adds[adding]!} app={can.name} onClose={() => setAdding(null)} onDone={onDone} />}
       {oneStep}
     </>
   );

@@ -9,10 +9,10 @@ import { tidy } from '../../lib/words';
 import { Button, Dialog, HoldButton, Skeleton, cx, toast } from '../../ui';
 import { useTool } from '../care/data';
 
-interface Offer { provider: 'hetzner' | 'hostinger'; accountId: string; plan: string; label: string; cores: number; memoryGb: number; diskGb: number; monthly: number | null; currency: string; location: string; where: string; itemId?: string; templateId?: number; dataCenterId?: number }
+interface Offer { provider: 'hetzner' | 'hostinger' | 'digitalocean'; accountId: string; plan: string; label: string; cores: number; memoryGb: number; diskGb: number; monthly: number | null; currency: string; location: string; where: string; itemId?: string; templateId?: number; dataCenterId?: number }
 interface Offers { offers: Offer[]; note: string; next?: string; problems?: string[] }
 const money = (n: number | null, c: string) => (n === null ? 'price unknown' : new Intl.NumberFormat(undefined, { style: 'currency', currency: c, maximumFractionDigits: 2 }).format(n));
-const who = (o: Offer) => (o.provider === 'hetzner' ? 'Hetzner' : 'Hostinger');
+const who = (o: Offer) => ({ hetzner: 'Hetzner', hostinger: 'Hostinger', digitalocean: 'DigitalOcean' }[o.provider]);
 
 function Plans({ onClose }: { onClose: () => void }) {
   const { data, error } = useTool<Offers>('server.offers', {});
@@ -32,7 +32,7 @@ function Plans({ onClose }: { onClose: () => void }) {
   const o = data.offers[pick] ?? data.offers[0]!;
   const buy = async () => {
     setBusy(true);
-    const r: ToolResult = await runTool('server.buy', { provider: o.provider, accountId: o.accountId, ...(o.provider === 'hetzner' ? { plan: o.plan, location: o.location } : { item: o.itemId, templateId: o.templateId, dataCenterId: o.dataCenterId }) })
+    const r: ToolResult = await runTool('server.buy', { provider: o.provider, accountId: o.accountId, ...(o.provider === 'hostinger' ? { item: o.itemId, templateId: o.templateId, dataCenterId: o.dataCenterId } : { plan: o.plan, location: o.location }) })
       .catch((e: Error) => ({ status: 'error' as const, error: { code: 'network', message: e.message } }));
     setBusy(false);
     if (r.status === 'approval_required') { toast('info', 'One last yes', 'Confirm the price on Approvals. Unit7 then buys it, connects it and prepares it.'); onClose(); navigate('/approvals'); }

@@ -72,13 +72,16 @@ async function renderList<T>(ctx: Ctx, acc: string, path: string, field: string)
   }
   return out;
 }
-export interface RenderService { id: string; name: string; type: string; ownerId?: string; suspended?: string; serviceDetails?: { url?: string } }
+export interface RenderService { id: string; name: string; type: string; ownerId?: string; suspended?: string; serviceDetails?: { url?: string; region?: string } }
 export const render = {
   services: (ctx: Ctx, acc: string) => renderList<RenderService>(ctx, acc, '/services?includePreviews=false', 'service'),
   service: async (ctx: Ctx, acc: string, id: string) => rest<RenderService>('Render', `${RENDER()}/services/${id}`, { headers: await rn(ctx, acc) }),
   env: async (ctx: Ctx, acc: string, id: string) => Object.fromEntries((await renderList<{ key: string; value: string }>(ctx, acc, `/services/${id}/env-vars`, 'envVar')).map((v) => [v.key, v.value])),
   domains: (ctx: Ctx, acc: string, id: string) => renderList<{ name: string; verificationStatus: string }>(ctx, acc, `/services/${id}/custom-domains`, 'customDomain'),
   postgres: (ctx: Ctx, acc: string) => renderList<{ id: string; name: string; status?: string }>(ctx, acc, '/postgres', 'postgres'),
+  postgresOne: async (ctx: Ctx, acc: string, id: string) => rest<{ id: string; name: string; status?: string; plan?: string; region?: string; expiresAt?: string; dashboardUrl?: string }>('Render', `${RENDER()}/postgres/${id}`, { headers: await rn(ctx, acc) }),
+  // these hold the password: they go to an app's settings, never into a result
+  postgresUrls: async (ctx: Ctx, acc: string, id: string) => rest<{ internalConnectionString: string; externalConnectionString: string }>('Render', `${RENDER()}/postgres/${id}/connection-info`, { headers: await rn(ctx, acc) }),
   // the database's hosts, read out of its connection strings (the strings themselves aren't kept)
   postgresHosts: async (ctx: Ctx, acc: string, id: string) => {
     const c = await rest<{ internalConnectionString?: string; externalConnectionString?: string }>('Render', `${RENDER()}/postgres/${id}/connection-info`, { headers: await rn(ctx, acc) });
@@ -176,6 +179,15 @@ export const railway = {
   // set them all without a deploy each, then one redeploy
   setEnv: (ctx: Ctx, acc: string, t: { project: string; environment: string; service: string }, vars: { key: string; value: string }[]) =>
     rw(ctx, acc, 'mutation($i: VariableCollectionUpsertInput!) { variableCollectionUpsert(input: $i) }', { i: { projectId: t.project, environmentId: t.environment, serviceId: t.service, variables: Object.fromEntries(vars.map((v) => [v.key, v.value])), skipDeploys: true } }),
+  // what `railway add --database` does (railwayapp/cli src/commands/deploy.rs, 2026-11-07): the template's config, each setting
+  // given its default, then a deploy. Railway's staff say the same on station.railway.com; its API docs don't cover this
+  async addTemplate(ctx: Ctx, acc: string, t: { project: string; environment: string }, code: string) {
+    const { template } = await rw<{ template: { id: string; serializedConfig?: { services?: Record<string, { variables?: Record<string, { value?: string; defaultValue?: string }> }> } } | null }>(ctx, acc, 'query($c: String!) { template(code: $c) { id serializedConfig } }', { c: code });
+    if (!template?.serializedConfig) throw new Unit7Error('railway_error', `Railway has no ${code} template right now. Add it on Railway’s dashboard.`, 502);
+    const config = template.serializedConfig;
+    for (const s of Object.values(config.services ?? {})) for (const v of Object.values(s.variables ?? {})) if (!v.value && v.defaultValue) v.value = v.defaultValue;
+    await rw(ctx, acc, 'mutation($i: TemplateDeployV2Input!) { templateDeployV2(input: $i) { projectId workflowId } }', { i: { projectId: t.project, environmentId: t.environment, templateId: template.id, serializedConfig: config } });
+  },
   // each workspace's usage so far this billing period (dollars, as Railway reports it)
   async spentThisPeriod(ctx: Ctx, acc: string) {
     if ((await railwayKind(ctx, acc)).kind !== 'account') return [];
@@ -329,19 +341,38 @@ async function doList<T>(ctx: Ctx, acc: string, path: string, field: string): Pr
   return out;
 }
 // one droplet: its plan and its snapshots (tools/vps.ts)
+export interface Droplet { size_slug: string; disk: number; status?: string; region?: { slug?: string }; networks?: { v4: { ip_address: string; type: string }[] } }
 const doAct = async (ctx: Ctx, acc: string, id: number, body: Record<string, unknown>) => (await rest<{ action: { id: number; status: string } }>('DigitalOcean', `${DO()}/droplets/${id}/actions`, { headers: await doAuth(ctx, acc), body })).action;
 export const dropletBox = {
-  get: async (ctx: Ctx, acc: string, id: number) => (await rest<{ droplet: { size_slug: string; disk: number; region?: { slug?: string } } }>('DigitalOcean', `${DO()}/droplets/${id}`, { headers: await doAuth(ctx, acc) })).droplet,
+  get: async (ctx: Ctx, acc: string, id: number) => (await rest<{ droplet: Droplet }>('DigitalOcean', `${DO()}/droplets/${id}`, { headers: await doAuth(ctx, acc) })).droplet,
   sizes: (ctx: Ctx, acc: string) => doList<{ slug: string; vcpus: number; memory: number; disk: number; price_monthly: number; regions: string[]; available?: boolean }>(ctx, acc, '/sizes', 'sizes'),
   snapshots: (ctx: Ctx, acc: string, id: number) => doList<{ id: number; name: string; created_at?: string; size_gigabytes?: number }>(ctx, acc, `/droplets/${id}/snapshots`, 'snapshots'),
   snapshot: (ctx: Ctx, acc: string, id: number, name: string) => doAct(ctx, acc, id, { type: 'snapshot', name }),
   restore: (ctx: Ctx, acc: string, id: number, image: number) => doAct(ctx, acc, id, { type: 'restore', image }),
+  power: (ctx: Ctx, acc: string, id: number, type: 'shutdown' | 'power_on') => doAct(ctx, acc, id, { type }),
+  // disk: true grows the disk too, for good. It leaves the Droplet off (docs.digitalocean.com/products/droplets/how-to/resize, 2026-11-07)
+  resize: (ctx: Ctx, acc: string, id: number, size: string, disk: boolean) => doAct(ctx, acc, id, { type: 'resize', size, disk }),
+  action: async (ctx: Ctx, acc: string, id: number, action: number) => (await rest<{ action: { status: string } }>('DigitalOcean', `${DO()}/droplets/${id}/actions/${action}`, { headers: await doAuth(ctx, acc) })).action,
+  addKey: async (ctx: Ctx, acc: string, name: string, publicKey: string) => (await rest<{ ssh_key: { id: number } }>('DigitalOcean', `${DO()}/account/keys`, { headers: await doAuth(ctx, acc), body: { name, public_key: publicKey } })).ssh_key,
+  create: async (ctx: Ctx, acc: string, o: { name: string; region: string; size: string; image: string; ssh_keys: number[] }) => (await rest<{ droplet: { id: number } }>('DigitalOcean', `${DO()}/droplets`, { headers: await doAuth(ctx, acc), body: o })).droplet,
 };
 export const digitalocean = {
   droplets: (ctx: Ctx, acc: string) => doList<{ id: number; name: string; status: string; networks: { v4: { ip_address: string; type: string }[] } }>(ctx, acc, '/droplets', 'droplets'),
   apps: (ctx: Ctx, acc: string) => doList<{ id: string; spec: { name: string; services?: { envs?: { key: string; value?: string }[] }[]; static_sites?: { envs?: { key: string; value?: string }[] }[]; envs?: { key: string; value?: string }[] }; default_ingress?: string; domains?: { spec: { domain: string } }[]; active_deployment?: { phase: string } }>(ctx, acc, '/apps', 'apps'),
   databases: async (ctx: Ctx, acc: string) => (await rest<{ databases?: { id: string; name: string; engine: string; status: string; connection?: { host?: string }; private_connection?: { host?: string } }[] }>('DigitalOcean', `${DO()}/databases`, { headers: await doAuth(ctx, acc) })).databases ?? [],
   domains: (ctx: Ctx, acc: string) => doList<{ name: string }>(ctx, acc, '/domains', 'domains'),
+  regions: (ctx: Ctx, acc: string) => doList<{ slug: string; name: string; available: boolean }>(ctx, acc, '/regions', 'regions'),
+  // the name goes in the app's spec, and the whole spec goes back: SECRET values come as sealed values that stay valid. A subdomain is a
+  // CNAME to the app. A bare domain takes App Platform's address: it lists two, and one is enough while DNS writes one record a name
+  // (docs.digitalocean.com/products/app-platform/how-to/manage-domains and add-ip-address, 2026-11-07)
+  async addDomain(ctx: Ctx, acc: string, id: string, domain: string): Promise<DnsRec[]> {
+    const path = `${DO()}/apps/${encodeURIComponent(id)}`, headers = await doAuth(ctx, acc);
+    const { app } = await rest<{ app: { spec: Record<string, unknown> & { domains?: { domain: string; type?: string }[] }; default_ingress?: string } }>('DigitalOcean', path, { headers });
+    const host = hostOf(app.default_ingress), have = app.spec.domains ?? [];
+    if (!host) throw new Unit7Error('unsupported', 'That app has no address on DigitalOcean yet. Wait for its first deploy, then try again.', 409);
+    if (!have.some((d) => d.domain === domain)) await rest('DigitalOcean', path, { method: 'PUT', headers, body: { spec: { ...app.spec, domains: [...have, { domain, type: have.some((d) => d.type === 'PRIMARY') ? 'ALIAS' : 'PRIMARY' }] } } });
+    return [await isApex(domain) ? { type: 'A', name: domain, content: '162.159.140.98' } : { type: 'CNAME', name: domain, content: host }];
+  },
   records: (ctx: Ctx, acc: string, zone: string) => doList<{ type: string; name: string; data: string }>(ctx, acc, `/domains/${zone}/records`, 'domain_records'),
   monthToDate: async (ctx: Ctx, acc: string) => Number((await rest<{ month_to_date_usage?: string }>('DigitalOcean', `${DO()}/customers/my/balance`, { headers: await doAuth(ctx, acc) })).month_to_date_usage ?? 0),
   async recentLines(ctx: Ctx, acc: string, appId: string, since: Date) {
@@ -415,4 +446,33 @@ export const renderDeploys = {
   get: async (ctx: Ctx, acc: string, id: string, deploy: string) => rest<RenderDeploy>('Render', `${RENDER()}/services/${encodeURIComponent(id)}/deploys/${encodeURIComponent(deploy)}`, { headers: await rn(ctx, acc) }),
   rollback: async (ctx: Ctx, acc: string, id: string, deploy: string) => rest<RenderDeploy>('Render', `${RENDER()}/services/${encodeURIComponent(id)}/rollback`, { method: 'POST', headers: await rn(ctx, acc), body: { deployId: deploy } }),
   deploy: async (ctx: Ctx, acc: string, id: string) => rest<Partial<RenderDeploy>>('Render', `${RENDER()}/services/${encodeURIComponent(id)}/deploys`, { method: 'POST', headers: await rn(ctx, acc), body: {} }),
+};
+// Railway, docs.railway.com/integrations/api/manage-deployments and deployments/deployment-actions, 2026-11-07:
+//   deployments(input, first)   newest first; canRollback is false once a version is past the plan's keep time
+//   deploymentRollback(id)      brings that version's image and settings back, with no build
+//   deploymentRedeploy(id)      a new deployment with the same code and build settings
+export interface RailwayDeploy { id: string; status: string; canRollback?: boolean }
+export const railwayDeploys = {
+  list: (ctx: Ctx, acc: string, t: { project: string; environment: string; service: string }) => rw<{ deployments: { edges: { node: RailwayDeploy }[] } }>(ctx, acc, 'query($i: DeploymentListInput!) { deployments(input: $i, first: 20) { edges { node { id status canRollback } } } }', { i: { projectId: t.project, environmentId: t.environment, serviceId: t.service } }).then((r) => r.deployments.edges.map((e) => e.node)),
+  status: (ctx: Ctx, acc: string, id: string) => rw<{ deployment: { status: string } }>(ctx, acc, 'query($id: String!) { deployment(id: $id) { status } }', { id }).then((r) => r.deployment.status),
+  rollback: (ctx: Ctx, acc: string, id: string) => rw<{ deploymentRollback: { id?: string } }>(ctx, acc, 'mutation($id: String!) { deploymentRollback(id: $id) { id status } }', { id }).then((r) => r.deploymentRollback),
+  redeploy: (ctx: Ctx, acc: string, id: string) => rw<{ deploymentRedeploy: { id: string } }>(ctx, acc, 'mutation($id: String!) { deploymentRedeploy(id: $id) { id status } }', { id }).then((r) => r.deploymentRedeploy),
+};
+// Heroku, devcenter.heroku.com/articles/platform-api-reference#release and articles/releases, 2026-11-07:
+//   GET  /apps/{app}/releases             newest first with this Range header
+//   POST /apps/{app}/releases { release } (201) a new release with that one's build and settings; add-ons and what's in them stay as they are
+export interface HerokuRelease { id: string; version?: number; current?: boolean; status?: string; eligible_for_rollback?: boolean; slug?: { id: string } | null; artifacts?: unknown[] }
+export const herokuReleases = {
+  list: async (ctx: Ctx, acc: string, app: string) => rest<HerokuRelease[]>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/releases`, { headers: { ...(await hk(ctx, acc)), range: 'version ..; order=desc,max=20' } }),
+  get: async (ctx: Ctx, acc: string, app: string, id: string) => rest<HerokuRelease>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/releases/${encodeURIComponent(id)}`, { headers: await hk(ctx, acc) }),
+  rollback: async (ctx: Ctx, acc: string, app: string, id: string) => rest<HerokuRelease>('Heroku', `${HEROKU()}/apps/${encodeURIComponent(app)}/releases`, { headers: await hk(ctx, acc), body: { release: id } }),
+};
+// Fly.io, docs.fly.io/api/machines/openapi.json and machines/api/machines-resource, 2026-11-07. Its release list is GraphQL and only knows what
+// flyctl deployed, so an app put live over this API isn't in it. A machine keeps every config it had, whoever set it: order isn't promised, but a
+// version is a time-ordered id. An update wants the whole config.
+export interface FlyMachine { id: string; state?: string; instance_id?: string; config: Record<string, unknown> & { image?: string } }
+export const flyMachines = {
+  list: async (ctx: Ctx, acc: string, app: string) => rest<FlyMachine[]>('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/machines`, { headers: await flyAuth(ctx, acc) }),
+  versions: async (ctx: Ctx, acc: string, app: string, id: string) => (await rest<{ version: string; user_config?: { image?: string } }[]>('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}/versions`, { headers: await flyAuth(ctx, acc) })).sort((a, b) => b.version.localeCompare(a.version)),
+  setImage: async (ctx: Ctx, acc: string, app: string, m: FlyMachine, image: string) => rest('Fly.io', `${FLY_API()}/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(m.id)}`, { headers: await flyAuth(ctx, acc), body: { config: { ...m.config, image } } }),
 };

@@ -131,7 +131,7 @@ export function restartWouldDown(db: DB, serverId: string): string[] {
 // --- a new server, bought by a person ----------------------------------------------------------------------------------
 const HZ = () => process.env.UNIT7_HETZNER_API ?? 'https://api.hetzner.cloud/v1';
 const hz = <T = any>(ctx: Ctx, acc: string, path: string, body?: unknown, method?: string) => call<T>('Hetzner', `${HZ()}${path}`, { method: method ?? (body === undefined ? 'GET' : 'POST'), ...(body !== undefined && { body }), headers: { authorization: `Bearer ${ctx.credentialFor('hetzner', acc).value.trim()}` } });
-export interface Offer { provider: 'hetzner' | 'hostinger'; accountId: string; plan: string; label: string; cores: number; memoryGb: number; diskGb: number; monthly: number | null; currency: string; location: string; where: string; itemId?: string; templateId?: number; dataCenterId?: number }
+export interface Offer { provider: 'hetzner' | 'hostinger' | 'digitalocean'; accountId: string; plan: string; label: string; cores: number; memoryGb: number; diskGb: number; monthly: number | null; currency: string; location: string; where: string; itemId?: string; templateId?: number; dataCenterId?: number }
 const archOf = (f: Facts) => (/arm|aarch/i.test(f.arch ?? '') ? 'arm' : 'x86');
 // the cheapest plans at least as big as the main server, on the same kind of processor (the image has to run there)
 export function pickPlans<T extends { cores: number; memoryGb: number; monthly: number | null; arch?: string }>(plans: T[], main: { cores: number; memoryGb: number; arch: string }, n = 3): T[] {
@@ -171,6 +171,19 @@ export async function buyHetzner(ctx: Ctx, o: { accountId: string; plan: string;
   return { providerRef: `hetzner:server:${id}`, host: ip };
 }
 
+// DigitalOcean: the same, over its own API (DigitalOcean-public.v2.yaml, 2026-11-07: account/keys, droplets)
+export async function buyDroplet(ctx: Ctx, o: { accountId: string; plan: string; location: string; name: string; publicKey: string }) {
+  const { dropletBox } = await import('../connectors/hosts.ts');
+  const key = await dropletBox.addKey(ctx, o.accountId, `${o.name}-unit7`, o.publicKey);
+  const { id } = await dropletBox.create(ctx, o.accountId, { name: o.name, region: o.location, size: o.plan, image: 'ubuntu-24-04-x64', ssh_keys: [key.id] });
+  const ip = await until(async () => {
+    const d = await dropletBox.get(ctx, o.accountId, id);
+    return d.status === 'active' ? d.networks?.v4.find((n) => n.type === 'public')?.ip_address : undefined;
+  });
+  if (!ip) throw new Unit7Error('server_slow', `DigitalOcean made the Droplet (${o.name}) but it isn’t running yet. It shows in your DigitalOcean account; connect it from Servers once it’s up.`, 504);
+  return { providerRef: `digitalocean:droplet:${id}`, host: ip };
+}
+
 // Hostinger: its own purchase operation (found by Hostinger's search, like every Hostinger call), with Unit7's key in
 // the setup so the VPS is reachable once it's installed
 export async function buyHostinger(ctx: Ctx, o: { accountId: string; itemId: string; templateId: number; dataCenterId: number; name: string; publicKey: string }) {
@@ -188,7 +201,7 @@ export async function buyHostinger(ctx: Ctx, o: { accountId: string; itemId: str
 
 // Buying is one job, for an app's next server or a very first one: bought with Unit7's own key in it, then connected, and a
 // fresh box prepares itself. Bought but not reachable yet says so: the money is spent, and the server is there to connect.
-export interface Purchase { provider: 'hetzner' | 'hostinger'; accountId: string; plan?: string; location?: string; item?: string; templateId?: number; dataCenterId?: number }
+export interface Purchase { provider: 'hetzner' | 'hostinger' | 'digitalocean'; accountId: string; plan?: string; location?: string; item?: string; templateId?: number; dataCenterId?: number }
 export async function buyAndConnect(ctx: Ctx, i: Purchase, o: { name: string; forWhat?: string; resource?: string; data?: Record<string, unknown> }) {
   const { generateKeyPair, preparing } = await import('../tools/servers.ts');
   const { privateKey, publicKey } = await generateKeyPair(`unit7@${o.name}`);
@@ -196,9 +209,10 @@ export async function buyAndConnect(ctx: Ctx, i: Purchase, o: { name: string; fo
   ctx.progress(`Buying ${o.name}…`);
   const bought = i.provider === 'hetzner'
     ? await buyHetzner(ctx, { accountId: i.accountId, plan: i.plan ?? 'cx22', location: i.location ?? 'nbg1', name: o.name, publicKey })
+    : i.provider === 'digitalocean' ? await buyDroplet(ctx, { accountId: i.accountId, plan: i.plan ?? '', location: i.location ?? '', name: o.name, publicKey })
     : await buyHostinger(ctx, { accountId: i.accountId, itemId: i.item ?? '', templateId: i.templateId ?? 0, dataCenterId: i.dataCenterId ?? 0, name: o.name, publicKey });
   const why = o.forWhat ? ` for ${o.forWhat}` : '';
-  ctx.emit('server.bought', `${ctx.actor.name} bought ${o.name} (${i.provider === 'hetzner' ? 'Hetzner' : 'Hostinger'})${why}.`, { severity: 'success', resource: o.resource, data: { ...o.data, provider: i.provider } });
+  ctx.emit('server.bought', `${ctx.actor.name} bought ${o.name} (${{ hetzner: 'Hetzner', hostinger: 'Hostinger', digitalocean: 'DigitalOcean' }[i.provider]})${why}.`, { severity: 'success', resource: o.resource, data: { ...o.data, provider: i.provider } });
   ctx.progress(`Waiting for ${o.name} to accept Unit7’s key…`);
   for (const end = Date.now() + buyDeps.waitMs; !(await buyDeps.listening(bought.host, 22, 3000)) && Date.now() < end;) await buyDeps.sleep(buyDeps.pollMs);
   const c = await execute(ctx.app, ctx.orgId, ctx.actor, 'server.connect', { name: o.name, host: bought.host, privateKey, accountId: i.accountId, providerRef: bought.providerRef }, { reason: `the server bought${why}` });

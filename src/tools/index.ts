@@ -101,3 +101,4 @@ import './vps.ts';
 import './moves.ts';
 import './hostinger-sites.ts';
 import './cloudflare.ts';
+import './hosted.ts';

@@ -488,6 +488,9 @@ Object.assign(NAMED, {
   'server.move': (x: string) => `Copy ${x} to a new server`,
 });
 
+// Databases and cron jobs on a hosted platform (tools/hosted.ts)
+Object.assign(TOOL_WORDS, { 'hosted.plans': 'See what a host can add, and its price', 'render.create_database': 'Create a Postgres on Render', 'render.create_cron': 'Create a cron job on Render', 'railway.create_database': 'Add a database on Railway' });
+
 // Staging → Production (tools/promote.ts), and the chat's Delete card (tools/ui.ts)
 Object.assign(TOOL_WORDS, { 'deployment.promote': 'Promote to Production', 'ui.delete': 'Ask about deleting it', 'ui.folder': 'Ask for the site to put live', 'live.options': 'See where a site can go', 'live.put': 'Put a site live' });
 Object.assign(NAMED, { 'deployment.promote': (x: string) => `Promote ${x} to Production` });

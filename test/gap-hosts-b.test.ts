@@ -310,6 +310,7 @@ test('DigitalOcean: POST /apps with a spec from the repo, a static site with no 
   try {
     const out = ok<any>(await w.yes(await w.org.h('live.put', { uploadId: await w.up(SERVER), to: 'digitalocean', name: 'shop', env: { API_KEY: 'v', MODE: 'x' } })));
     assert.equal(out.url, 'https://shop.ondigitalocean.example');
+    assert.equal(out.point.digitalocean.app, 'app-1', 'a domain can follow');
     const s = st.made[0].spec;
     assert.deepEqual(s.services[0].github, { repo: 'demo/shop', branch: 'main', deploy_on_push: true });
     assert.equal(s.services[0].http_port, 3000);

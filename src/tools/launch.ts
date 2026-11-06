@@ -315,7 +315,7 @@ defineTool({
 // own Traefik routers); on Vercel the project domain's redirect setting; on Netlify the primary domain (it redirects the
 // other by itself). Render does it by itself (to whichever was added first); Railway, Heroku and Fly have no setting.
 const wwwLabel = (domain: string, prefer?: 'apex' | 'www') => (prefer === 'www' ? `${domain} goes to www.${domain}` : `www goes to ${domain}`);
-const HOST_NAME: Record<string, string> = { render: 'Render', railway: 'Railway', heroku: 'Heroku', fly: 'Fly.io', supabase: 'Supabase', addon: 'This tool' };
+const HOST_NAME: Record<string, string> = { render: 'Render', railway: 'Railway', heroku: 'Heroku', fly: 'Fly.io', digitalocean: 'DigitalOcean', supabase: 'Supabase', addon: 'This tool' };
 export const CANON = { fetch: (url: string, init: RequestInit) => fetch(url, init) }; // tests swap it
 type DomRow = { id: string; hostname: string; service_id: string | null; target: string | null; tls_mode: string | null };
 
