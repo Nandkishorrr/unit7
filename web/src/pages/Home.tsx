@@ -160,7 +160,7 @@ export function Home({ me }: { me: Me }) {
                 {chat.failed ? <LoadError text={chat.failed} retry={chat.retry} />
                   : !chat.messages.length ? <ThreadSkeleton />
                   : <Thread messages={chat.messages} conversationId={chat.convId ?? ''} running={chat.running} stalled={chat.stalled} working={chat.working} fresh={chat.fresh}
-                      approvals={decided} onRetry={chat.lastAsk ? () => void chat.send(chat.lastAsk!) : undefined} />}
+                      approvals={decided} brains={chat.brains} onRetry={chat.lastAsk ? () => void chat.send(chat.lastAsk!) : undefined} />}
                 {!chat.failed && <SaveAsRoutine conversationId={chat.convId ?? ''} messages={chat.messages} running={chat.running} className="mb-2 mt-3 self-start" />}
               </div>
             )}

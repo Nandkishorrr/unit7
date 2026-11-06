@@ -9,7 +9,7 @@ import { actorOf } from '../auth.ts';
 import { runAgent, isRunning as brainRunning, stopAgent, agentStatus, type AgentMessage } from './brain.ts';
 import { enqueue, watcherActive, LIVE_TASK, liveTaskArgs, WARDEN } from './bridge.ts';
 import { myBrain, runCli } from './subscription.ts';
-import { answerByRule, NOTHING_ANSWERS, ruleFor } from './quick.ts';
+import { answerByRule, ASKS, INBOX_WAITS, NOTHING_ANSWERS, ruleFor } from './quick.ts';
 
 export function listConversations(app: App, orgId: string, userId: string) {
   // yours, plus the ones Warden opened for incidents (handled by Unit7's model or your own AI)
@@ -96,9 +96,10 @@ export function focusLine(items: ContextItem[]): string {
 // Send a message. If this person turned on their own Claude subscription, that answers. Otherwise, with a model connected,
 // Unit7's own agent answers. Without one, your own AI (Claude Code running `/unit7 watch`) answers from the inbox in this same
 // thread. With nothing listening either, a fixed rule answers the commonest requests (quick.ts), and anything else says at once
-// what to connect, and stays in the inbox for your AI. context: what the person picked for it to be about; every brain gets the
-// focus line for the whole conversation's picks.
-export async function sendToAgent(app: App, p: Principal, message: string, conversationId?: string, context: { kind: ContextKind; id: string }[] = []): Promise<{ conversationId: string; via: 'unit7' | 'your-ai' | 'subscription' | 'rules'; watching?: boolean }> {
+// what it can answer and how to connect an AI. It doesn't wait in the inbox: an AI that turned up later would act on a request the
+// person was told hadn't started. inbox: this one should wait, and the caller says so (a fix asked for from a phone alert). context:
+// what the person picked for it to be about; every brain gets the focus line for the whole conversation's picks.
+export async function sendToAgent(app: App, p: Principal, message: string, conversationId?: string, context: { kind: ContextKind; id: string }[] = [], o: { inbox?: boolean } = {}): Promise<{ conversationId: string; via: 'unit7' | 'your-ai' | 'subscription' | 'rules'; watching?: boolean }> {
   const cli = myBrain(app, p.org.id, p.user.id);
   const status = cli ? undefined : await agentStatus(app, p.org.id);
   let convId = conversationId;
@@ -120,17 +121,22 @@ export async function sendToAgent(app: App, p: Principal, message: string, conve
   }
   if (!status!.ready) {
     const watching = watcherActive(app, p.org.id, p.user.id); // ask before enqueue wakes (and so un-registers) the watcher
-    const rule = watching ? undefined : ruleFor(message);
+    if (watching || o.inbox) {
+      enqueue(app, p.org.id, convId, focus ? `${focus}\n\n${message}` : message, p.user.id); // your own AI reads the focus first too
+      if (!watching) {
+        emit({ id: id('msg'), role: 'status', content: { tone: 'info', text: INBOX_WAITS, brain: true }, created_at: now() });
+        app.events.emit(p.org.id, 'agent.done', 'Nothing to answer it yet', { live: true, data: { conversationId: convId } });
+      }
+      return { conversationId: convId, via: 'your-ai', watching };
+    }
+    const rule = ruleFor(message);
     if (rule) {
       void answerByRule({ app, p, rule, conversationId: convId, context: conversationContext(app.db, convId), emit }).catch((e) => console.error('ask box rule failed', e));
       return { conversationId: convId, via: 'rules' };
     }
-    enqueue(app, p.org.id, convId, focus ? `${focus}\n\n${message}` : message, p.user.id); // your own AI reads the focus first too
-    if (!watching) {
-      emit({ id: id('msg'), role: 'status', content: { tone: 'warn', text: NOTHING_ANSWERS, brain: true }, created_at: now() });
-      app.events.emit(p.org.id, 'agent.done', 'Nothing to answer it yet', { live: true, data: { conversationId: convId } });
-    }
-    return { conversationId: convId, via: 'your-ai', watching };
+    emit({ id: id('msg'), role: 'status', content: { tone: 'info', text: NOTHING_ANSWERS, brain: true, asks: ASKS }, created_at: now() });
+    app.events.emit(p.org.id, 'agent.done', 'Nothing to answer it yet', { live: true, data: { conversationId: convId } });
+    return { conversationId: convId, via: 'rules', watching };
   }
   // run in the background; the caller returns immediately and the UI streams via SSE
   void runAgent({ app, orgId: p.org.id, actor: actorOf(p, 'Unit7 agent'), conversationId: convId, message, emit, principal: p, focus }).catch((e) => console.error('agent run failed', e));

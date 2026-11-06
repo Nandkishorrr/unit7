@@ -12,6 +12,7 @@ import { testApp, testOrg } from './helpers.ts';
 import { createHttp, resetRateLimits } from '../src/server/http.ts';
 import { all, id, json, run } from '../src/db.ts';
 import { focusLine, resolveContext, conversationContext } from '../src/agent/conversations.ts';
+import { nextTask } from '../src/agent/bridge.ts';
 import { runAgent } from '../src/agent/brain.ts';
 
 const FAKE = fileURLToPath(new URL('./fake-cli.mjs', import.meta.url));
@@ -53,7 +54,8 @@ test('picked things are checked against the organisation, named by Unit7, kept f
   run(app.db, `INSERT INTO servers (id, org_id, name, host, key_ref, status) VALUES (?, ?, 'theirs', '203.0.113.10', 'credential://ssh/x/k', 'ready')`, foreign, other.orgId);
   run(app.db, `INSERT INTO assets (id, org_id, provider, kind, ext_id, name, meta, seen_at) VALUES (?, ?, 'domain', 'domain', 'example.com', 'example.com', '{}', '2026-10-07')`, dom, org);
 
-  // nothing answers yet (no model, no subscription): the request waits in the inbox for your own AI, focus first
+  // no model and no subscription, but your own AI is watching: the request reaches its inbox, focus first
+  await nextTask(app, org, me.user.id, 0);
   const sent = (await sam('POST', '/api/agent/conversations', { message: 'Is it healthy?', context: [
     { kind: 'server', id: srv, name: 'what the browser said' }, { kind: 'server', id: foreign, name: 'theirs' }, { kind: 'app', id: dom, name: 'example.com' }, { kind: 'server', id: srv, name: 'again' },
   ] })).body;

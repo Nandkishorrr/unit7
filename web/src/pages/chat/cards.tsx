@@ -7,7 +7,7 @@ import type { ToolStep } from './types';
 import { DomainCheckCard, DomainPointCard, DomainsCard } from './cards/domains';
 import { AppCard, DeployCard, LogsCard, ProjectsCard, RollbackCard, ServiceCreatedCard } from './cards/apps';
 import { DockerCard, FactsCard, MetricsCard, ServersCard, VpsCard } from './cards/servers';
-import { AccountsCard, ApprovalsCard, BackupDoneCard, BackupsCard, BudgetCard, DatabaseCreatedCard, ErrorsCard, EventsCard, MapCard, SyncCard, TablesCard } from './cards/ops';
+import { AccountsCard, ApprovalsCard, BackupDoneCard, BackupsCard, BudgetCard, DatabaseCreatedCard, ErrorLinesCard, ErrorsCard, EventsCard, MapCard, SyncCard, TablesCard } from './cards/ops';
 import { CoolifyBuildCard, CoolifyControlCard, CoolifyDeploysCard, CoolifyEnvsCard, CoolifyLogsCard, CoolifyMadeCard, CoolifyProjectsCard, UsageCard, XrayCard } from './cards/xray';
 import { AnomaliesCard, FindingsCard, TrafficChatCard, TrendsCard } from '../watch/cards';
 import { ChangesCard, PartDoneCard, PartImpactCard, PartSettingsCard, PartTextCard } from './cards/manage';
@@ -57,6 +57,11 @@ function pick(step: ToolStep, ctx: CardCtx): ReactNode | null {
     case 'backup.list': return list(o) ? <BackupsCard list={o} /> : null;
     case 'backup.restore': return obj(o) && o.restored ? <BackupDoneCard input={input} output={o} restored /> : null;
     case 'errors.list': return list(o) ? <ErrorsCard list={o} /> : null;
+    case 'errors.hosts': return list(o) && o.length ? <ErrorLinesCard title="Errors on your other hosts" rows={o.map((e: any) => ({ app: e.app ?? e.provider, text: e.message, n: e.count }))} /> : null;
+    case 'logs.digest': {
+      const rows = obj(o) && list(o.apps) ? o.apps.flatMap((a: any) => a.patterns.filter((p: any) => p.errors).map((p: any) => ({ app: a.name, text: p.pattern, n: p.n }))) : [];
+      return rows.length ? <ErrorLinesCard title="Errors in your apps’ logs" rows={rows} /> : null;
+    }
     case 'events.recent': return list(o) ? <EventsCard list={o} /> : null;
     case 'approval.list': return list(o) ? <ApprovalsCard list={o} /> : null;
     case 'account.list': return list(o) ? <AccountsCard list={o} /> : null;

@@ -55,7 +55,7 @@ export interface Ask { askId: string; spec: AskSpec; state: 'waiting' | 'answere
 
 export type ChatMsg =
   | { id: string; role: 'user'; content: { text: string; context?: { kind: 'server' | 'project' | 'app' | 'domain' | 'database' | 'account' | 'environment'; id: string; name: string }[] }; created_at: string } // context: what it's about (the @ chips)
-  | { id: string; role: 'assistant'; content: { text: string; final?: boolean; next?: string[] }; created_at: string } // next: the replies the AI suggests the person types next (server-cleaned, untrusted)
+  | { id: string; role: 'assistant'; content: { text: string; final?: boolean; next?: string[]; rule?: boolean }; created_at: string } // next: the replies the AI suggests the person types next (server-cleaned, untrusted). rule: a fixed answer, no AI
   | { id: string; role: 'tool'; content: ToolStep; created_at: string }
-  | { id: string; role: 'status'; content: { tone: 'ok' | 'warn' | 'bad' | 'info'; text: string; code?: string; brain?: boolean }; created_at: string }
+  | { id: string; role: 'status'; content: { tone: 'ok' | 'warn' | 'bad' | 'info'; text: string; code?: string; brain?: boolean; asks?: string[] }; created_at: string } // asks: what it can answer with no AI
   | { id: string; role: 'ask'; content: Ask; created_at: string };

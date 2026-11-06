@@ -68,6 +68,17 @@ export function useBrains(status: BrainStatus | undefined, reload: () => void) {
 }
 export type Brains = ReturnType<typeof useBrains>;
 
+// the one click that connects an AI: the next thing to do for the first one free. Nothing when Terminal can't be opened from here: the
+// strip in the ask box shows the command then.
+export function connectOne(brains: Brains) {
+  const b = (brains.status?.brains ?? []).find((x) => x.state !== 'taken');
+  if (!b) return undefined;
+  if (b.state === 'ready') return { label: `Use my ${NAME[b.id]}`, go: () => void brains.choose(b.id) };
+  if (!brains.setup?.canOpen) return undefined;
+  const step: Step = b.state === 'not-installed' ? 'install' : 'sign-in';
+  return { label: step === 'install' ? `Install ${NAME[b.id]}` : `Sign in to ${NAME[b.id]}`, go: () => void brains.start(b.id, step) };
+}
+
 // One AI: its logo, where it stands in plain words, and the one thing to do next
 function BrainRow({ b, brains, dense }: { b: NonNullable<BrainStatus['brains']>[number]; brains: Brains; dense?: boolean }) {
   const { status, setup, waiting, busy } = brains;

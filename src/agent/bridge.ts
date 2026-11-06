@@ -73,13 +73,14 @@ function claim(app: App, orgId: string, userId: string): Task | undefined {
 
 // Pull the next request. Long-polls up to `waitMs` (under Claude Code's ~5 min HTTP idle timeout and
 // Node's 5 min request timeout) so a watch loop makes few empty calls.
+const lastPoll = new Map<string, number>(); // between two polls a watcher isn't waiting, but it's still there
 export async function nextTask(app: App, orgId: string, userId: string, waitMs = 240_000): Promise<Task | undefined> {
   const deadline = Date.now() + waitMs;
   for (;;) {
     const t = claim(app, orgId, userId);
     if (t) { app.events.emit(orgId, 'agent.claimed', 'Your AI picked it up', { live: true, data: { conversationId: t.conversationId } }); return t; }
     const left = deadline - Date.now();
-    if (left <= 0) return undefined;
+    if (left <= 0) { lastPoll.set(`${orgId}:${userId}`, Date.now()); return undefined; }
     await sleep(orgId, userId, left);
   }
 }
@@ -113,9 +114,10 @@ export function say(app: App, orgId: string, userId: string, conversationId: str
   return true;
 }
 
-// Is this person's watcher connected? (waiting right now, or took a request in the last 5 minutes)
+// Is this person's watcher connected? (waiting right now, between two polls, or took a request in the last 5 minutes)
 export function watcherActive(app: App, orgId: string, userId: string): boolean {
   if ((waiters.get(orgId) ?? []).some((w) => w.userId === userId)) return true;
+  if (Date.now() - (lastPoll.get(`${orgId}:${userId}`) ?? 0) < 60_000) return true;
   const r = get<{ claimed_at: string }>(app.db, `SELECT claimed_at FROM agent_tasks WHERE org_id = ? AND claimed_by = ? ORDER BY claimed_at DESC LIMIT 1`, orgId, userId);
   return !!r && Date.now() - Date.parse(r.claimed_at) < 300_000;
 }

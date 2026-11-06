@@ -28,7 +28,7 @@ test('a site is "down" only after two failed checks, and says when it is back', 
     answer = 0; await checkSites(app, o.orgId, online);
     assert.deepEqual(events(app, 'site.down'), [], 'one failure is a blip');
     await checkSites(app, o.orgId, online);
-    assert.match(events(app, 'site.down')[0]!, /github\.com \(shop\) isn’t answering: ECONNREFUSED/);
+    assert.match(events(app, 'site.down')[0]!, /github\.com \(shop\) isn’t answering: it turned the connection away/);
     assert.match(watchIssues(app, o.orgId)[0]!.text, /github\.com is down/);
     await checkSites(app, o.orgId, online);
     assert.equal(events(app, 'site.down').length, 1, 'one alert, not one per check');

@@ -441,7 +441,7 @@ async function overPostgres(ctx: Ctx, s: ServerRow, p: Part, c: string, image: s
 
 defineTool({
   name: 'part.backups', title: 'Backups of the databases on a server', risk: 'read', action: 'read',
-  description: 'The backups Unit7 took of databases it found on a server (part.backup, part.backup_schedule), newest first per database, with its schedule. part.restore brings one back.',
+  description: 'The backups Unit7 took of databases it found on a server (part.backup, part.backup_schedule), newest first per database, with its schedule. part.restore brings one back. files lists the copies of its project’s uploaded files, when there are any: part.restore_files brings those back.',
   input: z.object({ serverId: fid('srv') }),
   run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
@@ -449,13 +449,15 @@ defineTool({
       `SELECT id, part, kind, reason, size, offsite, created_at FROM backups WHERE org_id = ? AND server_id = ? AND part IS NOT NULL AND status = 'done' ORDER BY created_at DESC LIMIT 300`, ctx.orgId, s.id);
     const inv = lastXray(ctx.db, ctx.orgId, s.id)?.data;
     const schedules = all<{ part: string; name: string; frequency: string; keep: number }>(ctx.db, 'SELECT part, name, frequency, keep FROM part_backup_schedules WHERE org_id = ? AND server_id = ?', ctx.orgId, s.id);
-    const parts = [...new Set([...schedules.map((x) => x.part), ...rows.map((r) => r.part)])];
+    // part.copy_extras files its copies under extras:<part>: they belong on the database's own row
+    const parts = [...new Set([...schedules.map((x) => x.part), ...rows.filter((r) => !r.part.startsWith('extras:') || r.kind === 'files').map((r) => r.part.replace(/^extras:/, ''))])];
     return parts.map((part) => {
-      const p = inv && findPart(inv, part), sch = schedules.find((x) => x.part === part);
+      const p = inv && findPart(inv, part), sch = schedules.find((x) => x.part === part), own = rows.filter((r) => r.part === part), files = rows.filter((r) => r.part === `extras:${part}` && r.kind === 'files');
       return {
-        part, name: p?.name ?? sch?.name ?? part, engine: p?.engine ?? rows.find((r) => r.part === part)?.kind, canRestoreOverLive: !!(p?.engine && OVER[p.engine]),
+        part, name: p?.name ?? sch?.name ?? part, engine: p?.engine ?? own[0]?.kind, canRestoreOverLive: !!(p?.engine && OVER[p.engine]),
         schedule: sch ? { frequency: sch.frequency, keep: sch.keep } : null,
-        backups: rows.filter((r) => r.part === part).slice(0, 20).map((r) => ({ id: r.id, at: r.created_at, size: r.size, reason: r.reason, offServer: !!r.offsite && !json<{ error?: string }>(r.offsite, {}).error })),
+        backups: own.slice(0, 20).map((r) => ({ id: r.id, at: r.created_at, size: r.size, reason: r.reason, offServer: !!r.offsite && !json<{ error?: string }>(r.offsite, {}).error })),
+        ...(files.length && { files: files.slice(0, 20).map((r) => ({ id: r.id, at: r.created_at, size: r.size })) }),
       };
     });
   },

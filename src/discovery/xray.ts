@@ -684,6 +684,8 @@ export function buildInventory(out: string, known: Known = {}, at = new Date().t
     const g = group(`dir:${root}`, { name: base(root), owner: ps[0]!.owner, how: 'the same folder', confidence: 0.85, dir: root });
     for (const p of ps) groupOf.set(p.id, g);
   }
+  // a PM2 app is somebody's app even when it's alone in its folder
+  for (const p of parts.values()) if (p.owner === 'pm2' && !groupOf.has(p.id)) groupOf.set(p.id, group(`pm2:${p.name}`, { name: p.name, owner: 'pm2', how: 'PM2’s own list', confidence: 0.9, dir: p.dir }));
 
   // 5. what each part talks to: another container named in its settings, or a port on this machine
   // container names are unique on the machine; a network alias ("db") only counts on a network both share

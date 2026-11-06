@@ -289,12 +289,24 @@ export function AppCard({ output: a }: { output: any }) {
 // graph.get / project.list: each project with its environments and what runs in them
 export function ProjectsCard({ projects }: { projects?: any[] }) {
   const w = useWorld();
-  const list: any[] = (w.graph?.projects ?? []).filter((p: any) => !projects || projects.some((x) => x.id === p.id));
+  const list: any[] = [...(w.graph?.projects ?? []), ...(w.graph?.foundProjects ?? [])].filter((p: any) => !projects || projects.some((x) => x.id === p.id));
   return (
     <Frame icon={<Box size={16} />} title="Your projects" count={w.graph ? list.length : undefined} href="/projects" hrefLabel="Open projects">
       {!w.graph ? <Skeleton className="h-24" /> : !list.length ? <p className="rounded-[16px] bg-raised px-4 py-3 text-[13px] text-muted">No projects yet.</p> : (
         <Fold items={list} className="space-y-2">
           {(p) => {
+            if (p.serverId) return (
+              <li key={p.id} className="rounded-[18px] border border-line px-3 py-2.5 transition hover:border-line-strong">
+                <div className="flex items-center gap-3">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-[12px] bg-raised text-[14px] font-semibold text-ink-2">{p.name.charAt(0).toUpperCase()}</span>
+                  <div className="min-w-0 flex-1">
+                    <button type="button" onClick={() => navigate(`/projects/${p.id}`)} className="block max-w-full truncate text-left text-[14px] font-semibold hover:underline decoration-line-strong underline-offset-4">{p.name}</button>
+                    <p className="truncate text-[12px] text-muted">Found on {p.server}{p.domains?.[0] ? ` · ${p.domains[0]}` : ''}</p>
+                  </div>
+                  <IconBtn label={`Open ${p.name}`} href={`/projects/${p.id}`}><ArrowUpRight size={15} /></IconBtn>
+                </div>
+              </li>
+            );
             const apps = w.svcs.filter((s) => s.projectId === p.id);
             return (
               <li key={p.id} className="rounded-[18px] border border-line px-3 py-2.5 transition hover:border-line-strong">

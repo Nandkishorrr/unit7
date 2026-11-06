@@ -41,6 +41,7 @@ export function useChat() {
   // refreshed when your AI picks something up or finishes, and every 10s (to notice it start listening)
   const status = useApi<BrainStatus>('/api/agent/status', { live: (e) => e.type === 'agent.claimed' || e.type === 'agent.done' || e.type === 'agent.queued' });
   useEffect(() => { const t = setInterval(() => status.reload(), 10_000); return () => clearInterval(t); }, []);
+  const brains = useBrains(status.data, status.reload);
 
   // load a conversation, then follow it live; again after the live connection comes back
   useEffect(() => {
@@ -103,7 +104,7 @@ export function useChat() {
   const working = st && !st.ready ? (st.bridge?.watching ? 'Your Claude Code is on it…' : 'Looking…')
     : st?.brain ? `${st.brain === 'claude' ? 'Claude' : 'Gemini'} is working…` : 'Unit7 is working…';
   return {
-    convId, messages, running, stalled, failed, nonce, connected, status: st, reloadStatus: status.reload, working, lastAsk,
+    convId, messages, running, stalled, failed, nonce, connected, status: st, brains, working, lastAsk,
     fresh: (id: string) => live.current.has(id), send, stop, open, newChat: fresh, retry: () => { setFailed(null); setTries((n) => n + 1); },
   };
 }
@@ -149,7 +150,7 @@ export function Composer({ chat, items = [], starters = STARTERS, next = [] }: {
   const caret = useRef(0); // where an @ was typed: an @ that picks nothing goes back there
   const [flying, setFlying] = useState(false); // the send arrow takes off, then Stop takes its place
   const box = useRef<HTMLTextAreaElement>(null);
-  const brains = useBrains(chat.status, chat.reloadStatus);
+  const { brains } = chat;
   const st = chat.status;
   const yourAI = st && !st.ready;
   const watching = !!st?.bridge?.watching;

@@ -29,21 +29,23 @@ export function lastXray<T = Inventory>(db: DB, orgId: string, serverId: string,
   return r && { at: r.created_at, data: json<T>(r.data, {} as T) };
 }
 
-// --- Coolify's projects, as projects ------------------------------------------------------------------------------
-// What runs on a real server isn't in Unit7's projects table: Coolify runs it, and that stays so. project.list and graph.get show
-// these from each server's last X-ray, under the id the map already gives them (ast_…), which project.readiness, project.passport,
-// client.assign and group.accept take. Nothing moves and nothing is copied. Tools that take a prj_, env_ or svc_ id still refuse
-// them: those are for what Unit7 deployed itself, and Coolify's things change through coolify.* and part.*.
+// --- what runs on a server, as projects ----------------------------------------------------------------------------
+// What runs on a real server isn't in Unit7's projects table: Coolify, Docker Compose or PM2 runs it, and that stays so. project.list
+// and graph.get show these from each server's last X-ray, under the id the map already gives them (ast_…), which project.readiness,
+// project.passport, client.assign and group.accept take. Nothing moves and nothing is copied. Tools that take a prj_, env_ or svc_ id
+// still refuse them (runtime.ts says what to use instead): those are for what Unit7 deployed itself, and these change through
+// coolify.* and part.*.
+const FOUND_OWNERS = new Set(['coolify', 'compose', 'pm2']);
 export function foundProjects(db: DB, orgId: string) {
   const off = archivedAssets(db, orgId);
   return all<{ id: string; name: string }>(db, 'SELECT id, name FROM servers WHERE org_id = ? ORDER BY name', orgId).flatMap((s) => {
     const inv = lastXray(db, orgId, s.id)?.data;
-    return (inv?.projects ?? []).filter((p) => p.owner === 'coolify' && !p.system && !off.has(assetIdOf(orgId, `${p.owner}:${s.id}/p/${p.id}`))).map((p) => {
+    return (inv?.projects ?? []).filter((p) => FOUND_OWNERS.has(p.owner) && !p.system && !off.has(assetIdOf(orgId, `${p.owner}:${s.id}/p/${p.id}`))).map((p) => {
       const apps = (inv?.parts ?? []).filter((x) => p.parts.includes(x.id) && ['app', 'database', 'service'].includes(x.kind));
       const envs = [...new Set(apps.map((a) => a.coolify?.environment ?? 'production'))];
       return {
-        id: assetIdOf(orgId, `${p.owner}:${s.id}/p/${p.id}`), name: p.name, source: 'coolify' as const, serverId: s.id, server: s.name, found: p.id, trust: p.trust, health: p.health, domains: p.domains, ...(p.coolify?.uuid && { coolifyProject: p.coolify.uuid }),
-        environments: envs.map((name) => ({ name, apps: apps.filter((a) => (a.coolify?.environment ?? 'production') === name).map((a) => ({ name: a.name, kind: a.kind, part: a.id, ...(a.coolify && { uuid: a.coolify.uuid, type: a.coolify.type }), ...((a.coolify?.status ?? a.state) && { status: a.coolify?.status ?? a.state }), ...(a.hosts?.length && { domains: a.hosts }) })) })),
+        id: assetIdOf(orgId, `${p.owner}:${s.id}/p/${p.id}`), name: p.name, source: p.owner, serverId: s.id, server: s.name, found: p.id, trust: p.trust, health: p.health, domains: p.domains, ...(p.coolify?.uuid && { coolifyProject: p.coolify.uuid }),
+        environments: envs.map((name) => ({ name, apps: apps.filter((a) => (a.coolify?.environment ?? 'production') === name).map((a) => ({ name: a.name, kind: a.kind, part: a.id, ...(a.product && { product: a.product }), ...(a.engine && { engine: a.engine }), ...(a.coolify && { uuid: a.coolify.uuid, type: a.coolify.type }), ...((a.coolify?.status ?? a.state) && { status: a.coolify?.status ?? a.state }), ...(a.hosts?.length && { domains: a.hosts }) })) })),
       };
     });
   });
@@ -51,7 +53,7 @@ export function foundProjects(db: DB, orgId: string) {
 export const foundProject = (db: DB, orgId: string, id: string) => foundProjects(db, orgId).find((p) => p.id === id);
 // on the map from this X-ray, not the next sync: the id project.list hands out has to work now (a sync writes the same row)
 function putFound(db: DB, orgId: string, serverId: string, inv: Inventory) {
-  for (const f of xrayFound(serverId, inv).found.filter((x) => x.kind === 'project' && x.provider === 'coolify' && !x.system)) {
+  for (const f of xrayFound(serverId, inv).found.filter((x) => x.kind === 'project' && FOUND_OWNERS.has(x.provider) && !x.system)) {
     const { provider, kind, extId, name, url, accountId, ...meta } = f;
     run(db, `INSERT INTO assets (id, org_id, account_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, meta = excluded.meta, seen_at = excluded.seen_at`,
       assetIdOf(orgId, `${provider}:${extId}`), orgId, accountId ?? null, provider, kind, extId, name, url ?? null, JSON.stringify(meta), now());

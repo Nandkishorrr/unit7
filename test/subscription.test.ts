@@ -166,7 +166,7 @@ test('a subscription is one person’s: not a teammate’s, not a token’s, not
     assert.equal(no.status, 409);
     assert.match(no.body.error.message, /Use an API key or your own AI/);
     const sent = (await mate('POST', '/api/agent/conversations', { message: 'What servers do I have?' })).body;
-    assert.equal(sent.via, 'your-ai', 'their request waits for their own AI');
+    assert.equal(sent.via, 'rules', 'with no AI of their own they get the plain answer, not Sam’s');
     await new Promise((r) => setTimeout(r, 150));
     assert.equal(existsSync(RECORD), false, 'Sam’s CLI never ran for the teammate');
 

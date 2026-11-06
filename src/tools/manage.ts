@@ -34,7 +34,7 @@ export const asRoot = (s: ServerRow) => (json<{ sudo?: string }>(s.facts, {}).su
 export const stamp = () => `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '').toLowerCase()}-${id('x').slice(2, 6).toLowerCase().replace(/[^a-z0-9]/g, '0')}`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const ago = (iso: string) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60_000); return m < 2 ? 'just now' : m < 60 ? `${m} minutes ago` : m < 48 * 60 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago`; };
+export const ago = (iso: string) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60_000); return m < 2 ? 'just now' : m < 60 ? `${m} minutes ago` : m < 48 * 60 ? `${Math.round(m / 60)} hours ago` : `${Math.round(m / 1440)} days ago`; };
 
 // --- finding a part, and how far Unit7 may trust it -----------------------------------------------------
 export function findPart(inv: Inventory, ref: string): Part | undefined {

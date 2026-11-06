@@ -22,7 +22,7 @@ const ruleSchema = z.record(z.string().regex(/^[a-z_]+$/), z.enum(['allowed', 'r
 
 defineTool({
   name: 'project.list', title: 'List projects', risk: 'read', action: 'read',
-  description: 'All projects in the organization with their environments, then the Coolify projects server.xray found on servers (source coolify, an ast_ id). project.readiness, project.passport and client.assign take that id; they stay in Coolify, so change them with coolify.* and part.*. Start here to find ids.',
+  description: 'All projects in the organization with their environments, then the projects server.xray found on servers (source says who runs each: coolify, compose or pm2, with an ast_ id). project.readiness, project.passport and client.assign take that id; they stay where they run, so change them with coolify.* and part.*. Start here to find ids.',
   input: z.object({}),
   run: (ctx) => [...all<{ id: string; name: string; slug: string; description: string | null; repo: string | null; created_at: string }>(ctx.db,
     'SELECT id, name, slug, description, repo, created_at FROM projects WHERE org_id = ? ORDER BY name', ctx.orgId)
@@ -340,7 +340,7 @@ defineTool({
 
 defineTool({
   name: 'graph.get', title: 'Read the infrastructure graph', risk: 'read', action: 'read',
-  description: 'The structured state of everything Unit7 manages: projects → environments → accounts, services (apps, workers, databases) on servers, their domains, current deployments and credential references. foundProjects are the Coolify projects server.xray found (an ast_ id; project.readiness, project.passport and client.assign take it, and they change through coolify.* and part.*). Query this before assuming anything.',
+  description: 'The structured state of everything Unit7 manages: projects → environments → accounts, services (apps, workers, databases) on servers, their domains, current deployments and credential references. foundProjects are the Coolify, Docker Compose and PM2 projects server.xray found (an ast_ id; project.readiness, project.passport and client.assign take it, and they change through coolify.* and part.*). Query this before assuming anything.',
   input: z.object({ projectId: z.string().regex(/^(prj|ast)_[A-Za-z0-9_-]{12}$/, 'must be a prj_ or ast_ id').optional() }),
   run: (ctx, i) => graph(ctx, i.projectId),
 });

@@ -2,7 +2,7 @@ import { ProjectWarden } from '../mascot/WardenMascot';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   Archive, Sparkles, FolderKanban, Plus, Eye, EyeOff, Trash2, Upload, Lock, Link2, Search, Rocket, ArrowUpRight, ChevronDown, Settings2, Copy,
-  KeyRound, Globe, ArrowRight, Plug, Gauge as GaugeIcon, SlidersHorizontal, FolderOpen, FlaskConical,
+  KeyRound, Globe, ArrowRight, Plug, Gauge as GaugeIcon, SlidersHorizontal, FolderOpen, FlaskConical, Network, Server,
 } from 'lucide-react';
 import { api, useApi } from '../lib/api';
 import { navigate, useQuery } from '../lib/router';
@@ -22,6 +22,7 @@ import { ClientFilter, MoveToClientDialog, moveToClientItem, useClientFilter } f
 import { StagingPlanModal } from './make/Staging';
 import { EnvSwitcher, setEnvInUrl } from './envs/EnvSwitcher';
 import { deployTime, dnsOf, envHealth, envLabel, isDb, isInstant, LogoTile, mainDomain, Menu, sortEnvs, stackLogo, svcState, urlOf, type MenuItem, type Tone, ago } from './kit';
+import { OWNER_NAME, healthWords, ownerLogo, partLogo, type XPart } from './servers/shape';
 
 // ---------------------------------------------------------------------------------------------
 // What a project looks like at a glance
@@ -47,6 +48,18 @@ function summarize(p: any) {
   };
 }
 type Summary = ReturnType<typeof summarize>;
+
+// What runs on a server that Unit7 didn't deploy (graph's foundProjects: Coolify, Docker Compose, PM2). It stays where it runs, so it
+// opens on its server's page, and the map shows what it's tied to.
+const foundHref = (f: any) => `/servers/${f.serverId}?tab=apps&project=${encodeURIComponent(f.found)}`;
+const foundTone = (f: any): Tone => (f.health?.status === 'bad' ? 'bad' : f.health?.status === 'warn' ? 'warn' : f.health?.status === 'ok' ? 'ok' : 'idle');
+function summarizeFound(f: any) {
+  const tone = foundTone(f), apps = f.environments.flatMap((e: any) => e.apps).map((a: any) => ({ ...a, owner: f.source })) as (XPart & { part: string })[];
+  return { p: f, found: true as const, tone, apps, attention: tone === 'bad' || tone === 'warn' ? 1 : 0, live: tone === 'ok', last: undefined, logo: apps.map(partLogo).find((l) => l !== 'docker') ?? ownerLogo(f.source) ?? 'docker' };
+}
+type Found = ReturnType<typeof summarizeFound>;
+type Row = Summary | Found;
+const isFound = (s: Row): s is Found => 'found' in s;
 const STATUS: Record<Tone, string> = { ok: 'All good', bad: 'Needs a look', work: 'Deploying', warn: 'Needs a look', idle: 'Not live yet' };
 const MARK: Record<Tone, MarkState> = { ok: 'ok', bad: 'bad', work: 'work', warn: 'warn', idle: 'off' };
 
@@ -64,13 +77,13 @@ export function Projects() {
   const [shelfOpen, setShelfOpen] = useState(false);
   const archived = useArchived();
   const clients = useClientFilter();
-  const everything = useMemo(() => (graph.data?.projects ?? []).map(summarize)
-    .sort((a: Summary, b: Summary) => Number(!!b.attention) - Number(!!a.attention) || deployTime(b.last) - deployTime(a.last)), [graph.data]);
+  const everything: Row[] = useMemo(() => [...(graph.data?.projects ?? []).map(summarize), ...(graph.data?.foundProjects ?? []).map(summarizeFound)]
+    .sort((a: Row, b: Row) => Number(!!b.attention) - Number(!!a.attention) || deployTime(b.last) - deployTime(a.last)), [graph.data]);
   // archived projects (Unit7 doesn't look at them) sit on a quiet shelf below, out of the counts
-  const all = everything.filter((s: Summary) => !archived.has(s.p.id) && clients.has(s.p.id));
-  const shelf = everything.filter((s: Summary) => archived.has(s.p.id) && clients.has(s.p.id));
-  const shown = all.filter((s: Summary) => (filter === 'all' || (filter === 'live' ? s.live : s.attention > 0)) && s.p.name.toLowerCase().includes(search.trim().toLowerCase()));
-  const count = (f: (s: Summary) => boolean) => <span className="tabular ml-1 text-[12px] font-semibold">{all.filter(f).length}</span>;
+  const all = everything.filter((s) => !archived.has(s.p.id) && clients.has(s.p.id));
+  const shelf = everything.filter((s) => archived.has(s.p.id) && clients.has(s.p.id));
+  const shown = all.filter((s) => (filter === 'all' || (filter === 'live' ? s.live : s.attention > 0)) && s.p.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const count = (f: (s: Row) => boolean) => <span className="tabular ml-1 text-[12px] font-semibold">{all.filter(f).length}</span>;
 
   return (
     <>
@@ -102,7 +115,8 @@ export function Projects() {
               action={<Button variant="soft" onClick={() => { setSearch(''); setFilter('all'); }}>Show all projects</Button>} />
           ) : (
             <div className="stagger grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 min-[105rem]:grid-cols-4">
-              {shown.map((s: Summary, i: number) => <ProjectCard key={s.p.id} s={s} big={i === 0 && shown.length >= 3} audit={audit.data} onChanged={graph.reload} />)}
+              {shown.map((s, i) => (isFound(s) ? <FoundCard key={s.p.id} s={s} big={i === 0 && shown.length >= 3} onChanged={graph.reload} />
+                : <ProjectCard key={s.p.id} s={s} big={i === 0 && shown.length >= 3} audit={audit.data} onChanged={graph.reload} />))}
               <button type="button" onClick={() => setOpen(true)}
                 className="illo-host lift group flex min-h-[200px] flex-col items-center justify-center gap-2 rounded-[24px] border-2 border-dashed border-line-strong p-5 text-muted transition-colors hover:border-blue hover:text-blue-text">
                 <Illustration name="projects" size={80} />
@@ -125,7 +139,7 @@ export function Projects() {
             <>
               <p className="mb-3 ml-3.5 mt-1 text-[12.5px] text-muted">Unit7 won’t watch, alert on or change these. They keep running where they are.</p>
               <div className="stagger grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 min-[105rem]:grid-cols-4">
-                {shelf.map((s: Summary) => <ProjectCard key={s.p.id} s={s} big={false} audit={audit.data} onChanged={graph.reload} archived />)}
+                {shelf.map((s) => !isFound(s) && <ProjectCard key={s.p.id} s={s} big={false} audit={audit.data} onChanged={graph.reload} archived />)}
               </div>
             </>
           )}
@@ -210,6 +224,69 @@ function ProjectCard({ s, big, audit, onChanged, archived }: { s: Summary; big: 
   );
 }
 
+// A project found on a server: its health and address as far as they're known, what runs in it, and who runs it. The whole card opens
+// it on its server's page.
+function FoundCard({ s, big, onChanged }: { s: Found; big: boolean; onChanged: () => void }) {
+  const { p: f, tone, apps } = s, href = foundHref(f), map = `/map?open=${encodeURIComponent(f.id)}`, domain: string | undefined = f.domains[0];
+  const [moving, setMoving] = useState(false);
+  const items: MenuItem[] = [
+    { label: `Open on ${f.server}`, icon: <FolderOpen size={16} />, href },
+    { label: 'See it on the map', icon: <Network size={16} />, href: map },
+    ...(domain ? [{ label: 'Visit the live site', icon: <ArrowUpRight size={16} />, onSelect: () => window.open(`https://${domain}`, '_blank', 'noopener') }] : []),
+    moveToClientItem(() => setMoving(true)),
+  ];
+  return (
+    <article className={cx('lift relative flex min-w-0 min-h-[200px] has-[[aria-expanded=true]]:z-30 flex-col rounded-[24px] border border-line bg-surface p-5 shadow-soft md:p-6', big && 'md:col-span-2')}>
+      <div className="flex items-start gap-3.5">
+        <span className="relative shrink-0">
+          <LogoTile id={s.logo} size={big ? 56 : 48} />
+          <span className="absolute -bottom-1.5 -right-1.5 grid place-items-center rounded-full bg-surface p-[2px] shadow-soft"><StatusMark state={MARK[tone]} size={big ? 20 : 18} label={healthWords(f.health)} /></span>
+        </span>
+        <div className="min-w-0 flex-1 pt-0.5">
+          <h2 className={cx('truncate font-semibold tracking-[-0.025em]', big ? 'text-[22px]' : 'text-[18px]')}>
+            <A href={href} className="outline-none after:absolute after:inset-0 after:rounded-[24px] focus-visible:after:ring-2 focus-visible:after:ring-blue">{f.name}</A>
+            <KeepStar k={f.id} className="ml-1.5 align-[3px]" />
+          </h2>
+          {domain ? (
+            <a href={`https://${domain}`} target="_blank" rel="noopener" className="relative z-10 inline-flex max-w-full items-center gap-1 text-[13px] font-medium text-blue-text hover:underline">
+              <span className="truncate">{domain}</span><ArrowUpRight size={13} className="shrink-0" />
+            </a>
+          ) : <p className="text-[13px] text-muted">No web address</p>}
+          <div className="mt-1 flex min-w-0 empty:hidden"><UsedPulse k={f.id} except={['Deployed']} /></div>
+        </div>
+        <div className="relative z-10 flex items-center gap-2">
+          <LifecycleMenu item={{ key: f.id, name: f.name, kind: 'project', provider: f.source }} items={items} onChanged={onChanged} />
+        </div>
+      </div>
+      <MoveToClientDialog item={{ key: f.id, name: f.name }} open={moving} onClose={() => setMoving(false)} onMoved={onChanged} />
+
+      <div className="mt-4 flex flex-wrap gap-1.5">
+        <Badge className="max-w-full gap-1.5"><Server size={12} aria-hidden className="shrink-0" /><span className="truncate">Found on {f.server}</span></Badge>
+        <Badge>Run by {OWNER_NAME[f.source] ?? f.source}</Badge>
+      </div>
+
+      {apps.length > 0 && (
+        <ul className="mt-4 flex flex-wrap gap-1.5" aria-label="What runs in it">
+          {apps.slice(0, big ? 6 : 3).map((a) => (
+            <li key={a.part} className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border border-line pl-1 pr-3 text-[12.5px] font-medium">
+              <span className="grid size-6 shrink-0 place-items-center rounded-full bg-raised"><BrandLogo id={partLogo(a)} size={14} /></span><span className="truncate">{a.name}</span>
+            </li>
+          ))}
+          {apps.length > (big ? 6 : 3) && <li className="inline-flex h-8 items-center px-1 text-[12.5px] text-muted">+{apps.length - (big ? 6 : 3)} more</li>}
+        </ul>
+      )}
+
+      <div className="mt-auto flex items-end justify-between gap-4 pt-6">
+        <div className="min-w-0">
+          <p className="text-[12px] text-muted">Health</p>
+          <p className={cx('line-clamp-2 text-[15px] font-semibold tracking-[-0.01em]', tone === 'bad' ? 'text-bad' : tone === 'warn' && 'text-warn')} title={healthWords(f.health)}>{healthWords(f.health)}</p>
+        </div>
+        <A href={map} className="relative z-10 shrink-0 text-[12.5px] font-medium text-blue-text hover:underline">On the map</A>
+      </div>
+    </article>
+  );
+}
+
 const ENV_DOT: Record<Tone, 'ok' | 'bad' | 'work' | 'idle' | 'warn'> = { ok: 'ok', bad: 'bad', work: 'work', idle: 'idle', warn: 'warn' };
 function EnvPill({ e }: { e: any }) {
   const t = envHealth(e);
@@ -268,6 +345,9 @@ export function ProjectDetail({ id }: { id: string }) {
   const kept = useRef<any>(null);
   const raw = graph.data?.projects[0] ?? (deleting ? kept.current : undefined);
   if (raw) kept.current = raw;
+  // one found on a server has no page here: it opens where it runs
+  const found = graph.data?.foundProjects?.[0];
+  useEffect(() => { if (found) navigate(foundHref(found), { replace: true }); }, [found?.id]);
   const s = useMemo(() => (raw ? summarize(raw) : null), [raw]);
   useEffect(() => {
     if (s && (!envId || !s.envs.some((e: any) => e.id === envId))) setEnvId((s.prod ?? s.envs[0])?.id ?? null);

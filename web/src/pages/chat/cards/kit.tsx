@@ -42,7 +42,7 @@ export function useLoad<T>(key: string | null, load: () => Promise<T>) {
 }
 
 export interface Svc { id: string; name: string; kind: string; status: string; href: string; projectId: string; project: string; env: string; stack?: string; domains: { id: string; hostname: string; status: string; tls?: string }[]; config?: any; server_id?: string | null; current_deployment_id?: string | null }
-export interface Graph { servers: any[]; projects: any[]; accounts: any[] }
+export interface Graph { servers: any[]; projects: any[]; foundProjects?: any[]; accounts: any[] }
 // The world as the cards see it: the map (every domain, app, server) and Unit7's own projects.
 export function useWorld(o: { map?: boolean } = {}) {
   const g = useLoad<Graph>('graph', () => api('/api/graph'));

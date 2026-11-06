@@ -165,6 +165,23 @@ function checkOwnership(db: DB, orgId: string, input: unknown, path = ''): void 
   }
 }
 
+// An id from project.list or the map (ast_…) given to a tool that only takes what Unit7 deployed itself. "must be a svc_ id" tells
+// nobody what to do, so this says which tools reach it. A tool with no row here gets the two families.
+const FOUND_TOOLS: Record<string, string> = {
+  'deployment.create': 'coolify.control with action deploy, or part.update when Coolify doesn’t run it', 'deployment.logs': 'coolify.logs or part.logs', 'deployment.rollback': 'coolify.control with action rollback',
+  'database.query': 'part.query', 'database.inspect': 'part.tables', 'database.create': 'coolify.create_database', 'database.slow_queries': 'inspect.database',
+  'backup.create': 'part.backup', 'backup.list': 'part.backups', 'backup.restore': 'part.restore',
+  'service.get': 'server.xray', 'service.restart': 'coolify.control or part.restart', 'service.stop': 'coolify.control or part.stop', 'env.list': 'coolify.envs or part.env', 'env.set': 'coolify.envs or part.env',
+};
+function foundInstead(db: DB, orgId: string, tool: string, raw: unknown, issues: readonly { path: readonly PropertyKey[] }[]) {
+  const given = issues.map((i) => (raw as Record<PropertyKey, unknown> | null | undefined)?.[i.path[0]!]).find((v): v is string => typeof v === 'string' && v.startsWith('ast_'));
+  if (!given) return undefined;
+  const instead = FOUND_TOOLS[tool] ?? 'part.* or coolify.*', ext = get<{ ext_id: string }>(db, 'SELECT ext_id FROM assets WHERE id = ? AND org_id = ?', given, orgId)?.ext_id;
+  const serverId = /^srv_[A-Za-z0-9_-]{12}(?=\/)/.exec(ext ?? '')?.[0];
+  return serverId ? `That id is something Unit7 found on a server, not something it deployed, so ${tool} can’t take it. Use ${instead} with serverId ${serverId}: server.xray lists its parts.`
+    : `That id is something Unit7 found, not something it deployed, so ${tool} can’t take it. For an app on a server use ${instead}. For an app on a hosting account, cloud.app_actions says what can be done.`;
+}
+
 // The environment an action lands in decides its policy. Most specific id wins.
 function findEnv(db: DB, input: Record<string, unknown>): { env?: EnvRow; projectId?: string } {
   const pick = (sql: string, v: unknown) => (typeof v === 'string' ? get<{ e: string | null }>(db, sql, v)?.e ?? undefined : undefined);
@@ -309,7 +326,7 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
   if (actor.only && !actor.only.includes(name)) return { status: 'denied', why: actor.only.includes('seven.finish') ? 'A shift of Seven’s is running here, so this can only look. Try again in a few minutes.' : 'This key can only read findings.', auditId: '' };
 
   const parsed = tool.input.safeParse(rawInput ?? {});
-  if (!parsed.success) return { status: 'error', error: { code: 'invalid_input', message: z.prettifyError(parsed.error) } };
+  if (!parsed.success) return { status: 'error', error: { code: 'invalid_input', message: foundInstead(db, orgId, name, rawInput, parsed.error.issues) ?? z.prettifyError(parsed.error) } };
   const input = parsed.data as Record<string, unknown>;
 
   try {

@@ -12,6 +12,8 @@ import { StepChoices } from './StepChoices';
 import { Choices } from '../choices';
 import { approvalChoices, type Choice } from '../../lib/choices';
 import { AboutChip } from './Picker';
+import { sendAsk } from '../Agent';
+import { connectOne, type Brains } from './BrainPicker';
 import type { ContextItem } from './about';
 import type { ChatMsg, ToolStep } from './types';
 
@@ -70,9 +72,10 @@ export function ChatScroll({ children, follow, className, pin = true }: { childr
 // --- the thread ---
 type Item = { kind: 'one'; m: ChatMsg; card?: ReactNode } | { kind: 'steps'; list: ToolMsg[] };
 
-export function Thread({ messages, conversationId, running, stalled, working, fresh, approvals, onRetry }: {
+export function Thread({ messages, conversationId, running, stalled, working, fresh, approvals, onRetry, brains }: {
   messages: ChatMsg[]; conversationId: string; running: boolean; working: string;
   stalled?: boolean;                                    // nothing can answer yet: offer to set one up
+  brains?: Brains;
   fresh: (id: string) => boolean;                       // arrived live in this visit: animate it in, stream its words
   approvals: Map<string, string>;                       // approval id → its status now: pending, approved, done, failed, rejected, expired
   onRetry?: () => void;
@@ -103,6 +106,7 @@ export function Thread({ messages, conversationId, running, stalled, working, fr
   const failed = lastTool?.role === 'tool' && lastTool.content.status === 'error' ? lastTool : undefined; // one the AI got past doesn't count
   const choicesAt = failed && !items.some((it) => it.kind === 'one' && it.m.id === failed.id && it.card) ? failed.id : undefined;
   const waitingAsk = tail?.role === 'ask' && tail.content.state === 'waiting';
+  const one = brains && connectOne(brains);
 
   return (
     <div className="flex flex-col gap-3.5 pb-4 pt-2">
@@ -112,13 +116,15 @@ export function Thread({ messages, conversationId, running, stalled, working, fr
         const turnStart = ai && (!prev || (prev.kind === 'one' && prev.m.role === 'user'));
         const key = it.kind === 'steps' ? it.list[0]!.id : it.m.id;
         const isNew = fresh(key);
+        // a fixed answer, or word that nothing can answer: no AI said it, so it doesn't wear the AI's mark
+        const said = (it.kind === 'steps' ? it.list[0]! : it.m).content as { rule?: boolean; brain?: boolean };
         if (!ai && it.kind === 'one') return <UserBubble key={key} text={(it.m.content as { text: string }).text} about={(it.m.content as { context?: ContextItem[] }).context} animate={isNew} />;
         return (
           <div key={key} className={cx('relative sm:pl-10', turnStart && i > 0 && 'mt-2', isNew && 'animate-rise')}>
-            {turnStart && <AiMark />}
+            {turnStart && !said.rule && !said.brain && <AiMark />}
             {it.kind === 'steps' ? <Steps list={it.list} approvals={approvals} />
               : <One m={it.m} card={it.card} conversationId={conversationId} approvals={approvals} stream={isNew} copy={answers.has(it.m.id)} choices={it.m.id === choicesAt}
-                  onRetry={!running && it.m === tail && it.m.role === 'status' && it.m.content.tone === 'bad' ? onRetry : undefined} />}
+                  onRetry={!running && it.m === tail && it.m.role === 'status' && (it.m.content.tone === 'bad' || (it.m.content.brain && !stalled)) ? onRetry : undefined} />}
           </div>
         );
       })}
@@ -128,8 +134,17 @@ export function Thread({ messages, conversationId, running, stalled, working, fr
           <TypingDots /><Working text={waitingAsk ? 'Waiting for your answer above' : working} since={tail?.id ?? ''} />
         </div>
       )}
-      {/* nothing can answer yet: set one up right in the box below */}
-      {stalled && <div className="animate-rise sm:pl-10"><Choices id="brain" label="Who answers" choices={BRAIN} onPick={(c) => (c.key === 'brain' ? (focusBrains(), true) : false)} /></div>}
+      {/* nothing can answer yet: what it can answer anyway, and one click to connect an AI */}
+      {stalled && (
+        <div className="animate-rise space-y-3 sm:pl-10">
+          {tail?.role === 'status' && !!tail.content.asks?.length && (
+            <div role="group" aria-label="What Unit7 can answer without an AI" className="flex flex-wrap gap-1.5">
+              {tail.content.asks.map((a) => <Button key={a} size="sm" variant="soft" onClick={() => sendAsk(a)}>{a}</Button>)}
+            </div>
+          )}
+          <Choices id="brain" label="Who answers" choices={[{ ...BRAIN[0]!, label: one?.label ?? BRAIN[0]!.label }, BRAIN[1]!]} onPick={(c) => (c.key === 'brain' ? (one ? one.go() : focusBrains(), true) : false)} />
+        </div>
+      )}
     </div>
   );
 }
@@ -146,7 +161,7 @@ const focusBrains = () => {
 };
 
 function One({ m, card, conversationId, approvals, stream, copy, onRetry, choices }: { m: ChatMsg; card?: ReactNode; conversationId: string; approvals: Map<string, string>; stream: boolean; copy: boolean; onRetry?: () => void; choices?: boolean }) {
-  if (m.role === 'assistant') return <Assistant text={m.content.text} stream={stream} copy={copy} />;
+  if (m.role === 'assistant') return <Assistant text={m.content.text} stream={stream} copy={copy} rule={m.content.rule} />;
   if (m.role === 'status') return <StatusLine tone={m.content.tone} text={m.content.text} onRetry={onRetry} />;
   if (m.role === 'ask') return <AskCard ask={m.content} conversationId={conversationId} />;
   if (m.role === 'tool') return card ? <div className="min-w-0">{card}</div> : <StepRow step={m.content} approvals={approvals} framed choicesId={choices ? m.id : undefined} />;
@@ -186,7 +201,7 @@ function UserBubble({ text, about, animate }: { text: string; about?: ContextIte
   );
 }
 
-function Assistant({ text, stream, copy }: { text: string; stream: boolean; copy: boolean }) {
+function Assistant({ text, stream, copy, rule }: { text: string; stream: boolean; copy: boolean; rule?: boolean }) {
   const shown = useTyped(text, stream);
   const typing = shown.length < text.length;
   return (
@@ -195,6 +210,7 @@ function Assistant({ text, stream, copy }: { text: string; stream: boolean; copy
         <Prose text={rawWords(shown)} />
         {typing && <span aria-hidden className="ml-0.5 inline-block h-[1em] w-[3px] translate-y-[2px] rounded-full bg-blue animate-working" />}
       </div>
+      {rule && !typing && <p className="mt-1 text-[12px] text-muted">A fixed answer from your own data. No AI was used.</p>}
       {copy && !typing && <CopyButton text={text} className="-ml-1.5 mt-0.5 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 sm:opacity-0 sm:group-hover/msg:opacity-100" />}
     </div>
   );

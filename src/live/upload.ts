@@ -56,7 +56,7 @@ export function readZip(zip: Buffer): Part[] {
   return parts;
 }
 
-async function unpack(raw: Buffer, method: number, crc: number, left: number) {
+export async function unpack(raw: Buffer, method: number, crc: number, left: number) {
   const out = method === 0 ? raw : await inflate(raw, { maxOutputLength: left + 1 }).catch((e: NodeJS.ErrnoException) => { throw e.code === 'ERR_BUFFER_TOO_LARGE' ? tooBig() : notZip('That ZIP is damaged. Make it again.'); });
   if (out.length > left) throw tooBig();
   if (crc32(out) !== crc) throw notZip('That ZIP is damaged. Make it again.');

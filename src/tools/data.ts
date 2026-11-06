@@ -522,8 +522,9 @@ defineTool({
 const AWAY = '.unit7-before-restore-';
 export const IN_MOUNTS = `k=${AWAY}$0; for d in /b/*; do [ -d "$d" ] || continue; mkdir "$d/$k"; find "$d" -mindepth 1 -maxdepth 1 ! -name '.unit7-*' -exec mv {} "$d/$k/" \\;; done; tar xzf - -C /b`;
 export const BACK_IN_MOUNTS = `k=${AWAY}$0; for d in /b/*; do [ -d "$d/$k" ] || continue; u="$d/.unit7-undone-$0"; mkdir "$u"; find "$d" -mindepth 1 -maxdepth 1 ! -name '.unit7-*' -exec mv {} "$u/" \\;; find "$d/$k" -mindepth 1 -maxdepth 1 -exec mv {} "$d/" \\;; rmdir "$d/$k"; done`;
+export const usersOf = (want: string[]) => `ids=''; for c in "$@"; do m=" $(docker inspect -f '{{range .Mounts}}{{.Name}} {{.Source}} {{end}}' "$c" 2>/dev/null) "; for w in ${want.map(shq).join(' ')}; do case "$m" in *" $w "*) ids="$ids $c"; break;; esac; done; done`;
 // stops the containers that hold these mounts, runs it, and starts them again whatever happened
-const swapScript = (mounts: string, inner: string, want: string[]) => `ids=''; for c in "$@"; do m=" $(docker inspect -f '{{range .Mounts}}{{.Name}} {{.Source}} {{end}}' "$c" 2>/dev/null) "; for w in ${want.map(shq).join(' ')}; do case "$m" in *" $w "*) ids="$ids $c"; break;; esac; done; done
+const swapScript = (mounts: string, inner: string, want: string[]) => `${usersOf(want)}
 [ -z "$ids" ] || docker stop $ids >/dev/null
 docker run --rm -i --network none ${mounts} alpine:3 sh -c ${shq(inner)} "$S" < "$F"; rc=$?
 [ -z "$ids" ] || docker start $ids >/dev/null
@@ -542,18 +543,43 @@ export function restorable(tops: string[], paths: string[], volumes: string[]) {
   return { back, skipped };
 }
 
+// the copy asked for, whole and the one Unit7 made
+async function filesCopy(ctx: Ctx, t: Target, backupId?: string) {
+  const { s, p } = t;
+  const b = get<{ id: string; location: string; checksum: string | null; created_at: string }>(ctx.db, `SELECT id, location, checksum, created_at FROM backups WHERE org_id = ? AND server_id = ? AND part = ? AND kind = 'files' AND status = 'done' AND (? IS NULL OR id = ?) ORDER BY created_at DESC LIMIT 1`,
+    ctx.orgId, s.id, `extras:${p.id}`, backupId ?? null, backupId ?? null);
+  if (!b) throw new Unit7Error('no_backup', `There’s no copy of ${p.name}’s files to bring back${backupId ? ' with that id' : ''}. part.copy_extras makes one.`, 404);
+  const sum = (await ssh(ctx.app).exec(s, asRoot(s) + script('gunzip -t "$1" && sha256sum "$1" | cut -d" " -f1', b.location), { timeoutMs: 30 * 60_000, signal: ctx.signal })).stdout.trim();
+  if (!sum || (b.checksum && sum !== b.checksum)) throw new Unit7Error('bad_backup', 'That copy is missing on the server, damaged, or isn’t the one Unit7 made. Nothing was changed.', 409);
+  return b;
+}
+// what would go back where, from the copy's own list: what a person is shown is what then runs
+async function livePlan(ctx: Ctx, t: Target, location: string) {
+  const { s, p } = t;
+  if (t.inv.projects.find((pr) => pr.id === p.project)?.system) throw new Unit7Error('not_here', 'These are Coolify’s own files. Unpack them into a folder, and put back what you need by hand.', 409);
+  const { paths, volumes, containers } = extrasOf(t.inv, p);
+  const tops = [...new Set((await ssh(ctx.app).check(s, asRoot(s) + script(`tar tzf "$1" | sed 's#^\\./##' | awk -F/ 'NF > 1 { print $1 "/" } NF == 1 && $1 != "" { print $1 }' | sort -u`, location), { what: 'Reading the copy', timeoutMs: 10 * 60_000 })).split('\n').map((l) => l.trim()).filter(Boolean))];
+  const { back, skipped } = restorable(tops, paths, volumes);
+  if (!back.length) throw new Unit7Error('not_here', 'Nothing in that copy still matches a folder or volume of this project, so it can only come back into a folder.', 409);
+  for (const m of back) safe(m.src, 'folder');
+  return { back, skipped, cs: containers.map((c) => safe(c, 'container')) };
+}
+
 defineTool({
   name: 'part.restore_files', title: 'Bring back a project’s files',
   risk: (i) => (i.into === 'live' ? 'destructive' : 'write'), action: (i) => (i.into === 'live' ? 'restore' : 'backup'), peopleOnly: (i) => i.into === 'live', green: (i) => i.into === 'folder', timeoutMs: 125 * 60_000,
-  description: 'Bring back the files part.copy_extras copied for a project, such as a Supabase stack’s uploaded files. into folder (the default): unpacks the copy into a new folder on the server, next to the backups; nothing that runs is touched. into live: puts them back where they came from (a person only, typing the name as confirmName): a fresh copy first, what uses them stops while they’re swapped and starts again, and what was there moves aside, so Undo in Activity swaps it back. Files mounted one by one stay in the folder route.',
+  description: 'Bring back the files part.copy_extras copied for a project, such as a Supabase stack’s uploaded files. into folder (the default): unpacks the copy into a new folder on the server, next to the backups; nothing that runs is touched. into live: puts them back where they came from (a person only, typing the name as confirmName): a fresh copy first, what uses them stops while they’re swapped and starts again, and what was there moves aside, so Undo in Activity swaps it back. Files mounted one by one stay in the folder route. A dry run says exactly what would be replaced and what would stop.',
   input: z.object({ serverId: fid('srv'), part: PART, backupId: fid('bak').optional().describe('Which copy; the newest by default'), into: z.enum(['folder', 'live']).default('folder'), confirmName: z.string().max(300).optional() }),
+  async dryRun(ctx, i) {
+    const t = await target(ctx, i.serverId, i.part), b = await filesCopy(ctx, t, i.backupId), base = { part: t.p.name, copyFrom: b.created_at, into: i.into };
+    if (i.into === 'folder') return base;
+    const { back, skipped, cs } = await livePlan(ctx, t, b.location);
+    const stops = (await ssh(ctx.app).check(t.s, asRoot(t.s) + script(`${usersOf(back.map((m) => m.src))}; printf '%s\\n' $ids`, ...cs), { what: 'Reading what uses them' })).split('\n').map((l) => l.trim()).filter(Boolean);
+    return { ...base, replaces: back.map((m) => ({ kind: m.kind === 'volume' ? 'volume' : 'folder', name: m.src })), stops, ...(skipped.length && { stays: skipped.map((t) => t.replace(/^(v-|f\d+-)/, '')) }) };
+  },
   async run(ctx, i) {
     const t = await target(ctx, i.serverId, i.part), { s, p } = t, x = ssh(ctx.app), root = asRoot(s);
-    const b = get<{ id: string; location: string; checksum: string | null; created_at: string }>(ctx.db, `SELECT id, location, checksum, created_at FROM backups WHERE org_id = ? AND server_id = ? AND part = ? AND kind = 'files' AND status = 'done' AND (? IS NULL OR id = ?) ORDER BY created_at DESC LIMIT 1`,
-      ctx.orgId, s.id, `extras:${p.id}`, i.backupId ?? null, i.backupId ?? null);
-    if (!b) throw new Unit7Error('no_backup', `There’s no copy of ${p.name}’s files to bring back${i.backupId ? ' with that id' : ''}. part.copy_extras makes one.`, 404);
-    const sum = (await x.exec(s, root + script('gunzip -t "$1" && sha256sum "$1" | cut -d" " -f1', b.location))).stdout.trim();
-    if (!sum || (b.checksum && sum !== b.checksum)) throw new Unit7Error('bad_backup', 'That copy is missing on the server, damaged, or isn’t the one Unit7 made. Nothing was changed.', 409);
+    const b = await filesCopy(ctx, t, i.backupId);
     const at = stamp();
     if (i.into === 'folder') {
       const dir = `${b.location.replace(/\/[^/]+$/, '')}/restored-${at}`;
@@ -563,17 +589,12 @@ defineTool({
     }
     requireHuman(ctx, 'put files back over the live ones');
     typed(p, i.confirmName);
-    if (t.inv.projects.find((pr) => pr.id === p.project)?.system) throw new Unit7Error('not_here', 'These are Coolify’s own files. Unpack them into a folder, and put back what you need by hand.', 409);
-    const { paths, volumes, containers } = extrasOf(t.inv, p);
-    const tops = [...new Set((await x.check(s, root + script(`tar tzf "$1" | sed 's#^\\./##' | awk -F/ 'NF > 1 { print $1 "/" } NF == 1 && $1 != "" { print $1 }' | sort -u`, b.location), { what: 'Reading the copy', timeoutMs: 10 * 60_000 })).split('\n').map((l) => l.trim()).filter(Boolean))];
-    const { back, skipped } = restorable(tops, paths, volumes);
-    if (!back.length) throw new Unit7Error('not_here', 'Nothing in that copy still matches a folder or volume of this project, so it can only come back into a folder.', 409);
-    for (const m of back) safe(m.src, 'folder');
+    const { back, skipped, cs } = await livePlan(ctx, t, b.location);
     const mounts = back.map((m) => `--mount ${shq(`type=${m.kind},src=${m.src},dst=/b/${m.top}`)}`).join(' ');
     ctx.progress(`Copying ${p.name}’s files as they are now, first…`);
     const first = await execute(ctx.app, ctx.orgId, ctx.actor, 'part.copy_extras', { serverId: s.id, part: p.id }, { reason: 'before files go back', signal: ctx.signal });
     if (first.status !== 'ok') throw new Unit7Error('no_copy', `Unit7 couldn’t copy ${p.name}’s files first, so it changed nothing: ${first.status === 'error' ? first.error.message : first.status}`, 502);
-    const want = back.map((m) => m.src), cs = containers.map((c) => safe(c, 'container'));
+    const want = back.map((m) => m.src);
     const undo = root + script(`S=${shq(at)}; F=/dev/null; ${swapScript(mounts, BACK_IN_MOUNTS, want)}`, ...cs);
     const changeId = id('chg'), summary = `Put back ${p.name}’s files from the copy of ${b.created_at.slice(0, 10)}`;
     ctx.progress(`Putting ${p.name}’s files back…`);

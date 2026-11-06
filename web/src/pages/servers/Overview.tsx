@@ -4,10 +4,10 @@
 import { useTool } from '../care/data';
 import { shieldOf, type Guarded } from '../protect';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertTriangle, ArrowUpRight, CalendarClock, Database, DatabaseBackup, History, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CalendarClock, Database, DatabaseBackup, FolderInput, History, RefreshCw } from 'lucide-react';
 import { BrandLogo } from '../../brand/BrandLogo';
 import { Badge, Button, Dot, Empty, HoldButton, Modal, Skeleton, cx, timeAgo, toast, StatusMark, Illustration, stepAction } from '../../ui';
-import { useApi } from '../../lib/api';
+import { runTool, useApi, type ToolResult } from '../../lib/api';
 import { tidy } from '../../lib/words';
 import { OWNER_NAME, healthTone, healthWords, hoursAgo, partLogo, partWhat, projectCards, size, type Card, type XPart } from './shape';
 import { AiButton, CardsSkeleton, TrustBadge, call, costOf, type CardCtx, type ServerXray } from './Xray';
@@ -23,7 +23,8 @@ export type TabId = 'overview' | 'apps' | 'data' | 'traffic' | 'health' | 'chang
 export function useServerPage(sx: ServerXray, serverName: string, human: boolean) {
   const graph = useApi<any>('/api/graph', { live: false });
   const guard = useTool<{ guarded: Guarded[] }>('safety.status', {});
-  const [open, setOpen] = useState<{ id: string; section?: string } | null>(null);
+  // the Projects page links here with ?project=: that one opens
+  const [open, setOpen] = useState<{ id: string; section?: string } | null>(() => { const id = new URLSearchParams(location.search).get('project'); return id ? { id } : null; });
   // Connections' Coolify tile links here with #coolify-connect: open the connect pop-up
   const [connect, setConnect] = useState(() => location.hash === '#coolify-connect');
   const [room, setRoom] = useState(false);
@@ -218,7 +219,7 @@ export function JobsTab({ sx, page, serverName }: { sx: ServerXray; page: Server
 }
 
 // --- bringing one of them back: a test copy by default; over the live one only for a person, its name typed ---
-interface PartBackups { part: string; name: string; engine?: string; canRestoreOverLive: boolean; schedule: { frequency: string; keep: number } | null; backups: { id: string; at: string; size: number | null; reason: string; offServer: boolean }[] }
+interface PartBackups { part: string; name: string; engine?: string; canRestoreOverLive: boolean; schedule: { frequency: string; keep: number } | null; backups: { id: string; at: string; size: number | null; reason: string; offServer: boolean }[]; files?: { id: string; at: string; size: number | null }[] }
 function RestoreModal({ serverId, b, onClose, onDone }: { serverId: string; b: PartBackups | null; onClose: () => void; onDone: () => void }) {
   const [pick, setPick] = useState<string>('');
   const [into, setInto] = useState<'copy' | 'live'>('copy');
@@ -278,6 +279,91 @@ function RestoreModal({ serverId, b, onClose, onDone }: { serverId: string; b: P
   );
 }
 
+// --- its uploaded files (a Supabase stack's storage, say): into a folder by default; over the live ones only for a person, its name
+// typed, after the copy itself has said what would be replaced ---
+interface FilesPlan { copyFrom: string; replaces: { kind: 'volume' | 'folder'; name: string }[]; stops: string[]; stays?: string[] }
+function RestoreFilesModal({ serverId, b, onClose }: { serverId: string; b: PartBackups | null; onClose: () => void }) {
+  const [pick, setPick] = useState('');
+  const [into, setInto] = useState<'folder' | 'live'>('folder');
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+  const [plan, setPlan] = useState<FilesPlan | null>(null);
+  const [why, setWhy] = useState('');
+  useEffect(() => { if (b) { setPick(b.files?.[0]?.id ?? ''); setInto('folder'); setTyped(''); setDone(null); } }, [b]);
+  useEffect(() => {
+    setPlan(null); setWhy('');
+    if (!b || into !== 'live' || !pick) return;
+    let alive = true;
+    void runTool('part.restore_files', { serverId, part: b.part, backupId: pick, into }, { dryRun: true }).catch((e: Error) => ({ status: 'error', error: { code: 'network', message: e.message } }) as ToolResult).then((r) => {
+      if (!alive) return;
+      if (r.status === 'dry_run') setPlan(r.plan as FilesPlan); else setWhy(tidy(r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : 'Unit7 couldn’t read that copy.'));
+    });
+    return () => { alive = false; };
+  }, [b, into, pick]);
+  if (!b) return null;
+  const go = async () => {
+    setBusy(true);
+    const r = await call('part.restore_files', { serverId, part: b.part, backupId: pick, into, ...(into === 'live' && { confirmName: typed.trim() }) });
+    setBusy(false);
+    const o = r.status === 'ok' ? r.output as { folder?: string; next?: string; undo?: string; note?: string; skipped?: string[] } : undefined;
+    if (o) setDone(tidy(o.folder ? `They’re unpacked in ${o.folder} on the server. Nothing that runs was touched.` : `${b.name}’s files are back. Undo in Activity swaps back what was there.${o.note ? ` ${o.note}` : ''}`));
+    else if (r.status === 'approval_required') { toast('warn', 'Waiting for your OK', 'Approve it on the Approvals page and Unit7 does it.'); onClose(); }
+    else toast('bad', 'Couldn’t bring them back', tidy(r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : ''), { action: stepAction(r, { input: { serverId }, retry: go }) });
+  };
+  const when = (at: string) => new Date(at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const opt = (v: 'folder' | 'live', title: string, body: string) => (
+    <label className={cx('flex cursor-pointer items-start gap-3 rounded-[16px] border p-3.5 transition', into === v ? 'border-ink bg-raised/50' : 'border-line hover:bg-raised/40')}>
+      <input type="radio" name="restore-files-into" className="mt-1 accent-[var(--ink)]" checked={into === v} onChange={() => setInto(v)} />
+      <span className="min-w-0"><span className="block text-[13.5px] font-medium text-ink">{title}</span><span className="mt-0.5 block text-[12.5px] text-muted">{body}</span></span>
+    </label>
+  );
+  return (
+    <Modal open onClose={onClose} title={`Bring back ${b.name}’s files`} size="md">
+      {done ? (
+        <div className="space-y-4">
+          <div className="flex items-start gap-3"><StatusMark state="ok" size={36} solid label="Done" className="shrink-0" /><p className="min-w-0 break-words text-[13.5px] text-ink">{done}</p></div>
+          <div className="flex justify-end"><Button variant="primary" onClick={onClose}>Done</Button></div>
+        </div>
+      ) : (
+        <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (into === 'folder') void go(); }}>
+          <fieldset>
+            <legend className="mb-1.5 text-[13px] font-medium">Which copy</legend>
+            <select value={pick} onChange={(e) => setPick(e.target.value)} className="h-10 w-full rounded-[14px] border border-line-strong bg-surface px-3 text-[13.5px]">
+              {b.files?.map((x) => <option key={x.id} value={x.id}>{timeAgo(x.at)} · {when(x.at)}{x.size ? ` · ${size(x.size)}` : ''}</option>)}
+            </select>
+          </fieldset>
+          <fieldset className="space-y-2">
+            <legend className="mb-1.5 text-[13px] font-medium">Where to</legend>
+            {opt('folder', 'Into a new folder (safest)', 'They unpack next to the backups, for you to look through. Nothing that runs is touched.')}
+            {opt('live', 'Over the live files', 'The uploaded files that are live now get replaced by this copy.')}
+          </fieldset>
+          {into === 'live' && (why ? <p role="alert" className="rounded-[14px] bg-bad/8 px-3.5 py-2.5 text-[13px] text-ink">{why}</p> : !plan ? <Skeleton className="h-24 rounded-[16px]" /> : (
+            <div className="space-y-2.5 rounded-[16px] border border-bad/25 bg-bad/[0.04] px-3.5 py-3 text-[13px] text-ink-2">
+              <p className="font-medium text-ink">This replaces what’s there now with the copy from {when(plan.copyFrom)}:</p>
+              <ul className="space-y-0.5">{plan.replaces.map((r) => <li key={r.name} className="flex min-w-0 items-baseline gap-1.5"><span className="shrink-0 text-muted">{r.kind === 'volume' ? 'Volume' : 'Folder'}</span><code className="min-w-0 break-all font-mono text-[12px] text-ink">{r.name}</code></li>)}</ul>
+              <p>Anything added or changed since then stops being live. Unit7 copies the files as they are first, and what was there moves aside, so Undo in Activity swaps it back.</p>
+              {plan.stops.length > 0 && <p><span className="font-medium text-ink">These stop while it runs, then start again:</span> <span className="break-words">{plan.stops.join(', ')}</span></p>}
+              {!!plan.stays?.length && <p><span className="font-medium text-ink">These stay in the copy:</span> <span className="break-words">{plan.stays.join(', ')}</span>. Unpack it into a folder to get them.</p>}
+            </div>
+          ))}
+          {into === 'live' && plan && (
+            <label className="block">
+              <span className="mb-1.5 block text-[13px] font-medium">Type <b className="font-semibold">{b.name}</b> to replace them</span>
+              <input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" className="h-10 w-full rounded-[14px] border border-line-strong bg-surface px-3 text-[13.5px]" />
+            </label>
+          )}
+          <div className="flex justify-end gap-2 border-t border-line pt-4">
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            {into === 'folder' ? <Button type="submit" variant="primary" loading={busy} disabled={!pick}>Unpack into a folder</Button>
+              : plan && <HoldButton loading={busy} disabled={typed.trim() !== b.name} onConfirm={() => void go()}>Replace the live files</HoldButton>}
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
 // --- backups of this server's databases (the Health tab) ---
 export function BackupsTab({ serverId, serverName, sx }: { serverId: string; serverName: string; sx: ServerXray }) {
   const graph = useApi<any>('/api/graph', { live: false });
@@ -295,6 +381,7 @@ export function BackupsTab({ serverId, serverName, sx }: { serverId: string; ser
   const kept = (sid: string) => mine.filter((x) => x.service_id === sid).length;
   const latest = mine.filter((b, i) => mine.findIndex((x) => x.service_id === b.service_id) === i).slice(0, 8);
   const [restore, setRestore] = useState<PartBackups | null>(null);
+  const [files, setFiles] = useState<PartBackups | null>(null);
   return (
     <div className="space-y-3">
       {!!parts?.length && (
@@ -307,11 +394,13 @@ export function BackupsTab({ serverId, serverName, sx }: { serverId: string; ser
                 <p className="text-[12px] text-muted">{[b.schedule && `Every ${b.schedule.frequency === 'daily' ? 'day' : b.schedule.frequency === 'hourly' ? 'hour' : 'week'}, the last ${b.schedule.keep} kept`, b.backups[0] && `newest ${timeAgo(b.backups[0].at)}`, b.backups[0]?.offServer && 'a copy off the server'].filter(Boolean).join(' · ') || 'No backup yet'}</p>
               </div>
               {b.backups.length > 0 && <Button size="sm" variant="secondary" icon={<History size={13} />} onClick={() => setRestore(b)}>Bring it back…</Button>}
+              {!!b.files?.length && <Button size="sm" variant="secondary" icon={<FolderInput size={13} />} onClick={() => setFiles(b)}>Bring back its files…</Button>}
             </li>
           ))}
         </List>
       )}
       <RestoreModal serverId={serverId} b={restore} onClose={() => setRestore(null)} onDone={loadParts} />
+      <RestoreFilesModal serverId={serverId} b={files} onClose={() => setFiles(null)} />
       {!rows ? <Skeleton className="h-28 rounded-[24px]" /> : (
         <List empty={parts?.length ? null : <p className="rounded-[20px] bg-raised px-4 py-4 text-[13px] text-muted">No backups of this server’s databases yet. Unit7 backs up the databases it runs, keeps a copy off the server and checks it can be restored.</p>}>
           {(all ? mine.slice(0, 30) : latest).map((b) => (

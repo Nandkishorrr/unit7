@@ -194,6 +194,22 @@ export function ErrorsCard({ list }: { list: any[] }) {
   );
 }
 
+// logs.digest and errors.hosts: each kind of error line with how often, in the app's own words (text from the app, shown as text)
+export function ErrorLinesCard({ title, rows }: { title: string; rows: { app: string; text: string; n: number }[] }) {
+  return (
+    <Frame icon={<Bug size={16} />} tone="warn" title={title} count={rows.length}>
+      <Fold items={rows} className="space-y-2">
+        {(r, i) => (
+          <li key={i} className="rounded-[18px] border border-line px-3 py-2.5">
+            <p className="text-[12.5px] font-medium text-ink-2">{r.app} <span className="tabular font-normal text-muted">· {r.n}×</span></p>
+            <code className="mt-0.5 block break-words font-mono text-[12px] text-ink-2">{r.text}</code>
+          </li>
+        )}
+      </Fold>
+    </Frame>
+  );
+}
+
 // --- approvals: decide right here ---
 export function ApprovalsCard({ list }: { list: any[] }) {
   const full = useLoad<any[]>('approvals', () => api('/api/approvals'));

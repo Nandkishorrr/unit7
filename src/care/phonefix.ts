@@ -89,7 +89,7 @@ export async function handleFixTap(app: App, acc: { id: string; orgId: string; a
   if (!p || p.role === 'readonly' || p.role === 'auditor') { finish(app, fixId, 'failed', 'nobody to ask'); return 'The person who set up phone approvals can’t make changes here any more, so nothing was done.'; }
   const { sendToAgent } = await import('../agent/conversations.ts');
   let r: Awaited<ReturnType<typeof sendToAgent>>;
-  try { r = await sendToAgent(app, p, briefFor(f)); } catch (e) { finish(app, fixId, 'failed', (e as Error).message); return `Unit7 couldn’t start looking: ${(e as Error).message.slice(0, 160)}`; }
+  try { r = await sendToAgent(app, p, briefFor(f), undefined, [], { inbox: true }); } catch (e) { finish(app, fixId, 'failed', (e as Error).message); return `Unit7 couldn’t start looking: ${(e as Error).message.slice(0, 160)}`; }
   // propose-only for that conversation alone, kept on the fix's row (the gate reads it there)
   run(app.db, 'UPDATE care_fixes SET conversation_id = ?, via = ?, look_until = ? WHERE id = ?', r.conversationId, r.via, new Date(Date.now() + LOOK_MS).toISOString(), fixId);
   app.events.emit(acc.orgId, 'care.fix_started', `${p.user.name} asked Unit7 to fix it from their phone: ${f.title}. Unit7 looks first, then sends one fix to approve.`,

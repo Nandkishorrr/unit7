@@ -51,12 +51,20 @@ export async function sendFile(file: File): Promise<string> {
   if (!res.ok) throw await refused(res);
   return (await res.json()).uploadId;
 }
-// a file for a tool to use (part.import): the raw bytes, then the tool gets its id
-export async function upload(file: File): Promise<{ uploadId: string; size: number }> {
-  const res = await fetch('/api/uploads', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-unit7-bind': bind() }, body: file, credentials: 'same-origin' });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(data?.error?.code ?? 'http_error', data?.error?.message ?? `The upload failed (${res.status}).`, res.status);
-  return data;
+// a file for a tool to use (part.import, wordpress.import): the raw bytes, then the tool gets its id. XHR, because fetch can't say how
+// far an upload has got
+export function upload(file: File, onProgress?: (share: number) => void): Promise<{ uploadId: string; size: number }> {
+  return new Promise((done, no) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/uploads');
+    x.responseType = 'json';
+    x.setRequestHeader('content-type', 'application/octet-stream');
+    x.setRequestHeader('x-unit7-bind', bind());
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    x.onload = () => (x.status >= 200 && x.status < 300 ? done(x.response) : no(new ApiError(x.response?.error?.code ?? 'http_error', x.response?.error?.message ?? `The upload failed (${x.status}).`, x.status)));
+    x.onerror = () => no(new ApiError('http_error', 'The file didn’t reach Unit7. Check that Unit7 is running, and try again.', 0));
+    x.send(file);
+  });
 }
 
 // --- live events: one SSE connection, many listeners ---
@@ -67,6 +75,11 @@ const listeners = new Set<Listener>();
 let source: EventSource | undefined;
 let connected = false;
 const connListeners = new Set<() => void>();
+
+// a page the browser keeps for Back would hold its stream open, and six of those are every connection it gives this host: the next
+// page's requests then wait forever
+window.addEventListener('pagehide', () => { source?.close(); source = undefined; });
+window.addEventListener('pageshow', (e) => { if (e.persisted) startLive(); });
 
 export function startLive() {
   if (source) return;

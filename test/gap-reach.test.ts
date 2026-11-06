@@ -806,16 +806,16 @@ test('a rule reads every server Unit7 can sign in to, says which didn’t answer
   assert.match(many.last.content.text, /first 3 of 4.*\[Servers\]\(\/servers\)/);
 });
 
-test('anything else says at once what to connect, keeps the request for your AI, and leaves the box free', async () => {
+test('anything else says at once what to connect, leaves nothing in the inbox, and leaves the box free', async () => {
   const { app, o, p, thread, ask } = await askBox();
   const r = await ask('why is checkout slow since yesterday?');
-  assert.deepEqual([r.via, r.watching], ['your-ai', false]);
+  assert.deepEqual([r.via, r.watching], ['rules', false]);
   assert.deepEqual([r.last.role, r.last.content.text, r.last.content.brain], ['status', NOTHING_ANSWERS, true]);
-  assert.equal((await ask('and the cart?', r.conversationId)).via, 'your-ai', 'not refused as busy: nothing is working on it');
+  assert.equal((await ask('and the cart?', r.conversationId)).via, 'rules', 'not refused as busy: nothing is working on it');
 
-  // your Claude Code starts up later, and what was asked is still there
-  assert.equal((await nextTask(app, o.orgId, o.userId, 0))?.message, 'why is checkout slow since yesterday?');
-  assert.equal(isRunning(r.conversationId, app), true, 'something holds it now');
+  // your Claude Code starts up later: it was told nothing started, so nothing does by itself
+  assert.equal(await nextTask(app, o.orgId, o.userId, 0), undefined);
+  assert.equal(isRunning(r.conversationId, app), false);
 
   // with it listening a rule stands aside, and nothing tells the person to connect anything
   const sent = await sendToAgent(app, p, 'show my backups');

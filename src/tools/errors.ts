@@ -7,7 +7,6 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { defineTool, type Ctx } from './runtime.ts';
 import { all, get, id, json, now, run } from '../db.ts';
-import { Unit7Error } from '../errors.ts';
 import { ssh } from '../connectors/ssh.ts';
 import { script } from '../connectors/shell.ts';
 import { serverRow } from './servers.ts';
@@ -110,10 +109,9 @@ defineTool({
 
 defineTool({
   name: 'errors.list', title: 'Errors, in plain words', risk: 'read', action: 'read',
-  description: 'Grouped errors for an app (or a whole project): what it is, where in the code, how often in the last hour, and since which deploy. Includes a sample stack trace for fixing.',
+  description: 'Grouped errors for an app, a whole project, or with neither every app Unit7 runs: what it is, where in the code, how often in the last hour, and since which deploy. Includes a sample stack trace for fixing.',
   input: z.object({ serviceId: fid('svc').optional(), projectId: fid('prj').optional(), includeResolved: z.boolean().default(false) }),
   run(ctx, i) {
-    if (!i.serviceId && !i.projectId) throw new Unit7Error('bad_input', 'Give a serviceId or a projectId.');
     const hour = new Date(Date.now() - 3600_000).toISOString();
     return all<Record<string, unknown>>(ctx.db, `SELECT g.id, g.service_id serviceId, s.name service, g.kind, g.message, g.frame, g.count total, g.first_seen firstSeen, g.last_seen lastSeen, g.first_deploy firstDeploy, g.resolved_at resolvedAt, g.sample,
         (SELECT coalesce(sum(n),0) FROM error_hits h WHERE h.group_id = g.id AND h.at > ?) lastHour

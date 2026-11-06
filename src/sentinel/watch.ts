@@ -61,7 +61,7 @@ export async function probe(host: string): Promise<{ ok: boolean; code?: number;
     return { ok: res.status < 500, code: res.status, ms: Date.now() - t0, why: res.status >= 500 ? `HTTP ${res.status}` : undefined };
   } catch (e) {
     const c = (e as { cause?: { code?: string } }).cause?.code;
-    return { ok: false, ms: Date.now() - t0, why: (e as Error).name === 'TimeoutError' ? 'no answer in 10 seconds' : c === 'ENOTFOUND' ? 'the name doesn’t resolve' : /CERT|SSL|TLS/i.test(c ?? '') ? 'its HTTPS certificate is broken' : c ?? (e as Error).message.slice(0, 80) };
+    return { ok: false, ms: Date.now() - t0, why: (e as Error).name === 'TimeoutError' ? 'no answer in 10 seconds' : c === 'ENOTFOUND' ? 'the name doesn’t resolve' : /CERT|SSL|TLS/i.test(c ?? '') ? 'its HTTPS certificate is broken' : c === 'ECONNREFUSED' ? 'it turned the connection away' : c ? 'the connection failed' : (e as Error).message.slice(0, 80) };
   }
 }
 

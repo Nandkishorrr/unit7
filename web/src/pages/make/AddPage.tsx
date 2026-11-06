@@ -11,6 +11,7 @@ import { Badge, Button, Card, ChipSelect, CopyButton, Empty, Field, HoldButton, 
 import { LogoTile, Menu } from '../kit';
 import { BrandLogo } from '../../brand/BrandLogo';
 import { LiveMoment, Note, RoomMeter, StepList, host, size, useSteps } from './parts';
+import { MoveInModal } from './MoveIn';
 
 export interface AddonItem {
   id: string; name: string; logo: string; category: string; line: string; memoryMb: number; how: 'coolify' | 'unit7' | 'needs_coolify' | 'off';
@@ -34,6 +35,7 @@ export function AddPage() {
   const [installing, setInstalling] = useState<AddonItem | null>(null);
   const [removing, setRemoving] = useState<AddonItem | null>(null);
   const [keys, setKeys] = useState<AddonItem | null>(null);
+  const [movingIn, setMovingIn] = useState(false);
   const [term, setTerm] = useState('');
   const [shelf, setShelf] = useState('All');
   const load = () => runTool('addon.catalog', serverId ? { serverId } : {}).then((r) => { const o = outOf(r); if (o.ok) { setCat(o.ok); setErr(undefined); } else setErr(o.why); }, (e: Error) => setErr(e.message));
@@ -76,7 +78,7 @@ export function AddPage() {
             <ul className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-3 min-[105rem]:grid-cols-4">
               {shown.map((a) => (
                 <li key={a.id} className="min-w-0">
-                  <AddonCard a={a} free={cat.freeMb} onInstall={() => setInstalling(a)} onRemove={() => setRemoving(a)} onKeys={() => setKeys(a)} instead={ready.find((x) => x.id === a.instead)} onInstead={(x) => setInstalling(x)} />
+                  <AddonCard a={a} free={cat.freeMb} onInstall={() => setInstalling(a)} onRemove={() => setRemoving(a)} onKeys={() => setKeys(a)} instead={ready.find((x) => x.id === a.instead)} onInstead={(x) => setInstalling(x)} onMoveIn={() => setMovingIn(true)} />
                 </li>
               ))}
             </ul>
@@ -92,11 +94,12 @@ export function AddPage() {
       {sid && installing && <InstallModal serverId={sid} server={cat!.server!.name} item={installing} freeMb={cat!.freeMb} open onClose={() => { setInstalling(null); void load(); }} />}
       {sid && removing && <RemoveModal serverId={sid} item={removing} open onClose={(gone) => { setRemoving(null); if (gone) void load(); }} />}
       {sid && keys && <KeysModal serverId={sid} item={keys} open onClose={() => setKeys(null)} />}
+      {sid && movingIn && <MoveInModal serverId={sid} server={cat!.server!.name} onClose={() => { setMovingIn(false); void load(); }} />}
     </div>
   );
 }
 
-function AddonCard({ a, free, onInstall, onRemove, onKeys, instead, onInstead }: { a: AddonItem; free?: number; onInstall: () => void; onRemove: () => void; onKeys: () => void; instead?: AddonItem; onInstead: (x: AddonItem) => void }) {
+function AddonCard({ a, free, onInstall, onRemove, onKeys, instead, onInstead, onMoveIn }: { a: AddonItem; free?: number; onInstall: () => void; onRemove: () => void; onKeys: () => void; instead?: AddonItem; onInstead: (x: AddonItem) => void; onMoveIn: () => void }) {
   const off = a.how === 'off' || a.how === 'needs_coolify';
   return (
     <Card lift={!off} className={cx('flex h-full flex-col p-5', off && 'bg-surface/70')}>
@@ -129,6 +132,7 @@ function AddonCard({ a, free, onInstall, onRemove, onKeys, instead, onInstead }:
         </span>
       </div>
       {a.how === 'off' && a.off && <p className="mt-2.5 text-[12px] text-muted">{a.off}</p>}
+      {a.id === 'wordpress' && a.how === 'coolify' && <button type="button" onClick={onMoveIn} className="mt-3 self-start rounded-full text-[12.5px] font-medium text-blue-text hover:underline focus-visible:ring-2 focus-visible:ring-blue">Move a site in from somewhere else</button>}
     </Card>
   );
 }
