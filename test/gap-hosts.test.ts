@@ -800,8 +800,8 @@ test('your own server: a step that waited for a person isn’t done twice, a liv
   try {
     const uploadId = await s.upload(dir);
     const first = await s.org.a('live.put', { uploadId, to: 'server', name: 'shop' }) as any;
-    assert.equal(first.error.code, 'approval_required');
-    assert.match(first.error.message, /service\.create is waiting on the Approvals page\. Run this again once it’s approved/);
+    assert.equal(first.status, 'approval_required');
+    assert.match(first.why, /service\.create is waiting on the Approvals page: .*Run this again once it’s approved/);
     const asked = json<Record<string, unknown>>(get<{ input: string }>(s.app.db, `SELECT input FROM approvals WHERE tool = 'service.create'`)!.input, {});
     ok(await s.org.h('service.create', asked));
     ok(await s.org.a('live.put', { uploadId, to: 'server', name: 'shop' }));
