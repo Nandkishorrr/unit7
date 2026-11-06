@@ -28,7 +28,7 @@ const repoOf = (s: string) => parseRepo(s)!;
 const fullName = (r: Repo) => `${r.owner}/${r.name}`;
 // the account that reaches this repo: the one named, the only one, else the first of several that can see it
 async function reach(ctx: Ctx, repo: Repo, named?: string): Promise<{ token: string; accountId: string }> {
-  const list = all<{ id: string }>(ctx.db, `SELECT id FROM accounts WHERE org_id = ? AND provider = 'github' AND (? IS NULL OR id = ?) ORDER BY created_at`, ctx.orgId, named ?? null, named ?? null);
+  const list = all<{ id: string }>(ctx.db, `SELECT id FROM accounts WHERE org_id = ? AND provider = 'github' AND (? IS NULL OR id = ?) ORDER BY created_at, rowid`, ctx.orgId, named ?? null, named ?? null);
   if (!list.length) throw new Unit7Error('no_account', 'No GitHub account is connected. Connect one in Connections (one click).', 409);
   for (const a of list) {
     const token = await githubToken(ctx, a.id);
@@ -204,7 +204,7 @@ defineTool({
   description: 'A site’s Stripe webhooks: its test and live endpoints, which Stripe settings it holds (names and modes, never values), and the usual failure: a signing secret that doesn’t match between test and live, so Stripe’s events get refused. Leave site out for every endpoint on every connected Stripe account. Comparing both modes needs both connected: a sign-in that reaches both, or a test key and a live key. Stripe shows a signing secret only once, so Unit7 works it out from what it can see.',
   input: z.object({ site: z.string().trim().min(1).max(253).optional().describe('An app on the map: its id, name or address'), accountId }),
   async run(ctx, i) {
-    const accounts = all<{ id: string; name: string }>(ctx.db, `SELECT id, name FROM accounts WHERE org_id = ? AND provider = 'stripe' AND (? IS NULL OR id = ?) ORDER BY created_at`, ctx.orgId, i.accountId ?? null, i.accountId ?? null);
+    const accounts = all<{ id: string; name: string }>(ctx.db, `SELECT id, name FROM accounts WHERE org_id = ? AND provider = 'stripe' AND (? IS NULL OR id = ?) ORDER BY created_at, rowid`, ctx.orgId, i.accountId ?? null, i.accountId ?? null);
     if (!accounts.length) throw new Unit7Error('no_account', 'No Stripe account is connected. Connect one in Connections.', 409);
     const site = i.site ? siteOf(ctx, i.site) : undefined, problems: string[] = [], endpoints: WebhookEndpoint[] = [], compared = new Set<StripeMode>(), undelivered: Partial<Record<StripeMode, number>> = {};
     for (const a of accounts) {
