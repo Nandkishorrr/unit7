@@ -45,7 +45,8 @@ export const coolifyHost: Host = addHost({
     const { repo, branch } = await repoFor(ctx, p);
     ctx.progress('Creating the app in Coolify…');
     const pj = await step(ctx, 'coolify.create_project', { serverId, name: p.name, environment: 'production' });
-    const app = await step(ctx, 'coolify.create_app', { serverId, project: pj.project, environment: 'production', name: p.name, repo: `${repo.owner}/${repo.name}`, branch, ...buildOf(p), ...(p.domain && { domains: [p.domain] }), deploy: !p.env.length, reuse: p.update });
+    const app = await step(ctx, 'coolify.create_app', { serverId, project: pj.project, environment: 'production', name: p.name, repo: `${repo.owner}/${repo.name}`, branch, ...buildOf(p), ...(p.domain && { domains: [p.domain] }), deploy: !p.env.length, reuse: true });
+    if (app.reused && !p.update) throw new Unit7Error('already_exists', `Coolify already has an app called ${p.name} in that project. Choose another name, or say you want to update it.`, 409);
     for (const e of p.env) await step(ctx, 'coolify.envs', { serverId, uuid: app.uuid, kind: 'application', op: 'set', key: e.key, value: e.value });
     if (p.env.length) await step(ctx, 'coolify.control', { serverId, uuid: app.uuid, kind: 'application', action: 'deploy' });
     else if (p.update) await step(ctx, 'coolify.control', { serverId, uuid: app.uuid, kind: 'application', action: 'deploy' });

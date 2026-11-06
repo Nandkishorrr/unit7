@@ -24,7 +24,7 @@ import '../live/heroku.ts';
 import '../live/cloudrun.ts';
 import '../live/amplify.ts';
 import '../live/azure.ts';
-import { createRepo, githubToken, parseRepo, pushFolder, repoExists } from '../connectors/github.ts';
+import { createRepo, githubToken, parseRepo, pushFolder, repoExists, repoIsPrivate } from '../connectors/github.ts';
 
 const NAME = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{0,51}$/, 'lowercase letters, digits and dashes, up to 52');
 const SOURCE = {
@@ -126,11 +126,11 @@ function pointDomain(ctx: Ctx, hostname: string, p: Place, name: string, placed:
   return step(ctx, 'domain.point', { hostname, [p.host]: { accountId: p.accountId, ...(p.host === 'netlify' ? { site: name } : { service: name }) } });
 }
 
-const REF = { to: z.string().regex(/^[a-z-]{2,30}$/), accountId: fid('acc').optional(), serverId: fid('srv').optional(), project: z.string().min(1).max(120), deployment: z.string().max(120).optional() };
-const refOf = (ctx: Ctx, i: { to: string; accountId?: string; serverId?: string; project: string; deployment?: string }) => {
+const REF = { to: z.string().regex(/^[a-z-]{2,30}$/), accountId: fid('acc').optional(), serverId: fid('srv').optional(), project: z.string().min(1).max(120), deployment: z.string().max(120).optional(), team: z.string().max(100).optional() };
+const refOf = (ctx: Ctx, i: { to: string; accountId?: string; serverId?: string; project: string; deployment?: string; team?: string }) => {
   const host = hostOf(i.to), place = host?.places(ctx).find((p) => (!i.accountId || p.accountId === i.accountId) && (!i.serverId || p.serverId === i.serverId));
   if (!host || !place) throw new Unit7Error('no_host', `${i.to} isn’t connected.`, 400);
-  return { host, ref: { place, project: i.project, deployment: i.deployment } };
+  return { host, ref: { place, project: i.project, deployment: i.deployment, team: i.team } };
 };
 
 defineTool({
@@ -182,6 +182,7 @@ defineTool({
       if (w && (i.create ? !i.private : false)) throw new Unit7Error('keys_in_site', `Stopped: these files hold keys and the repo would be public: ${w.list}.`, 400);
       const repo = i.create ? await createRepo(token, i.repo.split('/').pop()!, { private: i.private }) : parseRepo(i.repo) ?? await repoExists(token, i.repo);
       if (!repo) throw new Unit7Error('not_found', `Unit7 can’t find the repo ${i.repo}.`, 404);
+      if (w && !i.create && !(await repoIsPrivate(repo, token).catch(() => false))) throw new Unit7Error('keys_in_site', `Stopped: these files hold keys and ${repo.owner}/${repo.name} isn’t private: ${w.list}.`, 400);
       const sha = await pushFolder(site.files, repo, token, { branch: i.branch, message: i.message, existing: !i.create });
       return { repo: `${repo.owner}/${repo.name}`, branch: i.branch, commit: sha.slice(0, 7), files: site.files.length, url: `https://github.com/${repo.owner}/${repo.name}`, ...(w && { warning: `These files hold keys: ${w.list}. Take them out of the code.` }) };
     } finally { site.done(); }

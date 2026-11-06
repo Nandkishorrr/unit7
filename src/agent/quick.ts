@@ -50,7 +50,7 @@ export async function answerByRule(o: { app: App; p: Principal; rule: RuleId; co
       list.length > shown.length && `That’s the first ${shown.length} of ${list.length}. The rest are in [Servers](/servers).`].filter(Boolean).join(' '));
   };
   try {
-    if (rule === 'live') say('Putting something live for you takes an AI, and none is connected yet. You can do it yourself: [start a New project](/projects?new=1) from a folder or a GitHub repo. In Terminal, `unit7 live` does it from the folder you’re in.');
+    if (rule === 'live') say('Putting something live for you takes an AI, and none is connected yet. You can do it yourself: [Put this live](/live) takes a folder, a ZIP or a GitHub repo. In Terminal, `unit7 live` does it from the folder you’re in.');
     if (rule === 'server') await eachServer('server.metrics', (names) => `That’s how ${names} looks right now. For the whole picture (room, data, security), [run a Check-up](/checkup?run=1).`);
     if (rule === 'disk') await eachServer('server.usage', (names) => `That’s what each project uses on ${names}. A [Check-up](/checkup?run=1) also says what can be cleared.`);
     if (rule === 'backups') {

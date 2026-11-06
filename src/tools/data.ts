@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { defineTool, execute, type Ctx } from './runtime.ts';
+import { forgetUpload } from '../connectors/folder.ts';
 import { get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid, requireHuman, requireRole } from './helpers.ts';
@@ -403,6 +404,7 @@ defineTool({
         const why = ctx.redactor.redact((r.stderr || r.stdout).trim()).slice(-400) || `exit ${r.code}`;
         throw new Unit7Error('import_failed', `The file didn’t load into ${copy ? copy.name : t.p.name}: ${seesReal(ctx) ? why : hideShapes(why)}${copy ? '' : ` The backup taken just before is ${safety.backupId}.`}`, 400);
       }
+      forgetUpload(ctx.app, ctx.orgId, i.uploadId);
       const rows = /^COPY (\d+)/m.exec(r.stdout)?.[1];
       ctx.emit('database.imported', `A ${plan.kind} was loaded into ${copy ? `a side copy of ${t.p.name}` : t.p.name} on ${t.s.name}`, { severity: copy ? 'info' : 'warning', resource: t.s.id, data: { part: t.p.id, safetyBackup: safety.backupId } });
       return { part: t.p.name, loaded: plan.kind, into: copy ? 'copy' : 'live', ...(rows && { rows: Number(rows) }), safetyBackup: safety.backupId,

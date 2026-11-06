@@ -14,7 +14,7 @@ import { liveTiming } from '../src/live/vercel.ts';
 import { grepRepo, pushFolder } from '../src/connectors/github.ts';
 import { secretsIn, walk } from '../src/live/source.ts';
 import { verdictsOf } from '../src/care/checkup.ts';
-import { findTools } from '../src/ops/index.ts';
+import { PROFILES, findTools } from '../src/ops/index.ts';
 import { saveUpload, packFolder } from '../src/connectors/folder.ts';
 
 liveTiming.pollMs = 1; liveTiming.answerMs = 20;
@@ -192,4 +192,10 @@ test('code search looks in the code itself when GitHub’s search comes back emp
     assert.deepEqual(await grepRepo({ owner: 'demo', name: 'crm' }, 'create table carriers', undefined), ['db/001.sql']);
     assert.deepEqual(await grepRepo({ owner: 'demo', name: 'crm' }, 'not in the code', undefined), [], 'nothing found is an answer, not a failure');
   } finally { delete process.env.UNIT7_GITHUB_URL; }
+});
+
+test('the read profile keeps its order, so deploy and ops keep what they had', () => {
+  assert.equal(PROFILES.read[0], 'graph.get');
+  assert.ok(PROFILES.deploy.includes('server.traffic') && PROFILES.ops.includes('server.traffic'));
+  assert.ok(PROFILES.read.includes('part.tables'));
 });

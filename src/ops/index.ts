@@ -118,7 +118,7 @@ export function holdDelete(app: App, orgId: string, a: { id: string; tool: strin
 }
 // a routine is a person's own saved step, not an AI deciding, so it runs when they say yes
 // tools that do many things hold only their delete
-export const HELD_OPS: Record<string, string> = { 'supabase.functions': 'delete', 'supabase.storage': 'delete', 'neon.branch': 'delete' };
+export const HELD_OPS: Record<string, string> = { 'supabase.functions': 'delete', 'supabase.storage': 'delete', 'neon.branch': 'delete', 'github.secret': 'remove', 'supabase.secrets': 'unset' };
 const held = (app: App, orgId: string, a: { id: string; tool: string }) => HELD_TOOLS.has(a.tool) || (!!HELD_OPS[a.tool] && openInput(app, orgId, a.id, get<{ input: string }>(app.db, 'SELECT input FROM approvals WHERE id = ?', a.id)?.input ?? '{}').op === HELD_OPS[a.tool]);
 setHoldHook((app, orgId, a) => (held(app, orgId, a) && a.actor.agent !== ROUTINE_AGENT ? holdDelete(app, orgId, a) : undefined));
 export async function runHeld(app: App, nowMs = Date.now()) {
@@ -134,7 +134,7 @@ defineTool({ name: 'delete.held', title: 'Deletes waiting', risk: 'read', action
 defineTool({ name: 'delete.cancel', title: 'Cancel a waiting delete', risk: 'write', action: 'policy_change', peopleOnly: true, description: 'People only. Stop a held delete. Nothing is removed.', input: z.object({ id: z.string().max(40) }), run(ctx, i) { requireHuman(ctx, 'cancel a delete'); return { cancelled: run(ctx.db, `UPDATE held_deletes SET status = 'cancelled' WHERE id = ? AND org_id = ? AND status = 'held'`, i.id, ctx.orgId).changes > 0 }; } });
 
 // --- X6: small profiles for MCP clients, and a way to find the rest ------------------------------------------------------------------
-const READ = ['part.tables', 'graph.get', 'server.list', 'server.metrics', 'server.usage', 'server.xray', 'server.findings', 'server.traffic', 'checkup.run', 'checkup.get', 'findings.list', 'finding.get', 'finding.check', 'finding.prompt', 'inspect.list', 'logs.digest', 'cron.map', 'safety.status', 'expiry.list', 'always.status', 'story.timeline', 'story.replay', 'security.reports', 'project.passport', 'project.readiness', 'events.recent', 'audit.search', 'dns.list', 'connection.tools', 'tools.find'];
+const READ = ['graph.get', 'server.list', 'server.metrics', 'server.usage', 'server.xray', 'server.findings', 'server.traffic', 'checkup.run', 'checkup.get', 'findings.list', 'finding.get', 'finding.check', 'finding.prompt', 'inspect.list', 'logs.digest', 'cron.map', 'safety.status', 'expiry.list', 'always.status', 'story.timeline', 'story.replay', 'security.reports', 'project.passport', 'project.readiness', 'events.recent', 'audit.search', 'dns.list', 'connection.tools', 'tools.find', 'part.tables'];
 export const PROFILES: Record<string, string[]> = {
   read: READ,
   deploy: [...READ.slice(0, 10), 'project.list', 'service.get', 'live.options', 'live.put', 'live.logs', 'live.env', 'github.create_repo', 'github.push', 'deployment.create', 'deployment.logs', 'deployment.rollback', 'env.list', 'env.set', 'domain.point', 'domain.check', 'coolify.control', 'coolify.deployments', 'coolify.logs', 'coolify.envs', 'safety.copy', 'safety.rehearse', 'service.restart', 'staging.plan', 'staging.create', 'connection.tools', 'connection.call', 'tools.find'],

@@ -67,7 +67,7 @@ async function upload(ctx: Ctx, acc: string, team: string | undefined, want: Set
 
 export async function vercelLogs(ctx: Ctx, r: Ref) {
   const acc = r.place.accountId!;
-  const team = await scopeOf(ctx, acc);
+  const team = await scopeOf(ctx, acc, r.team);
   const got = await send(ctx, acc, `/v3/deployments/${encodeURIComponent(r.deployment ?? r.project)}/events`, { team, query: { limit: '300', direction: 'backward', builds: '1' } });
   if (got.status >= 400) throw fail('share the build log', got);
   const rows = (Array.isArray(got.data) ? got.data : got.data?.events ?? []) as { text?: string; payload?: { text?: string } }[];
@@ -84,7 +84,7 @@ async function live(ctx: Ctx, acc: string, team: string | undefined, id: string,
     if (state !== said) ctx.progress(`Vercel: ${(said = state).toLowerCase()}`);
     if (state === 'READY') return d.data as { url: string; alias?: string[] };
     if (state === 'ERROR' || state === 'CANCELED') {
-      const tail = await vercelLogs(ctx, { place, project: id, deployment: id }).catch(() => []);
+      const tail = await vercelLogs(ctx, { place, project: id, deployment: id, team }).catch(() => []);
       throw new Unit7Error('build_failed', `Vercel couldn’t build it: ${d.data.errorMessage ?? d.data.errorCode ?? state.toLowerCase()}`, 502, { logTail: tail.slice(-40).join('\n') });
     }
     await sleep(liveTiming.pollMs);
@@ -125,11 +125,11 @@ export const vercelHost: Host = addHost({
     const id = String(made.data.id);
     const done = await live(ctx, acc, team, id, p.place);
     const host = done.alias?.[0] ?? done.url;
-    return { url: `https://${host}`, project: pj.id, deployment: id, dashboard: `https://vercel.com/dashboard`, notes: pj.notes, autoDeploy: !!pj.linked };
+    return { url: `https://${host}`, project: pj.id, deployment: id, dashboard: `https://vercel.com/dashboard`, notes: pj.notes, autoDeploy: !!pj.linked, point: { vercel: { accountId: acc, project: pj.id, ...(team && { team }) } } };
   },
   logs: vercelLogs,
   async env(ctx, r, op) {
-    const acc = r.place.accountId!, team = await scopeOf(ctx, acc);
+    const acc = r.place.accountId!, team = await scopeOf(ctx, acc, r.team);
     if (op.set?.length) await vercel.setEnv(ctx, acc, r.project, team, op.set);
     const have = await vercel.env(ctx, acc, r.project, team);
     for (const key of op.unset ?? []) {

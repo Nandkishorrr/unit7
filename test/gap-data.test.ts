@@ -213,7 +213,7 @@ function noBackups(app: App) {
 const uploaded = (app: App, orgId: string, name: string, body: Buffer | string) => {
   const uploadId = `upl_${name.padEnd(12, 'x').slice(0, 12)}`, path = join(mkdtempSync(join(tmpdir(), 'u7up-')), `${uploadId}.tgz`);
   writeFileSync(path, body);
-  run(app.db, 'INSERT INTO uploads (id, org_id, path, size, sha256, created_by) VALUES (?, ?, ?, ?, ?, ?)', uploadId, orgId, path, Buffer.byteLength(body), 'x', 'test');
+  run(app.db, 'INSERT OR REPLACE INTO uploads (id, org_id, path, size, sha256, created_by) VALUES (?, ?, ?, ?, ?, ?)', uploadId, orgId, path, Buffer.byteLength(body), 'x', 'test');
   return uploadId;
 };
 const decide = (app: App, o: { orgId: string; human: unknown }, r: any, name = 'pg-db') => (r.status === 'approval_required' ? decideApproval(app, o.orgId, o.human as never, r.approvalId, true, name) : r) as Promise<any>;
@@ -432,7 +432,8 @@ test('import: a backup first, approval on anything live, a side copy when asked,
   assert.ok(seen.at(-1)!.command.includes('rm -rf'), 'the copy of the file doesn’t stay on the server');
 
   seen.length = 0;
-  const side = ok(await o.h('part.import', { serverId: SRV, part: PG, uploadId: up, into: 'copy' }));
+  assert.equal(get<{ n: number }>(app.db, 'SELECT count(*) n FROM uploads WHERE id = ?', up)?.n, 0, 'a loaded file isn’t kept');
+  const side = ok(await o.h('part.import', { serverId: SRV, part: PG, uploadId: uploaded(app, o.orgId, 'two', 'CREATE TABLE t (id int);\n'), into: 'copy' }));
   assert.equal(side.into, 'copy');
   assert.match(side.copy, /^pg-db-copy-\d{8}-[a-z0-9]{4}$/);
   const load = seen.find((x) => x.command.includes('unit7-import-abc/f'))!;
@@ -446,7 +447,7 @@ test('import: a backup first, approval on anything live, a side copy when asked,
     assert.equal(code(await decide(app, o, await o.h('part.import', { serverId: SRV, part: PG, uploadId: uploaded(app, o.orgId, `bad${n++}`, body) }))), 'bad_upload', body);
   }
   assert.equal(seen.length, 0, 'refused before the backup');
-  assert.equal(code(await decide(app, o, await o.h('part.import', { serverId: SRV, part: REDIS, uploadId: up }), 'rd-db')), 'unsupported');
+  assert.equal(code(await decide(app, o, await o.h('part.import', { serverId: SRV, part: REDIS, uploadId: uploaded(app, o.orgId, 'three', 'CREATE TABLE t (id int);\n') }), 'rd-db')), 'unsupported');
   const tar = Buffer.alloc(512); tar.write('ustar', 257);
   assert.equal(code(await decide(app, o, await o.h('part.import', { serverId: SRV, part: PG, uploadId: uploaded(app, o.orgId, 'tar', tar) }))), 'bad_upload');
   assert.equal(code(await o.a('part.import', { serverId: SRV, part: PG, uploadId: 'upl_notmine00000' })), 'not_found');
@@ -454,7 +455,7 @@ test('import: a backup first, approval on anything live, a side copy when asked,
   const exec = ssh(app).exec;
   ssh(app).exec = async (s, c, x) => (c.includes('unit7-import-abc/f') ? { code: 3, stdout: '', stderr: 'ERROR: boom', truncated: false } : exec(s, c, x));
   seen.length = 0;
-  const failed = await decide(app, o, await o.h('part.import', { serverId: SRV, part: PG, uploadId: up }));
+  const failed = await decide(app, o, await o.h('part.import', { serverId: SRV, part: PG, uploadId: uploaded(app, o.orgId, 'three', 'CREATE TABLE t (id int);\n') }));
   assert.equal(code(failed), 'import_failed');
   assert.match(failed.error.message, /boom.*backup taken just before is bak_/s);
   assert.ok(seen.at(-1)!.command.includes('rm -rf'));

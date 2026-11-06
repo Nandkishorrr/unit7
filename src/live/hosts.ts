@@ -11,7 +11,7 @@ export interface Fit { ok: boolean; why: string; best?: boolean }
 export interface Put { name: string; site: Site; place: Place; env: { key: string; value: string; secret: boolean }[]; domain?: string; update: boolean; team?: string; port?: number }
 // point: what domain.point takes for this app, in words what to do instead, or false when the domain is already the site itself
 export interface Placed { url: string; project: string; deployment?: string; dashboard?: string; notes?: string[]; autoDeploy?: boolean; point?: Record<string, unknown> | string | false }
-export interface Ref { place: Place; project: string; deployment?: string }
+export interface Ref { place: Place; project: string; deployment?: string; team?: string }
 export interface Host {
   id: string; name: string;
   // takes finished files as they are, or builds them there

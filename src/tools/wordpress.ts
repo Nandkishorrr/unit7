@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { createReadStream, readFileSync } from 'node:fs';
 import { defineTool, type Ctx } from './runtime.ts';
+import { forgetUpload } from '../connectors/folder.ts';
 import { get, json } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid, isAgent, requireHuman, requireRole } from './helpers.ts';
@@ -474,6 +475,7 @@ defineTool({
         forgetLogin(ctx, s.id, a);
         const look = await settled(ctx, dst);
         ctx.emit('wordpress.imported', `Moved a WordPress site onto ${s.name} at ${i.domain}`, { severity: 'success', resource: s.id, data: { addon: a.id } });
+        forgetUpload(ctx.app, ctx.orgId, i.filesUploadId); forgetUpload(ctx.app, ctx.orgId, i.sqlUploadId);
         return {
           imported: true, url: dst.url, answers: look.ok, ...(look.why && { why: look.why }), ...('dns' in made && { dns: made.dns }), addon: a.id,
           firstVisit: 'Sign in with the login you had on the old site, or ask for a one-time link (wordpress.admin).', undo: `addon.remove with addon ${a.id} takes it off ${s.name}.`,

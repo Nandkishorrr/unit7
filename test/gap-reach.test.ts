@@ -768,7 +768,7 @@ test('with no AI connected a rule answers in the thread, and nothing waits in th
   const { app, o, ask } = await askBox();
   const live = await ask('Put this live');
   assert.equal(live.via, 'rules');
-  assert.match(live.last.content.text, /\[start a New project\]\(\/projects\?new=1\).*`unit7 live`/);
+  assert.match(live.last.content.text, /\[Put this live\]\(\/live\).*`unit7 live`/);
   assert.match((await ask('what’s using my disk?')).last.content.text, /No server is connected yet. \[Add one\]\(\/servers\?new=1\)/);
   const none = await ask('show my backups');
   assert.equal(none.steps[0].status, 'ok');

@@ -4,11 +4,11 @@
 import { execFile, spawn } from 'node:child_process';
 import { createGzip } from 'node:zlib';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import type { App } from '../app.ts';
-import { run } from '../db.ts';
+import { get, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { detect } from './detect.ts';
 
@@ -103,6 +103,13 @@ export function saveUpload(app: App, orgId: string, userId: string | null, buf: 
   writeFileSync(path, buf, { mode: 0o600 });
   run(app.db, 'INSERT INTO uploads (id, org_id, path, size, sha256, created_by) VALUES (?, ?, ?, ?, ?, ?)', uploadId, orgId, path, buf.length, createHash('sha256').update(buf).digest('hex'), userId);
   return uploadId;
+}
+
+// what someone uploaded can be customer data: once it's used, it isn't kept
+export function forgetUpload(app: App, orgId: string, uploadId: string) {
+  const up = get<{ path: string }>(app.db, 'SELECT path FROM uploads WHERE id = ? AND org_id = ?', uploadId, orgId);
+  if (up) rmSync(up.path, { force: true });
+  run(app.db, 'DELETE FROM uploads WHERE id = ? AND org_id = ?', uploadId, orgId);
 }
 
 export async function uploadFolder(app: App, orgId: string, userId: string | null, folder: string): Promise<string> {
