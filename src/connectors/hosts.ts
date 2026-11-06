@@ -318,15 +318,25 @@ export const fly = {
 };
 
 // --- DigitalOcean listings ---------------------------------------------------------------------------
+const DOAPI = () => process.env.UNIT7_DIGITALOCEAN_API ?? DO;
 async function doList<T>(ctx: Ctx, acc: string, path: string, field: string): Promise<T[]> {
   const out: T[] = [];
   for (let page = 1; page < 50; page++) {
-    const r = await rest<Record<string, any>>('DigitalOcean', `${DO()}${path}${path.includes('?') ? '&' : '?'}per_page=200&page=${page}`, { headers: await doAuth(ctx, acc) });
+    const r = await rest<Record<string, any>>('DigitalOcean', `${DOAPI()}${path}${path.includes('?') ? '&' : '?'}per_page=200&page=${page}`, { headers: await doAuth(ctx, acc) });
     out.push(...(r[field] ?? []));
     if (!r.links?.pages?.next) break;
   }
   return out;
 }
+// one droplet: its plan and its snapshots (tools/vps.ts)
+const doAct = async (ctx: Ctx, acc: string, id: number, body: Record<string, unknown>) => (await rest<{ action: { id: number; status: string } }>('DigitalOcean', `${DOAPI()}/droplets/${id}/actions`, { headers: await doAuth(ctx, acc), body })).action;
+export const dropletBox = {
+  get: async (ctx: Ctx, acc: string, id: number) => (await rest<{ droplet: { size_slug: string; disk: number; region?: { slug?: string } } }>('DigitalOcean', `${DOAPI()}/droplets/${id}`, { headers: await doAuth(ctx, acc) })).droplet,
+  sizes: (ctx: Ctx, acc: string) => doList<{ slug: string; vcpus: number; memory: number; disk: number; price_monthly: number; regions: string[]; available?: boolean }>(ctx, acc, '/sizes', 'sizes'),
+  snapshots: (ctx: Ctx, acc: string, id: number) => doList<{ id: number; name: string; created_at?: string; size_gigabytes?: number }>(ctx, acc, `/droplets/${id}/snapshots`, 'snapshots'),
+  snapshot: (ctx: Ctx, acc: string, id: number, name: string) => doAct(ctx, acc, id, { type: 'snapshot', name }),
+  restore: (ctx: Ctx, acc: string, id: number, image: number) => doAct(ctx, acc, id, { type: 'restore', image }),
+};
 export const digitalocean = {
   droplets: (ctx: Ctx, acc: string) => doList<{ id: number; name: string; status: string; networks: { v4: { ip_address: string; type: string }[] } }>(ctx, acc, '/droplets', 'droplets'),
   apps: (ctx: Ctx, acc: string) => doList<{ id: string; spec: { name: string; services?: { envs?: { key: string; value?: string }[] }[]; static_sites?: { envs?: { key: string; value?: string }[] }[]; envs?: { key: string; value?: string }[] }; default_ingress?: string; domains?: { spec: { domain: string } }[]; active_deployment?: { phase: string } }>(ctx, acc, '/apps', 'apps'),

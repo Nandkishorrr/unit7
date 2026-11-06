@@ -219,7 +219,7 @@ const SKIP = new Set(['deployment.create', 'service.sync_git', 'service.sync_pre
   'sync.schedule', 'security.note', 'watch.settings', 'server.price', 'job.run', 'alerts.phone_approvals', 'asset.archive', 'security.fix_settings', 'security.weekly', 'alerts.phone_confirm']);
 const isPart = (t: string) => (t.startsWith('part.') && t !== 'part.adopt') || /^file\.(write|upload|move|remove)$/.test(t); // their changes rows say it, with the undo
 const KIND_OF: [RegExp, Kind][] = [
-  [/^deployment\.rollback$/, 'rollback'], [/^(domain|coolify\.set_domain)/, 'dns'], [/^link\./, 'link'], [/^(security\.|server\.(harden|close_port|protect_sites)|shield\.)/, 'security'],
+  [/^deployment\.rollback$/, 'rollback'], [/^(domain|coolify\.set_domain)/, 'dns'], [/^link\./, 'link'], [/^(security\.|server\.(harden|close_port|open_port|ssh_keys|users|protect_sites)|shield\.)/, 'security'],
   [/^(service\.restart|docker\.restart)$/, 'restart'], [/^(server\.|docker\.prune|hostinger\.)/, 'server'], [/^coolify\.control$/, 'deploy'],
   [/^(service\.(settings|scale|autoscale|cache_static|add_worker)|database\.(pool|rotate_password))$/, 'change'],
 ];
@@ -251,6 +251,10 @@ const SAID: Record<string, Said> = {
   'shield.block': (i, _o, n) => `Blocked ${i.ip} on ${n.srv(i.serverId) ?? 'a server'}`,
   'shield.unblock': (i, _o, n) => `Unblocked ${i.ip} on ${n.srv(i.serverId) ?? 'a server'}`,
   'server.close_port': (i, _o, n) => `${i.open ? 'Opened' : 'Closed'} port ${i.port} on ${n.srv(i.serverId) ?? 'a server'}`,
+  'server.open_port': (i, _o, n) => `Opened port ${i.port} on ${n.srv(i.serverId) ?? 'a server'}: ${i.reason}`,
+  'server.ssh_keys': (i, _o, n) => `${i.op === 'add' ? 'Added an SSH key to' : 'Removed an SSH key from'} ${n.srv(i.serverId) ?? 'a server'}`,
+  'server.users': (i, _o, n) => `${i.op === 'add' ? 'Added' : 'Removed'} the user ${i.user} on ${n.srv(i.serverId) ?? 'a server'}`,
+  'server.snapshot': (i, _o, n) => `${i.op === 'restore' ? 'Took' : 'Snapshotted'} ${n.srv(i.serverId) ?? 'a server'}${i.op === 'restore' ? ' back to a snapshot' : ''}`,
   'server.harden': (i, _o, n) => `Locked down ${n.srv(i.serverId) ?? 'a server'}`,
   'server.protect_sites': (i, _o, n) => `Hid secret files on every site on ${n.srv(i.serverId) ?? 'a server'}`,
   'server.swap': (i, _o, n) => `${i.off ? 'Removed swap from' : 'Added swap to'} ${n.srv(i.serverId) ?? 'a server'}`,

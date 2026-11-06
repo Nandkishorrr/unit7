@@ -83,7 +83,7 @@ export const CATALOG: Provider[] = [
   { id: 'azure', name: 'Microsoft Azure', group: 'Servers & domains', what: 'Static Web Apps, App Service, databases, Azure DNS and this month’s cost.', method: { kind: 'key', pattern: '^[0-9a-f-]{36}:[0-9a-f-]{36}:',
     keyUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade', hint: 'Register an app, give it the Reader role on your subscription, add a client secret, then paste TENANT_ID:CLIENT_ID:SECRET. Quicker: run az login on this Mac.' } },
   { id: 'hetzner', name: 'Hetzner Cloud', group: 'Servers & domains', what: 'Cloud servers and DNS zones on Hetzner. Unit7 can then set them up for you.', method: { kind: 'key',
-    keyUrl: 'https://console.hetzner.cloud/projects', hint: 'Open your project, then Security → API tokens → Generate API token (Read is enough). Paste it here.' } },
+    keyUrl: 'https://console.hetzner.cloud/projects', hint: 'Open your project, then Security → API tokens → Generate API token. Read is enough to see your servers; Read & Write also lets you buy, snapshot and turn them off from Unit7. Paste it here.' } },
 ];
 
 export const provider = (id: string) => CATALOG.find((p) => p.id === id);

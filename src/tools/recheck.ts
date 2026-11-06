@@ -468,7 +468,7 @@ export async function inspectHost(ctx: Ctx, raw: string, dns: Lookup = publicRes
 // --- after every other change: look again in the background --------------------------------------------------------
 // A change to what an alert is about (DNS, routes, apps, links, accounts) rechecks it a moment later, as Unit7 itself.
 const RECHECKER: Actor = { kind: 'system', id: 'recheck', userId: null, name: 'Unit7', role: 'agent', agent: 'Unit7' };
-const AFFECTS = /^(domain|dns|client\.subdomain|coolify|link|part|docker|serverapp|addon|cloud|service|server\.(close_port|tidy_logs|harden|protect_sites|swap|time_sync|repair)|security\.fix_settings|account\.(connect|verify|bind)|asset\.delete|change\.undo|deployment\.(create|rollback))\b/;
+const AFFECTS = /^(domain|dns|client\.subdomain|coolify|link|part|docker|serverapp|addon|cloud|service|server\.(close_port|open_port|tidy_logs|harden|protect_sites|swap|time_sync|repair)|security\.fix_settings|account\.(connect|verify|bind)|asset\.delete|change\.undo|deployment\.(create|rollback))\b/;
 export function startRecheck(app: App, delayMs = 3000) {
   const waiting = new Map<string, { t: NodeJS.Timeout; input: unknown[] }>();
   return app.events.on((e) => {

@@ -5,13 +5,16 @@
 import { z } from 'zod';
 import { defineTool, execute, type Ctx } from './runtime.ts';
 import { get } from '../db.ts';
-import { Unit7Error } from '../errors.ts';
+import { Unit7Error, forbidden } from '../errors.ts';
 import { hostinger, hostingerRisk } from '../connectors/hostinger.ts';
 import { keyCommand } from '../connectors/ssh.ts';
 import { serverRow } from './servers.ts';
 import { verifiers } from './core.ts';
 import { fid } from './helpers.ts';
 import { MONEY_OP } from '../policy.ts';
+import { databaseOn, portRisk } from '../secure/ports.ts';
+import { lastXray } from './xray.ts';
+import type { ServerRow } from '../connectors/ssh.ts';
 
 // an operation that buys, pays, renews or cancels: people-only for an AI (MONEY_OP); a person's write is a provider_purchase
 const money = (op: string) => MONEY_OP.test(op);
@@ -152,5 +155,68 @@ defineTool({
     const note = `Add Unit7’s key to ${vm.hostname} once: on the server’s page press “Add it using this Mac’s SSH access”, or run the command shown there. Unit7 doesn’t sign in until then.`;
     ctx.emit('server.key_needed', `${vm.hostname}: ${note}`, { severity: 'warning', resource: serverId });
     return { serverId, status: 'awaiting_key', host: vm.ip, publicKey, command, note };
+  },
+});
+
+// --- Hostinger's own firewall, in front of the VPS -----------------------------------------------------------------------
+// A VPS has at most one on. It drops everything without a rule, so a port opened on the server alone stays shut from
+// outside; with none on, Hostinger blocks nothing. Unit7 changes rules on the one that's on and never turns one on or off:
+// a firewall switched on without its SSH rule would lock everyone out.
+interface FwRule { id: number; protocol: string; port: string; source?: string; source_detail?: string }
+interface Fw { id: number; name: string; rules: FwRule[]; synced?: boolean }
+export async function vpsFirewall(ctx: Ctx, accountId: string, vmId: number): Promise<Fw | undefined> {
+  const vm = await hostingerExec(ctx, accountId, 'vps_virtual-machines_get', { virtualMachineId: vmId });
+  if (!vm?.firewall_group_id) return undefined;
+  const f = await hostingerExec(ctx, accountId, 'vps_firewall_get', { firewallId: vm.firewall_group_id });
+  return { id: vm.firewall_group_id, name: String(f?.name ?? 'your firewall'), rules: Array.isArray(f?.rules) ? f.rules : [], ...(typeof f?.is_synced === 'boolean' && { synced: f.is_synced }) };
+}
+// does this accept rule let the TCP port in? (a single port or a range like 1024:2048, Hostinger's own names for the well-known ones)
+const NAMED: Record<string, number> = { SSH: 22, HTTP: 80, HTTPS: 443, MYSQL: 3306, POSTGRESQL: 5432 };
+export const coversPort = (r: Pick<FwRule, 'protocol' | 'port'>, port: number) => {
+  const p = r.protocol.toUpperCase();
+  if (NAMED[p]) return NAMED[p] === port;
+  if (p !== 'TCP' && p !== 'ANY') return false;
+  if (String(r.port).toLowerCase() === 'any') return true;
+  const [a, b] = String(r.port).split(':').map(Number);
+  return a! <= port && port <= (b ?? a!);
+};
+export async function hostingerFirewallPort(ctx: Ctx, s: ServerRow, port: number, how: 'open' | 'close') {
+  const vmId = Number(/^hostinger:vm:(\d+)$/.exec(s.provider_ref ?? '')?.[1]);
+  if (!vmId || !s.account_id) throw new Unit7Error('not_hostinger', `${s.name} isn’t linked to a Hostinger VPS.`, 409);
+  const fw = await vpsFirewall(ctx, s.account_id, vmId);
+  if (!fw) return { firewall: false, said: 'Hostinger’s firewall is off for this VPS, so it blocks nothing.' };
+  const hits = fw.rules.filter((r) => coversPort(r, port));
+  if (how === 'open' && hits.length) return { firewall: fw.name, already: true };
+  // only a rule for exactly this port goes: a range or a named rule may be there for something else
+  const mine = hits.filter((r) => /^(tcp|any)$/i.test(r.protocol) && String(r.port) === String(port));
+  if (how === 'close' && !mine.length) return { firewall: fw.name, already: !hits.length, ...(hits.length && { said: `Port ${port} is let in by a wider rule in ${fw.name}. Change that one in Hostinger.` }) };
+  if (how === 'open') await hostingerExec(ctx, s.account_id, 'vps_firewall_create-rule', { firewallId: fw.id, protocol: 'TCP', port: String(port), source: 'any', source_detail: 'any' });
+  else for (const r of mine) await hostingerExec(ctx, s.account_id, 'vps_firewall_delete-rule', { firewallId: fw.id, ruleId: r.id });
+  await hostingerExec(ctx, s.account_id, 'vps_firewall_sync-to-all-assigned-v-ms', { firewallId: fw.id }); // a changed rule does nothing until it's synced
+  return { firewall: fw.name, changed: true };
+}
+
+defineTool({
+  name: 'hostinger.firewall', title: 'Change Hostinger’s firewall for a VPS', risk: (i) => (i.op === 'list' ? 'read' : 'destructive'), action: (i) => (i.op === 'list' ? 'read' : 'server_write'), timeoutMs: 120_000,
+  peopleOnly: (i) => i.op === 'open' && !!portRisk(i.port ?? 0),
+  assess: (c, i) => {
+    if (i.op === 'list') return { tier: 0 };
+    if (i.op === 'open' && c.actor.kind !== 'user' && databaseOn(lastXray(c.db, c.orgId, i.serverId)?.data, i.port ?? 0)) throw forbidden(`A database answers on port ${i.port}, so only a person can open it.`);
+    return { tier: 2, ask: 'This changes what the internet can reach on the VPS, and on any other VPS using the same firewall, so a person decides.', impact: `${i.op === 'open' ? 'Lets in' : 'Stops letting in'} TCP port ${i.port} at Hostinger.` };
+  },
+  description: 'The firewall Hostinger runs in front of a VPS. list: whether one is on, and its rules. open: add a rule letting one TCP port in. close: remove the rule for exactly that port. Each change is synced to the VPS. Refuses to touch the SSH port and the web ports. Database and admin ports are people only. Unit7 never turns this firewall on or off: a person does that in hPanel. server.open_port uses this by itself for a VPS at Hostinger.',
+  input: z.object({ serverId: fid('srv'), op: z.enum(['list', 'open', 'close']).default('list'), port: z.number().int().min(1).max(65535).optional() }),
+  async run(ctx, i) {
+    const s = serverRow(ctx, i.serverId), vmId = Number(/^hostinger:vm:(\d+)$/.exec(s.provider_ref ?? '')?.[1]);
+    if (!vmId || !s.account_id) throw new Unit7Error('not_hostinger', `${s.name} isn’t a Hostinger VPS Unit7 knows.`, 409);
+    if (i.op === 'list') {
+      const fw = await vpsFirewall(ctx, s.account_id, vmId);
+      return fw ? { on: true, firewall: fw.name, synced: fw.synced, rules: fw.rules.map((r) => ({ protocol: r.protocol, port: r.port, from: r.source_detail ?? r.source ?? 'any' })) } : { on: false, said: 'Hostinger’s firewall is off for this VPS, so it blocks nothing.' };
+    }
+    if (!i.port) throw new Unit7Error('invalid_input', 'Say which port.', 400);
+    if (i.op === 'close' && [s.port, 22, 80, 443].includes(i.port)) throw new Unit7Error('unsafe_port', `Port ${i.port} is how you sign in or how visitors arrive. Unit7 won’t take its rule away.`, 400);
+    const out = await hostingerFirewallPort(ctx, s, i.port, i.op);
+    ctx.emit('server.port', `Hostinger’s firewall: ${i.op === 'open' ? 'opened' : 'closed'} port ${i.port} for ${s.name}`, { resource: s.id });
+    return { ...out, ...('changed' in out && { undo: { tool: 'hostinger.firewall', input: { serverId: s.id, op: i.op === 'open' ? 'close' : 'open', port: i.port }, label: i.op === 'open' ? 'Close it again' : 'Open it again' } }) };
   },
 });

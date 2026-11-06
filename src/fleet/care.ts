@@ -186,6 +186,28 @@ export async function buyHostinger(ctx: Ctx, o: { accountId: string; itemId: str
   return { providerRef: `hostinger:vm:${vm.id}`, host: vm.ip! };
 }
 
+// Buying is one job, for an app's next server or a very first one: bought with Unit7's own key in it, then connected, and a
+// fresh box prepares itself. Bought but not reachable yet says so: the money is spent, and the server is there to connect.
+export interface Purchase { provider: 'hetzner' | 'hostinger'; accountId: string; plan?: string; location?: string; item?: string; templateId?: number; dataCenterId?: number }
+export async function buyAndConnect(ctx: Ctx, i: Purchase, o: { name: string; forWhat?: string; resource?: string; data?: Record<string, unknown> }) {
+  const { generateKeyPair, preparing } = await import('../tools/servers.ts');
+  const { privateKey, publicKey } = await generateKeyPair(`unit7@${o.name}`);
+  ctx.redactor.add(privateKey, 'the new server’s key');
+  ctx.progress(`Buying ${o.name}…`);
+  const bought = i.provider === 'hetzner'
+    ? await buyHetzner(ctx, { accountId: i.accountId, plan: i.plan ?? 'cx22', location: i.location ?? 'nbg1', name: o.name, publicKey })
+    : await buyHostinger(ctx, { accountId: i.accountId, itemId: i.item ?? '', templateId: i.templateId ?? 0, dataCenterId: i.dataCenterId ?? 0, name: o.name, publicKey });
+  const why = o.forWhat ? ` for ${o.forWhat}` : '';
+  ctx.emit('server.bought', `${ctx.actor.name} bought ${o.name} (${i.provider === 'hetzner' ? 'Hetzner' : 'Hostinger'})${why}.`, { severity: 'success', resource: o.resource, data: { ...o.data, provider: i.provider } });
+  ctx.progress(`Waiting for ${o.name} to accept Unit7’s key…`);
+  for (const end = Date.now() + buyDeps.waitMs; !(await buyDeps.listening(bought.host, 22, 3000)) && Date.now() < end;) await buyDeps.sleep(buyDeps.pollMs);
+  const c = await execute(ctx.app, ctx.orgId, ctx.actor, 'server.connect', { name: o.name, host: bought.host, privateKey, accountId: i.accountId, providerRef: bought.providerRef }, { reason: `the server bought${why}` });
+  if (c.status !== 'ok') return { host: bought.host, why: `It’s bought but Unit7 couldn’t connect yet: ${c.status === 'error' ? c.error.message : 'why' in c ? c.why : c.status}. Connect it from Servers.` };
+  const serverId = (c.output as { serverId: string }).serverId;
+  await preparing.get(serverId); // the fresh box is prepared once, not twice
+  return { host: bought.host, serverId };
+}
+
 // what the main server is, for the offers (and the name of the new one)
 export function mainFacts(db: DB, svc: ServiceRow): Facts {
   return json<Facts>(get<{ facts: string }>(db, 'SELECT facts FROM servers WHERE id = ?', svc.server_id ?? '')?.facts, {});

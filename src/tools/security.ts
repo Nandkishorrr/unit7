@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { defineTool, type Ctx } from './runtime.ts';
 import { all, get, id, json, now, run, type DB } from '../db.ts';
-import { Unit7Error } from '../errors.ts';
+import { Unit7Error, forbidden } from '../errors.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
 import { script } from '../connectors/shell.ts';
 import { proxyOf } from '../deploy/caddy.ts';
@@ -29,6 +29,8 @@ import { explainFinding, type Explain } from '../explain.ts';
 import { snoozeState, stillHidden, visible } from '../snooze.ts';
 import { alertsVerified } from '../sentinel/phone.ts';
 import { appsOf, partChecks } from '../care/partchecks.ts';
+import { COOLIFY_PORTS, DB_PORTS, PORT_RULES, databaseOn, keepPorts, portRisk, riskWords } from '../secure/ports.ts';
+import { hostingerFirewallPort } from './hostinger.ts';
 
 export const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -66,7 +68,7 @@ const AUDIT = `SU=""; [ "$(id -u)" = 0 ] || SU="sudo -n"
 echo "@@unit7 sshd"; $SU sshd -T 2>/dev/null | grep -Ei '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin|maxauthtries) '
 echo "@@unit7 listen"; { $SU ss -tlnpH 2>/dev/null || ss -tlnH 2>/dev/null || netstat -tln 2>/dev/null | tail -n +3; } | awk '{print $4, $6}'
 echo "@@unit7 ufw"; command -v ufw >/dev/null 2>&1 && $SU ufw status 2>/dev/null
-echo "@@unit7 iptables"; $SU iptables -S 2>/dev/null | grep -E 'DOCKER-USER|unit7-close'
+echo "@@unit7 iptables"; $SU iptables -S 2>/dev/null | grep -E 'DOCKER-USER|unit7-(close|open)-'
 echo "@@unit7 docker"; docker ps --format '{{.Names}}|{{.Image}}|{{.Ports}}' 2>/dev/null
 echo "@@unit7 inspect"; docker ps -q 2>/dev/null | head -60 | xargs -r docker inspect --format '{{.Name}}|{{.HostConfig.Privileged}}|{{range .Mounts}}{{.Source}};{{end}}' 2>/dev/null
 echo "@@unit7 disk"; df -P / 2>/dev/null | awk 'NR==2{print $5}'
@@ -89,8 +91,6 @@ export function sections(out: string) {
   return m;
 }
 
-const DB_PORTS: Record<number, string> = { 5432: 'PostgreSQL', 3306: 'MySQL', 6379: 'Redis', 27017: 'MongoDB', 9200: 'Elasticsearch', 5984: 'CouchDB', 11211: 'Memcached' };
-const COOLIFY_PORTS: Record<number, string> = { 8000: 'Coolify’s dashboard', 6001: 'Coolify’s live updates', 6002: 'Coolify’s terminal' };
 const wildcard = (a: string) => ['0.0.0.0', '*', '::', ''].includes(a) || classify(a) === 'public';
 const closeFix = (serverId: string, port: number, safe: boolean, label = 'Close this port'): Fix => ({
   tool: 'server.close_port', input: { serverId, port }, label, safe,
@@ -137,20 +137,22 @@ export function serverFindings(s: Pick<ServerRow, 'id' | 'name' | 'port' | 'prov
   const ufwOn = /Status: active/i.test(ufw[0] ?? '');
   const ipt = list('iptables');
   const closed = new Set([...ipt.join('\n').matchAll(/unit7-close-(\d+)/g)].map((m) => Number(m[1])));
+  const opened = new Set([...ipt.join('\n').matchAll(/unit7-open-(\d+)/g)].map((m) => Number(m[1]))); // server.open_port: a person let it through
+  const onPurpose = (p: number) => { const o = (facts as { openedPorts?: Record<string, { reason?: string; at?: string }> }).openedPorts?.[p]; return o?.reason ? ` Opened on purpose${o.at ? ` on ${o.at.slice(0, 10)}` : ''}: ${o.reason}` : ''; };
   const guard = ipt.some((l) => /^-A DOCKER-USER -i \S+ -j DROP$/.test(l)); // server.harden's: only 80/443 reach containers
   const open = new Map<number, string>(); // port -> what answers on it
   const containers = list('docker').map((l) => { const [name = '', image = '', ports = ''] = l.split('|'); return { name, image, ports }; });
   for (const c of containers) {
     for (const m of c.ports.matchAll(/(?:(\[::\]|::|[\d.]+):)?(\d+)(?:-(\d+))?->\d+(?:-\d+)?\/tcp/g)) {
       if (m[1] && !wildcard(m[1].replace(/[[\]]/g, ''))) continue;
-      for (let p = Number(m[2]); p <= Number(m[3] ?? m[2]); p++) if (!(guard && p !== 80 && p !== 443)) open.set(p, `${c.name} (${c.image})`);
+      for (let p = Number(m[2]); p <= Number(m[3] ?? m[2]); p++) if (!(guard && p !== 80 && p !== 443 && !opened.has(p))) open.set(p, `${c.name} (${c.image})`);
     }
   }
   for (const l of list('listen')) {
     const [local = '', proc = ''] = l.split(/\s+/);
     const i = local.lastIndexOf(':'), addr = local.slice(0, i).replace(/^\[|\]$/g, '').replace(/%.*$/, ''), port = Number(local.slice(i + 1));
     if (!port || !wildcard(addr) || open.has(port)) continue;
-    const allowed = !ufwOn || ufw.some((u) => new RegExp(`^${port}(/tcp)?\\s+ALLOW`, 'i').test(u));
+    const allowed = !ufwOn || opened.has(port) || ufw.some((u) => new RegExp(`^${port}(/tcp)?\\s+ALLOW`, 'i').test(u));
     const name = /users:\(\("([^"]+)"/.exec(proc)?.[1];
     if (allowed && name !== 'docker-proxy') open.set(port, name ? `the program ${name}` : 'a program on the server');
   }
@@ -161,7 +163,7 @@ export function serverFindings(s: Pick<ServerRow, 'id' | 'name' | 'port' | 'prov
     if (closed.has(port) && outside[String(port)]?.state === 'open') { add(stillOpenFinding(s.id, s.name, port, coolify && COOLIFY_PORTS[port] ? COOLIFY_PORTS[port]! : what, outside[String(port)]!, { docker: !what.startsWith('the program') && !what.startsWith('a program'), chains: [...new Set(ipt.filter((l) => l.includes(`unit7-close-${port} `)).map((l) => /^-[AI] (\S+)/.exec(l)?.[1]).filter(Boolean) as string[])] })); continue; }
     if (port === s.port || port === 22 || port === 80 || port === 443 || closed.has(port)) continue;
     if (coolify && COOLIFY_PORTS[port]) { coolifyOwn.push(port); continue; }
-    const base = { evidence: `Port ${port}: ${what}` };
+    const base = { evidence: `Port ${port}: ${what}${onPurpose(port)}` };
     if (port === 2375 || port === 2376) add({ ...base, id: `server:port:${s.id}:${port}`, severity: 'critical', title: `Docker’s control port is open on ${s.name}`, detail: 'Anyone who reaches it can run anything on the server, as its owner.', fix: closeFix(s.id, port, true) });
     else if (DB_PORTS[port]) add({ ...base, id: `server:port:${s.id}:${port}`, severity: 'high', title: `A ${DB_PORTS[port]} database on ${s.name} answers the internet`, detail: 'Databases belong on the private network, where only your apps reach them. Bots try database passwords all day.', fix: closeFix(s.id, port, true) });
     else if (coolify && port === 8080) add({ ...base, id: `server:port:${s.id}:${port}`, severity: 'high', title: `Coolify’s proxy dashboard is open on ${s.name}`, detail: 'Port 8080 shows every site and route on this server to anyone, without a password. Coolify doesn’t need it open.', fix: closeFix(s.id, port, true) });
@@ -532,31 +534,14 @@ defineTool({
   run(ctx, i) { run(ctx.db, 'UPDATE orgs SET security_weekly = ? WHERE id = ?', i.on ? 1 : 0, ctx.orgId); return { weekly: i.on }; },
 });
 
-// --- closing one port ------------------------------------------------------------------------------------
-// The careful alternative to a firewall, safe on a server shared with Coolify: one DROP rule for one port on the
-// internet-facing interface, tagged so it can be found and removed. In DOCKER-USER (Docker's published ports skip
-// INPUT and ufw) and INPUT (programs on the server). --ctdir ORIGINAL: only connections that start outside, so an
-// app's own calls out to some service on that port keep working.
-// ponytail: plain iptables rules don't survive a reboot without netfilter-persistent; the weekly check sees the port
-// open again and offers the same fix. A boot-time restore would close that gap.
-const PORT_RULES = `P="$1"; ACT="$2"; SU=""; [ "$(id -u)" = 0 ] || SU="sudo -n"
-command -v iptables >/dev/null 2>&1 || { echo "no iptables on this server" >&2; exit 3; }
-ext=$(ip route show default 2>/dev/null | awk '{print $5; exit}'); [ -n "$ext" ] || { echo "couldn't find the internet-facing network interface" >&2; exit 3; }
-tag="unit7-close-$P"
-rule() { ipt="$1"; c="$2"; shift 2
-  if [ "$ACT" = close ]; then $SU $ipt -C "$c" "$@" -m comment --comment "$tag" -j DROP 2>/dev/null || $SU $ipt -I "$c" 1 "$@" -m comment --comment "$tag" -j DROP
-  else while $SU $ipt -D "$c" "$@" -m comment --comment "$tag" -j DROP 2>/dev/null; do :; done; fi; }
-rule iptables INPUT -i "$ext" -p tcp --dport "$P" || exit 4
-if $SU iptables -n -L DOCKER-USER >/dev/null 2>&1; then rule iptables DOCKER-USER -i "$ext" -p tcp -m conntrack --ctorigdstport "$P" --ctdir ORIGINAL || exit 4; fi
-command -v ip6tables >/dev/null 2>&1 && { rule ip6tables INPUT -i "$ext" -p tcp --dport "$P" 2>/dev/null || true; }
-command -v netfilter-persistent >/dev/null 2>&1 && $SU netfilter-persistent save >/dev/null 2>&1
-echo done`;
-
+// --- closing and opening one port (the rules and their boot-time restore: secure/ports.ts) -----------------------------
+// The careful alternative to a firewall, safe on a server shared with Coolify. A restart undoes neither.
 defineTool({
   name: 'server.close_port', title: 'Close a port to the internet', risk: 'write', action: 'server_write', timeoutMs: 60_000,
-  // closing Coolify's own dashboard port without a working HTTPS address locks the person out: only they can choose that
-  peopleOnly: (i) => !!i.anyway,
-  description: 'Block one TCP port from the internet at the server’s own firewall (open: true removes the block), then test it from outside (from this computer). Works on servers shared with Coolify, where Unit7 never turns a firewall on. Refuses the SSH port and the web ports (80, 443). Refuses Coolify’s dashboard port (8000) until Coolify answers at its own HTTPS address: coolify.dashboard_domain gives it one and then closes the port (anyway: true closes it regardless, people only). Use for databases or dashboards answering the internet.',
+  // closing Coolify's own dashboard port without a working HTTPS address locks the person out: only they can choose that.
+  // open is the Undo a person presses; an AI that wants a port open uses server.open_port, with a reason, and asks
+  peopleOnly: (i) => !!i.anyway || i.open,
+  description: 'Block one TCP port from the internet at the server’s own firewall (open: true removes the block, people only; an AI uses server.open_port), then test it from outside (from this computer). The block survives a restart. Works on servers shared with Coolify, where Unit7 never turns a firewall on. Refuses the SSH port and the web ports (80, 443). Refuses Coolify’s dashboard port (8000) until Coolify answers at its own HTTPS address: coolify.dashboard_domain gives it one and then closes the port (anyway: true closes it regardless, people only). Use for databases or dashboards answering the internet.',
   input: z.object({ serverId: fid('srv'), port: z.number().int().min(1).max(65535), open: z.boolean().default(false),
     anyway: z.boolean().default(false).describe('Close Coolify’s dashboard port even without a working HTTPS address (people only: the dashboard then opens only through an SSH tunnel)') }),
   async dryRun(ctx, i) {
@@ -573,18 +558,64 @@ defineTool({
     if (lock && !i.anyway) throw lock.error;
     const r = await ssh(ctx.app).exec(s, script(PORT_RULES, i.port, i.open ? 'open' : 'close'), { timeoutMs: 45_000 });
     if (r.code !== 0) throw new Unit7Error('port_failed', `Couldn’t ${i.open ? 'open' : 'close'} port ${i.port} on ${s.name}: ${(r.stderr || r.stdout).trim().slice(-200) || `exit ${r.code}`}`, 502);
-    const closed = new Set(json<{ closedPorts?: number[] }>(s.facts, {}).closedPorts ?? []);
-    if (i.open) closed.delete(i.port); else closed.add(i.port);
-    run(ctx.db, `UPDATE servers SET facts = json_set(facts, '$.closedPorts', json(?)) WHERE id = ?`, JSON.stringify([...closed].sort((a, b) => a - b)), s.id);
+    const kept = await keepPorts(ctx, s, i.port, i.open ? 'open' : 'close');
+    notePort(ctx, s, i.port, i.open ? 'unblocked' : 'closed');
     ctx.emit('server.port', `${i.open ? 'Opened' : 'Closed'} port ${i.port} on ${s.name}`, { severity: 'success', resource: s.id });
     if (i.open) { forgetOutside(ctx.db, s.id, i.port); return { opened: i.port, server: s.name }; }
     // the real test: a connection from this computer, outside the server
     const o = (await checkOutside(ctx.db, s, [i.port]).catch(() => ({} as Record<string, Reach>)))[String(i.port)];
     const inv = lastXray(ctx.db, ctx.orgId, s.id)?.data, what = portWhat(inv, i.port);
     return {
-      closed: i.port, server: s.name, undo: { tool: 'server.close_port', input: { serverId: s.id, port: i.port, open: true }, label: 'Open it again' },
+      closed: i.port, server: s.name, survivesRestart: kept, undo: { tool: 'server.close_port', input: { serverId: s.id, port: i.port, open: true }, label: 'Open it again' },
       ...(o && { outside: o.state, said: o.state === 'closed' ? closedWords(what, !!inv?.coolify && /^Coolify/.test(what)) : o.state === 'open' ? stillOpenFinding(s.id, s.name, i.port, what, o).detail : `Not tested from outside: ${o.why ?? 'no answer from the server at all'}.` }),
       ...(lock && { warning: lock.warning, tunnel: lock.tunnel }),
+    };
+  },
+});
+
+// what Unit7 knows it did to a port, read by the server's page and the weekly check
+function notePort(ctx: Ctx, s: ServerRow, port: number, how: 'closed' | 'unblocked' | 'opened', o?: { reason: string }) {
+  const f = json<{ closedPorts?: number[]; openedPorts?: Record<string, unknown> }>(get<{ facts: string }>(ctx.db, 'SELECT facts FROM servers WHERE id = ?', s.id)?.facts, {});
+  const closed = new Set(f.closedPorts ?? []), opened = { ...f.openedPorts };
+  if (how === 'closed') closed.add(port); else closed.delete(port);
+  if (how === 'opened') opened[port] = { ...o, by: ctx.actor.name, at: now() }; else delete opened[port];
+  run(ctx.db, `UPDATE servers SET facts = json_set(json_set(facts, '$.closedPorts', json(?)), '$.openedPorts', json(?)) WHERE id = ?`, JSON.stringify([...closed].sort((a, b) => a - b)), JSON.stringify(opened), s.id);
+}
+const riskOf = (ctx: Ctx, s: ServerRow, port: number) => portRisk(port) ?? databaseOn(lastXray(ctx.db, ctx.orgId, s.id)?.data, port);
+
+defineTool({
+  name: 'server.open_port', title: 'Open a port to the internet', risk: 'write', action: 'server_write', timeoutMs: 120_000,
+  // a database or admin port is a person's call, with the warning in front of them
+  peopleOnly: (i) => !!portRisk(i.port),
+  assess: (c, i) => {
+    const db = databaseOn(lastXray(c.db, c.orgId, i.serverId)?.data, i.port);
+    if (db && c.actor.kind !== 'user') throw forbidden(`Port ${i.port} is ${db}, so only a person can open it. An AI can’t, even with approval.`);
+    return { tier: 2, ask: 'Opening a port lets the whole internet reach what’s behind it, so a person decides.', impact: `Why: ${i.reason}.`, shows: `iptables: allow TCP ${i.port} in INPUT and DOCKER-USER, tagged unit7-open-${i.port}` };
+  },
+  description: 'The reverse of server.close_port: let the internet reach one TCP port, with a stated reason that stays on record, then test it from outside (from this computer). Removes Unit7’s block if there was one, lets it through the server’s own firewall (ufw, Docker’s published ports) and, for a Hostinger VPS with its firewall on, adds the rule there too. It survives a restart. An AI asks a person first. Database and admin ports (Postgres, Redis, Docker’s control port, Coolify’s dashboard…) are people only: a person sees a warning and passes anyway: true. Undo: server.close_port.',
+  input: z.object({ serverId: fid('srv'), port: z.number().int().min(1).max(65535), reason: z.string().trim().min(5).max(200).describe('Why this port needs to be open, in a few words. It stays on record.'),
+    anyway: z.boolean().default(false).describe('People only: open a database or admin port after reading the warning') }),
+  async dryRun(ctx, i) {
+    const s = serverRow(ctx, i.serverId), what = riskOf(ctx, s, i.port);
+    return { change: `Port ${i.port} on ${s.name} answers the internet. Why: ${i.reason}.`, ...(what && { warning: riskWords(i.port, what) }) };
+  },
+  async run(ctx, i) {
+    const s = serverRow(ctx, i.serverId), what = riskOf(ctx, s, i.port);
+    if (i.port === s.port || i.port === 80 || i.port === 443) return { already: true, server: s.name, said: `Port ${i.port} is already open: it’s how ${i.port === s.port ? 'you sign in' : 'your sites reach visitors'}.` };
+    if (what && !i.anyway) throw new Unit7Error('risky_port', `${riskWords(i.port, what)} To open it anyway, confirm you read this.`, 409, { warning: riskWords(i.port, what) });
+    const r = await ssh(ctx.app).exec(s, script(PORT_RULES, i.port, 'allow'), { timeoutMs: 45_000 });
+    if (r.code !== 0) throw new Unit7Error('port_failed', `Couldn’t open port ${i.port} on ${s.name}: ${(r.stderr || r.stdout).trim().slice(-200) || `exit ${r.code}`}`, 502);
+    const kept = await keepPorts(ctx, s, i.port, 'allow');
+    notePort(ctx, s, i.port, 'opened', { reason: i.reason });
+    forgetOutside(ctx.db, s.id, i.port);
+    // the firewall in front of the VPS: without its rule the port stays shut from outside, whatever the server says
+    const provider = /^hostinger:vm:/.test(s.provider_ref ?? '') && s.account_id ? await hostingerFirewallPort(ctx, s, i.port, 'open').catch((e: Error) => ({ problem: e.message.slice(0, 200) })) : undefined;
+    ctx.emit('server.port', `Opened port ${i.port} on ${s.name}: ${i.reason}`, { severity: what ? 'warning' : 'success', resource: s.id });
+    const o = (await checkOutside(ctx.db, s, [i.port]).catch(() => ({} as Record<string, Reach>)))[String(i.port)];
+    return {
+      opened: i.port, server: s.name, reason: i.reason, survivesRestart: kept, ...(what && { warning: riskWords(i.port, what) }), ...(provider && { provider }),
+      undo: { tool: 'server.close_port', input: { serverId: s.id, port: i.port }, label: 'Close it again' },
+      ...(o && { outside: o.state, said: o.state === 'open' ? `Port ${i.port} answers from outside.` : o.state === 'closed' ? `Nothing answers on port ${i.port} from outside yet: either nothing listens there, or a firewall at your provider blocks it.` : `Not tested from outside: ${o.why ?? 'no answer from the server at all'}.` }),
     };
   },
 });

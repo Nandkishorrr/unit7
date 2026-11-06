@@ -22,6 +22,7 @@ import { getTool, hardToUndo } from '../tools/runtime.ts';
 import type { DB } from '../db.ts';
 import { tierOf } from '../policy.ts';
 import { graph } from '../tools/core.ts';
+import { accessLeft } from '../tools/access.ts';
 import { sendToAgent, getConversation, listConversations, stopAgent, agentStatus, CONTEXT } from '../agent/conversations.ts';
 import { watcherActive, pendingCount } from '../agent/bridge.ts';
 import { brainStatus, setBrain } from '../agent/subscription.ts';
@@ -355,11 +356,15 @@ export function createHttp(app: App) {
     if (target.role === 'owner' && get<{ n: number }>(db, `SELECT count(*) n FROM memberships WHERE org_id = ? AND role = 'owner'`, p.org.id)!.n < 2) {
       throw forbidden('An organization needs at least one owner.');
     }
+    const email = get<{ email: string }>(db, 'SELECT email FROM users WHERE id = ?', c.req.param('userId'))?.email;
     run(db, 'DELETE FROM memberships WHERE org_id = ? AND user_id = ?', p.org.id, c.req.param('userId'));
     run(db, 'DELETE FROM sessions WHERE user_id = ? AND org_id = ?', c.req.param('userId'), p.org.id);
     run(db, 'DELETE FROM api_tokens WHERE user_id = ? AND org_id = ?', c.req.param('userId'), p.org.id);
     authAudit({ orgId: p.org.id, userId: p.user.id, name: p.user.name }, 'auth.member_removed', 'success', { member: c.req.param('userId') });
-    return c.json({ ok: true });
+    // their sign-in on servers stays until a person takes it away: nothing is removed by itself, but it's never forgotten
+    const stillOn = email ? accessLeft(db, p.org.id, email) : [];
+    if (stillOn.length) app.events.emit(p.org.id, 'team.access_left', `${email} left the team but can still sign in to ${stillOn.map((x) => x.server).join(', ')}. Take them off each one with server.users.`, { severity: 'warning' });
+    return c.json({ ok: true, ...(stillOn.length && { stillOn }) });
   });
 
   // --- tools: the one write path ---

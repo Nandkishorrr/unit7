@@ -205,3 +205,6 @@ DEFAULT_RULES.production.server_label = 'allowed';
 // person's own click waits on Approvals, and its assess makes an AI ask at any autonomy.
 Object.assign(ACTION_TIER, { file_write: 2, file_remove: 3, system_file_write: 2 } satisfies Record<string, Tier>);
 DEFAULT_RULES.production.system_file_write = 'restricted';
+// A server itself (tools/vps.ts, tools/access.ts): who can sign in is hard to undo for what it opens or locks out, and an AI
+// always asks first; turning one off is a change with undo; deleting one at its provider is never for an AI.
+Object.assign(ACTION_TIER, { server_access: 3, server_power: 2, server_delete: 4 } satisfies Record<string, Tier>);

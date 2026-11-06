@@ -298,31 +298,21 @@ defineTool({
 
 defineTool({
   name: 'fleet.buy_server', title: 'Buy a server for an app', risk: 'destructive', action: 'provider_purchase', peopleOnly: true, timeoutMs: 2 * 3600_000,
-  description: 'People only: buy one more server for an app (Hetzner: plan + location from fleet.server_offers; Hostinger: itemId, templateId and dataCenterId), with Unit7’s own key put in at creation, then connect it, prepare it and add it to the app (fleet.add_server). It costs money every month until it’s deleted at the provider.',
+  description: 'People only: buy one more server for an app (Hetzner: plan + location from fleet.server_offers; Hostinger: item, templateId and dataCenterId), with Unit7’s own key put in at creation, then connect it, prepare it and add it to the app (fleet.add_server). It costs money every month until it’s deleted at the provider.',
   input: z.object({
     serviceId: fid('svc'), provider: z.enum(['hetzner', 'hostinger']), accountId: fid('acc'),
     plan: z.string().regex(/^[a-z0-9-]{2,30}$/).optional(), location: z.string().regex(/^[a-z0-9-]{2,30}$/).optional(),
-    itemId: z.string().regex(/^[\w.-]{3,120}$/).optional(), templateId: z.number().int().positive().optional(), dataCenterId: z.number().int().positive().optional(),
+    // not itemId: anything named *Id must be one of Unit7's own ids, so Hostinger's would be refused at the gate
+    item: z.string().regex(/^[\w.-]{3,120}$/).optional(), templateId: z.number().int().positive().optional(), dataCenterId: z.number().int().positive().optional(),
   }),
   async run(ctx, i) {
     const svc = svcRow(ctx, i.serviceId);
     if (!get(ctx.db, 'SELECT 1 FROM accounts WHERE id = ? AND org_id = ? AND provider = ?', i.accountId, ctx.orgId, i.provider)) throw new Unit7Error('not_found', `That ${i.provider === 'hetzner' ? 'Hetzner' : 'Hostinger'} account isn’t connected.`, 404);
     const care = await import('../fleet/care.ts');
-    const { generateKeyPair, preparing } = await import('./servers.ts');
     const name = care.newServerName(svc, targetsOf(ctx.db, svc).length);
-    const { privateKey, publicKey } = await generateKeyPair(`unit7@${name}`);
-    ctx.redactor.add(privateKey, 'the new server’s key');
-    ctx.progress(`Buying ${name}…`);
-    const bought = i.provider === 'hetzner'
-      ? await care.buyHetzner(ctx, { accountId: i.accountId, plan: i.plan ?? 'cx22', location: i.location ?? 'nbg1', name, publicKey })
-      : await care.buyHostinger(ctx, { accountId: i.accountId, itemId: i.itemId ?? '', templateId: i.templateId ?? 0, dataCenterId: i.dataCenterId ?? 0, name, publicKey });
-    ctx.emit('server.bought', `${ctx.actor.name} bought ${name} (${i.provider === 'hetzner' ? 'Hetzner' : 'Hostinger'}) for ${svc.name}.`, { severity: 'success', resource: svc.id, data: { serviceId: svc.id, provider: i.provider } });
-    ctx.progress(`Waiting for ${name} to accept Unit7’s key…`);
-    for (const end = Date.now() + care.buyDeps.waitMs; !(await care.buyDeps.listening(bought.host, 22, 3000)) && Date.now() < end;) await care.buyDeps.sleep(care.buyDeps.pollMs);
-    const c = await execute(ctx.app, ctx.orgId, ctx.actor, 'server.connect', { name, host: bought.host, privateKey, accountId: i.accountId, providerRef: bought.providerRef }, { reason: `the server bought for ${svc.name}` });
-    if (c.status !== 'ok') return { bought: name, host: bought.host, added: false, why: `It’s bought but Unit7 couldn’t connect yet: ${c.status === 'error' ? c.error.message : 'why' in c ? c.why : c.status}. Connect it from Servers.` };
-    const serverId = (c.output as { serverId: string }).serverId;
-    await preparing.get(serverId); // the fresh box is prepared once, not twice
+    const b = await care.buyAndConnect(ctx, i, { name, forWhat: svc.name, resource: svc.id, data: { serviceId: svc.id } });
+    if (!b.serverId) return { bought: name, host: b.host, added: false, why: b.why };
+    const { serverId } = b;
     const add = await execute(ctx.app, ctx.orgId, ctx.actor, 'fleet.add_server', { serviceId: svc.id, serverId }, { reason: 'the server bought for it', signal: ctx.signal, onProgress: ctx.progress });
     if (add.status !== 'ok') return { bought: name, serverId, added: false, why: add.status === 'error' ? add.error.message : 'why' in add ? add.why : add.status };
     return { bought: name, serverId, added: true, ...(add.output as object) };

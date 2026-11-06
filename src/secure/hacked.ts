@@ -48,6 +48,16 @@ export function wordsFor(signs: Sign[]) {
   return { verdict: 'Something changed', line: 'This may be you or a teammate. If it isn’t, treat it as a break-in.' };
 }
 const baseline = (db: DB, serverId: string) => get<{ data: string }>(db, 'SELECT data FROM server_baseline WHERE server_id = ?', serverId);
+// A key or user added or removed through Unit7, by a person or with a person's yes: exactly those lines change in what's
+// normal, so the next look doesn't call it a break-in, and a stranger's key that appeared meanwhile still shows. No
+// baseline yet: the first look takes the server as it is.
+export function noteAccess(db: DB, serverId: string, c: { addKeys?: string[]; dropKeys?: string[]; addUsers?: string[]; dropUsers?: string[] }) {
+  const was = baseline(db, serverId);
+  if (!was) return;
+  const b = json<Snapshot>(was.data, { keys: [], users: [], cron: [], shell: [] });
+  const next = (list: string[], add: string[] = [], drop: string[] = []) => [...new Set([...list.filter((x) => !drop.includes(x)), ...add])];
+  run(db, 'UPDATE server_baseline SET data = ? WHERE server_id = ?', JSON.stringify({ ...b, keys: next(b.keys, c.addKeys, c.dropKeys), users: next(b.users, c.addUsers, c.dropUsers) }), serverId);
+}
 export async function hackCheck(ctx: Ctx, s: ServerRow) {
   const r = await ssh(ctx.app).exec(s, `${json<{ sudo?: string }>(s.facts, {}).sudo === 'yes' ? 'sudo -n ' : ''}sh -s`, { stdin: SIGNS, timeoutMs: 60_000 });
   // a look that didn't finish (sudo asked for a password, say) is not "no signs", and it must never become the baseline
@@ -71,8 +81,9 @@ defineTool({
   description: 'Everyone and everything that can sign in: SSH keys and users on each server (new ones marked), and Unit7’s own app keys with when each was last used.',
   input: z.object({ serverId: fid('srv').optional() }),
   async run(ctx, i) {
-    const servers = all<ServerRow>(ctx.db, `SELECT * FROM servers WHERE org_id = ? AND status = 'ready' AND (? IS NULL OR id = ?)`, ctx.orgId, i.serverId ?? null, i.serverId ?? null), out = [];
-    for (const s of servers) { const r = await hackCheck(ctx, s).catch(() => undefined); if (!r) continue; const was = json<Snapshot>(baseline(ctx.db, s.id)?.data, { keys: [], users: [], cron: [], shell: [] }); out.push({ server: s.name, keys: r.snap.keys.map((k) => ({ key: k, fresh: !was.keys.includes(k) })), users: r.snap.users.map((u) => ({ user: u.split(':')[0], root: u.split(':')[1] === '0', fresh: !was.users.includes(u) })) }); }
+    // a Coolify server stays 'connected' until someone prepares it: who can get in matters just as much there
+    const servers = all<ServerRow>(ctx.db, `SELECT * FROM servers WHERE org_id = ? AND status IN ('ready', 'connected') AND (? IS NULL OR id = ?)`, ctx.orgId, i.serverId ?? null, i.serverId ?? null), out = [];
+    for (const s of servers) { const r = await hackCheck(ctx, s).catch(() => undefined); if (!r) continue; const was = json<Snapshot>(baseline(ctx.db, s.id)?.data, { keys: [], users: [], cron: [], shell: [] }), team = json<{ team?: { fingerprint: string; email: string }[] }>(s.facts, {}).team ?? []; out.push({ server: s.name, keys: r.snap.keys.map((k) => { const of = team.find((t) => k.includes(` ${t.fingerprint} `))?.email; return { key: k, fresh: !was.keys.includes(k), ...(of && { teammate: of }) }; }), users: r.snap.users.map((u) => ({ user: u.split(':')[0], root: u.split(':')[1] === '0', fresh: !was.users.includes(u) })) }); }
     return { servers: out, unit7Keys: all(ctx.db, 'SELECT name, role, last_used_at lastUsed, expires_at expires, created_at FROM api_tokens WHERE org_id = ? ORDER BY coalesce(last_used_at, created_at) DESC', ctx.orgId) };
   },
 });

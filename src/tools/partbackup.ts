@@ -260,7 +260,7 @@ export function proofOf(want: Table[], got: Map<string, number>, said: string[] 
 }
 const SUPABASE = /(^|\/)supabase\/postgres(:|$)/;
 const pgAs = (image: string) => (SUPABASE.test(image) ? '-h 127.0.0.1 -U supabase_admin' : '-U postgres');
-async function provePostgres(ctx: Ctx, s: ServerRow, name: string, image: string, file: string, said: string[]) {
+export async function provePostgres(ctx: Ctx, s: ServerRow, name: string, image: string, file: string, said: string[]) {
   const want = parseManifest(await ssh(ctx.app).check(s, asRoot(s) + script(PG_MANIFEST, file), { what: 'Reading the backup', timeoutMs: 30 * 60_000, maxBytes: 16 * 1024 * 1024, signal: ctx.signal })), got = new Map<string, number>();
   for (const db of [...new Set(want.map((t) => t.db))]) {
     const tables = want.filter((t) => t.db === db);
@@ -269,7 +269,7 @@ async function provePostgres(ctx: Ctx, s: ServerRow, name: string, image: string
   }
   return proofOf(want, got, said);
 }
-async function proveCount(ctx: Ctx, s: ServerRow, name: string, engine: string, password: string) {
+export async function proveCount(ctx: Ctx, s: ServerRow, name: string, engine: string, password: string) {
   const r = await ssh(ctx.app).exec(s, asRoot(s) + script(`${COPY_PW}${COUNT[engine]!}`, name), { stdin: `${password}\n`, timeoutMs: 60_000 });
   const n = Number(/\d+/.exec(r.stdout)?.[0] ?? NaN);
   return Number.isFinite(n) && n > 0 ? { ok: true, note: `${n} ${engine === 'redis' ? 'keys' : engine === 'mongo' ? 'databases' : 'tables'} came back` } : { ok: false, note: 'it restored, but nothing came back' };
@@ -332,20 +332,21 @@ defineTool({
 // untouched until a person decides (Activity's Undo removes the copy). Over the live one is a person's call: they type
 // its name, and Unit7 takes a fresh backup first so the restore itself can be undone.
 // A copy and whatever it holds: its unnamed data volume, which `docker rm` alone leaves on the disk, and a folder named after it
-const REMOVE_COPY = `m=$(docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' "$1" 2>/dev/null); docker rm -fv "$1" >/dev/null 2>&1; for d in $m; do case "$d" in */"$1") rm -rf "$d" ;; esac; done`;
-const liveContainer = (p: Part) => p.internals?.find((x) => engineOf(x.image))?.name ?? (p.engine ? p.containers?.[0] : undefined);
-const imageOf = (p: Part) => p.internals?.find((x) => engineOf(x.image))?.image ?? p.image;
+export const REMOVE_COPY = `m=$(docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' "$1" 2>/dev/null); docker rm -fv "$1" >/dev/null 2>&1; for d in $m; do case "$d" in */"$1") rm -rf "$d" ;; esac; done`;
+export const liveContainer = (p: Part) => p.internals?.find((x) => engineOf(x.image))?.name ?? (p.engine ? p.containers?.[0] : undefined);
+export const imageOf = (p: Part) => p.internals?.find((x) => engineOf(x.image))?.image ?? p.image;
 const WAIT = (probe: string) => `i=0; until ${probe}; do i=$((i+1)); [ $i -lt 180 ] || { echo "the copy didn't start" >&2; exit 3; }; sleep 1; done`;
-// $1 the copy's name, $2 the image, $3 the backup file, $4 a network ('' for none), $5 which part it copies; the copy's password
+// $1 the copy's name, $2 the image, $3 the backup file, $4 a network ('' for none), $5 which part it copies, $6 where its data
+// goes when that has to last (server.move: a volume on the new server, "name:/path"; a copy's is thrown away); the copy's password
 // comes on stdin's first line and reaches docker by name only (COPY_PW), never on a command line
-const COPY_PW = secretIn('POSTGRES_PASSWORD', 'MYSQL_ROOT_PASSWORD', 'MARIADB_ROOT_PASSWORD', 'MYSQL_PWD');
+export const COPY_PW = secretIn('POSTGRES_PASSWORD', 'MYSQL_ROOT_PASSWORD', 'MARIADB_ROOT_PASSWORD', 'MYSQL_PWD');
 // Supabase's image fills a new database with its own older tables, and then its real ones can't come back (0 sign-in users, tested
 // on the real image). So a copy starts empty, with its usual superuser, and the backup brings everything: roles, auth, storage, your data.
 // A backup also carries the old passwords, so the copy's own password goes back in last.
-const COPY: Record<string, string> = {
-  postgres: `u=postgres; a=''; e=''; case "$2" in *supabase/postgres*) u=supabase_admin; a='-h 127.0.0.1'; e='--tmpfs /docker-entrypoint-initdb.d -e POSTGRES_USER=supabase_admin' ;; esac; docker run -d --name "$1" --label unit7.copy-of="$5" \${4:+--network "$4"} $e -e POSTGRES_PASSWORD "$2" >/dev/null; ${WAIT('docker exec "$1" pg_isready -h 127.0.0.1 -U "$u" >/dev/null 2>&1')}; gunzip -c "$3" | docker exec -i "$1" psql -q $a -U "$u" -d postgres 2>&1 >/dev/null | ${PG_SAID} || true; printf "ALTER ROLE %s PASSWORD '%s';ALTER ROLE postgres PASSWORD '%s';\n" "$u" "$POSTGRES_PASSWORD" "$POSTGRES_PASSWORD" | docker exec -i "$1" psql -q $a -U "$u" -d postgres >/dev/null; docker exec "$1" psql -Atq $a -U "$u" -d postgres -c 'select 1' >/dev/null`,
-  mysql: `docker run -d --name "$1" --label unit7.copy-of="$5" \${4:+--network "$4"} -e MYSQL_ROOT_PASSWORD -e MARIADB_ROOT_PASSWORD "$2" >/dev/null; ${WAIT(`docker exec -e MYSQL_PWD "$1" sh -c 'mysqladmin ping -h 127.0.0.1 -uroot --silent 2>/dev/null || mariadb-admin ping -h 127.0.0.1 -uroot --silent' >/dev/null 2>&1`)}; gunzip -c "$3" | docker exec -i -e MYSQL_PWD "$1" sh -c 'if command -v mysql >/dev/null; then exec mysql -h 127.0.0.1 -uroot; else exec mariadb -h 127.0.0.1 -uroot; fi'`,
-  mongo: `docker run -d --name "$1" --label unit7.copy-of="$5" \${4:+--network "$4"} "$2" >/dev/null; ${WAIT(`docker exec "$1" sh -c 'mongosh --quiet --eval 1 || mongo --quiet --eval 1' >/dev/null 2>&1`)}; gunzip -c "$3" | docker exec -i "$1" mongorestore --quiet --archive --drop`,
+export const COPY: Record<string, string> = {
+  postgres: `u=postgres; a=''; e=''; case "$2" in *supabase/postgres*) u=supabase_admin; a='-h 127.0.0.1'; e='--tmpfs /docker-entrypoint-initdb.d -e POSTGRES_USER=supabase_admin' ;; esac; docker run -d --name "$1" --label unit7.copy-of="$5" \${4:+--network "$4"} \${6:+-v "$6"} $e -e POSTGRES_PASSWORD "$2" >/dev/null; ${WAIT('docker exec "$1" pg_isready -h 127.0.0.1 -U "$u" >/dev/null 2>&1')}; gunzip -c "$3" | docker exec -i "$1" psql -q $a -U "$u" -d postgres 2>&1 >/dev/null | ${PG_SAID} || true; printf "ALTER ROLE %s PASSWORD '%s';ALTER ROLE postgres PASSWORD '%s';\n" "$u" "$POSTGRES_PASSWORD" "$POSTGRES_PASSWORD" | docker exec -i "$1" psql -q $a -U "$u" -d postgres >/dev/null; docker exec "$1" psql -Atq $a -U "$u" -d postgres -c 'select 1' >/dev/null`,
+  mysql: `docker run -d --name "$1" --label unit7.copy-of="$5" \${4:+--network "$4"} \${6:+-v "$6"} -e MYSQL_ROOT_PASSWORD -e MARIADB_ROOT_PASSWORD "$2" >/dev/null; ${WAIT(`docker exec -e MYSQL_PWD "$1" sh -c 'mysqladmin ping -h 127.0.0.1 -uroot --silent 2>/dev/null || mariadb-admin ping -h 127.0.0.1 -uroot --silent' >/dev/null 2>&1`)}; gunzip -c "$3" | docker exec -i -e MYSQL_PWD "$1" sh -c 'if command -v mysql >/dev/null; then exec mysql -h 127.0.0.1 -uroot; else exec mariadb -h 127.0.0.1 -uroot; fi'`,
+  mongo: `docker run -d --name "$1" --label unit7.copy-of="$5" \${4:+--network "$4"} \${6:+-v "$6"} "$2" >/dev/null; ${WAIT(`docker exec "$1" sh -c 'mongosh --quiet --eval 1 || mongo --quiet --eval 1' >/dev/null 2>&1`)}; gunzip -c "$3" | docker exec -i "$1" mongorestore --quiet --archive --drop`,
   redis: `d="$(dirname "$3")/$1"; mkdir -p "$d"; gunzip -c "$3" > "$d/dump.rdb"; chmod 644 "$d/dump.rdb"; docker run -d --name "$1" --label unit7.copy-of="$5" \${4:+--network "$4"} -v "$d":/data "$2" >/dev/null; ${WAIT(`docker exec "$1" redis-cli ping 2>/dev/null | grep -q PONG`)}`,
 };
 COPY.mariadb = COPY.mysql!;

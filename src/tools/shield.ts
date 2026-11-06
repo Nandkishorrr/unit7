@@ -9,6 +9,7 @@ import { serverRow, inspect, type Facts } from './servers.ts';
 import { proxyOf } from '../deploy/caddy.ts';
 import { block, unblock, listBlocks, applyBlocklist } from '../sentinel/shield.ts';
 import { fid } from './helpers.ts';
+import { keepPorts } from '../secure/ports.ts';
 
 const CIDR = z.string().regex(/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/, 'an IPv4 address or CIDR');
 
@@ -99,6 +100,10 @@ defineTool({
     if (haveIptables && proxyOf(f).kind !== 'caddy') say('Left Docker’s published ports alone: other apps on this server (like Coolify) need theirs.');
     else if (haveIptables) {
       await pool.exec(s, script(`ext=$(ip route show default 2>/dev/null | awk '{print $5; exit}'); [ -n "$ext" ] || exit 0; printf '%s\\n' "$1" | sed "s/EXT_IF/$ext/" | ${sudo}iptables-restore -n 2>/dev/null || true`, DOCKER_USER), { timeoutMs: 30_000 });
+      // it survives a restart with the ports Unit7 closed, and restoring it just emptied Docker's chain, so those go back in now
+      await pool.exec(s, script(`${sudo}mkdir -p /etc/unit7 && printf '%s\\n' "$1" | ${sudo}tee /etc/unit7/docker-user.rules >/dev/null`, DOCKER_USER), { timeoutMs: 30_000 });
+      await keepPorts(ctx, s, 0, 'open');
+      await pool.exec(s, script(`[ -f /etc/unit7/ports ] && ${sudo}sh /etc/unit7/ports.sh; true`), { timeoutMs: 30_000 });
       say('Closed the Docker firewall-bypass (only 80/443 reach the internet).');
     }
 
