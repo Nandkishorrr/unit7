@@ -264,7 +264,7 @@ test('the bill keeps a 16 GB VPS with auto-renew off, and marks what it can’t 
 
 // --- GitHub Actions --------------------------------------------------------------------------------------------------------
 async function fakeGitHub() {
-  const st = { secrets: ['OLD_KEY'], reruns: [] as string[], blobAuth: 'unset' }, calls: Req[] = [];
+  const st = { secrets: ['OLD_KEY'], reruns: [] as string[], blobAuth: 'unset' }, calls: Omit<Req, 'raw'>[] = [];
   let base = '';
   const server = createServer(async (req, res) => {
     let body = ''; for await (const c of req) body += c;
