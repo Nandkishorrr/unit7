@@ -856,6 +856,7 @@ test('your own server: a repo stays a repo, a domain is routed to the app, and a
     run(s.app.db, `UPDATE accounts SET meta = json_set(meta, '$.serverId', ?) WHERE id = ?`, s.srv, coolify);
     const opts = ok<any>(await s.org.h('live.options', { folder: site(EXPRESS) }));
     assert.deepEqual(opts.places.filter((p: any) => p.serverId === s.srv).map((p: any) => p.to), ['coolify']);
+    assert.ok(!opts.notConnected.some((h: any) => h.to === 'server'), 'that server is connected, so nobody is told to connect one');
   } finally { point.run = realPoint; delete process.env.UNIT7_GITHUB_URL; s.close(); }
 });
 

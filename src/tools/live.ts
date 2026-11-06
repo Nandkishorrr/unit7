@@ -94,8 +94,8 @@ defineTool({
     try {
       const places = await placesOf(ctx, site);
       const usable = places.filter((p) => p.ok), w = secretWarning(site);
-      // the hosts nobody connected yet, so "nothing can host this" can say which to connect
-      const notConnected = allHosts().filter((h) => !h.places(ctx).length).map((h) => ({ h, f: h.fit(site) })).sort((a, b) => rank(b.f) - rank(a.f)).map(({ h, f }) => ({ to: h.id, name: h.name, ok: f.ok, why: f.why }));
+      // the hosts nobody connected yet, so "nothing can host this" can say which to connect. A server with Coolify is connected: it builds through Coolify
+      const notConnected = allHosts().filter((h) => !h.places(ctx).length && !(h.id === 'server' && hostOf('coolify')?.places(ctx).length)).map((h) => ({ h, f: h.fit(site) })).sort((a, b) => rank(b.f) - rank(a.f)).map(({ h, f }) => ({ to: h.id, name: h.name, ok: f.ok, why: f.why }));
       return { site: facts(site), places, notConnected, ...(w && { keysFound: w.list, publishRefused: w.stop }),
         next: usable.length ? 'Show the first place as the recommendation, then call live.put. A place with costs is for a person to start: an AI can’t.' : 'Nothing connected can host this. Say which host would, and offer to connect it in Connections.' };
     } finally { site.done(); }
