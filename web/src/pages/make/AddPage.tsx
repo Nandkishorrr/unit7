@@ -7,7 +7,7 @@ import { Activity, ExternalLink, Eye, KeyRound, PackagePlus, SearchX, Server, Tr
 import { runTool, useApi, type ToolResult } from '../../lib/api';
 import { navigate, useQuery } from '../../lib/router';
 import { tidy } from '../../lib/words';
-import { Badge, Button, Card, ChipSelect, CopyButton, Empty, Field, HoldButton, HoverCard, Input, Modal, PageHeader, SearchInput, Select, Skeleton, Switch, Tabs, cx, toast, Illustration } from '../../ui';
+import { Badge, Button, Card, ChipSelect, CopyButton, Empty, Field, HoldButton, HoverCard, Input, Modal, PageHeader, SearchInput, Select, Skeleton, Switch, cx, toast, Illustration } from '../../ui';
 import { LogoTile, Menu } from '../kit';
 import { BrandLogo } from '../../brand/BrandLogo';
 import { LiveMoment, Note, RoomMeter, StepList, host, size, useSteps } from './parts';
@@ -65,7 +65,11 @@ export function AddPage() {
         <>
           <div className="mb-5 space-y-3">
             <SearchInput value={term} onChange={setTerm} placeholder="Search tools" label="Search tools" className="md:w-[320px]" />
-            {!word && <Tabs value={shelf} onChange={setShelf} tabs={['All', ...new Set(ready.map(shelfOf))].map((s) => ({ value: s, label: s }))} />}
+            {!word && (
+              <div role="group" aria-label="Kinds of tool" className="flex flex-wrap gap-1.5">
+                {['All', ...new Set(ready.map(shelfOf))].map((s) => <button key={s} type="button" aria-pressed={shelf === s} onClick={() => setShelf(s)} className={cx('h-8 rounded-full px-3.5 text-[13px] font-medium transition', shelf === s ? 'bg-ink text-bg' : 'bg-raised text-ink-2 hover:text-ink')}>{s}</button>)}
+              </div>
+            )}
           </div>
           {installedCount > 0 && <p className="mb-3 text-[13px] text-muted">{installedCount} on {cat.server.name} already.</p>}
           {shown.length ? (
@@ -81,7 +85,7 @@ export function AddPage() {
               body={template ? 'It isn’t one of Unit7’s tools. If that’s the name of a Coolify template, Unit7 can still add it, with a warning.' : 'Try another word.'}
               action={template && <Button variant="secondary" icon={<PackagePlus size={15} />} onClick={() => setInstalling({ id: template, name: template, logo: template, category: 'Coolify template', line: 'A Coolify template Unit7 doesn’t know', memoryMb: 0, how: 'coolify', unknown: true, warn: cat.anyTemplateWarn, installed: null })}>Add {template} from Coolify</Button>} />
           )}
-          {cat.server.coolify ? <p className="mt-5 text-[12.5px] text-muted">Looking for something else? Search for any Coolify template by its name.</p>
+          {cat.server.coolify ? !!shown.length && <p className="mt-5 text-[12.5px] text-muted">Looking for something else? Search for any Coolify template by its name.</p>
             : <p className="mt-5 text-[12.5px] text-muted">{cat.server.name} has no Coolify connected, so Unit7 adds the one-container tools itself; the rest need Coolify.</p>}
         </>
       )}
