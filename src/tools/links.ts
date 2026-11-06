@@ -151,7 +151,8 @@ SOURCES.supabase = {
     // never into a NEXT_PUBLIC_/VITE_… name: those are compiled into the page every visitor downloads
     const wantsSecret = reads.keys.filter((k) => /SUPABASE_(SERVICE_ROLE|SECRET)_KEY$/.test(k) && !isPublicKey(k));
     let note: string | undefined;
-    if (wantsSecret.length) {
+    if (wantsSecret.length && isAgent(ctx) && !ctx.approvalId) note = `The code reads ${wantsSecret.join(', ')}, a key that skips row-level security, so a person adds it: connect these two on Unit7's Wiring page, or put it in the Vault page.`;
+    else if (wantsSecret.length) {
       try {
         const sk = await supabase.secretKeys(ctx, accountId, ref);
         for (const k of wantsSecret) vars.push({ key: k, value: /SERVICE_ROLE/.test(k) ? sk.serviceRole ?? sk.secret! : sk.secret ?? sk.serviceRole!, secret: true });
@@ -357,6 +358,8 @@ defineTool({
   name: 'link.create', title: 'Connect two things', risk: 'write', action: 'env_write', timeoutMs: 30 * 60_000,
   description: 'Wire one thing to another, across providers: a Supabase/Neon database to an app (Vercel or here), or an app here (an API, a CRM) to another app (here or on Vercel). Unit7 sets the right settings on both sides (URLs, keys, a generated shared secret), redeploys to apply them, and keeps them in sync.',
   input: z.object({ from: endSchema, to: endSchema, apply: z.boolean().default(true) }),
+  // a Neon link puts a full database login where the app's code can read it, so a person says yes first
+  assess: (c, i) => (isAgent(c) && i.apply && [i.from, i.to].some((e) => e.kind === 'neon') ? { tier: 3, ask: 'This puts a database login into an app’s settings, where its code can read it.', impact: 'Wires a database to an app, with its login.' } : undefined),
   async run(ctx, i) {
     // A link copies an app's secrets to its other end. An AI may only wire an app here to an outside account that
     // environment may use (see accountAllowed), so a second account can't be made to receive production's keys.
@@ -498,6 +501,8 @@ defineTool({
     for (const s of suggest(things, linkedRows(ctx))) {
       if (endArchived(ctx.db, ctx.orgId, s.from) || endArchived(ctx.db, ctx.orgId, s.to)) { skipped.push(`${s.fromName} → ${s.toName}: archived, so Unit7 leaves it alone`); continue; }
       if (!s.sure) { skipped.push(`${s.toName}: more than one possible source (${s.fromName}…), so it's your call`); continue; }
+      // Warden runs this after every sync, so it never asks: a login stays a person's to connect
+      if (isAgent(ctx) && [s.from, s.to].some((e) => e.kind === 'neon')) { skipped.push(`${s.fromName} → ${s.toName}: this gives the app a database login, so it's your call`); continue; }
       const r = await execute(ctx.app, ctx.orgId, ctx.actor, 'link.create', { from: s.from, to: s.to }, { reason: s.why });
       (r.status === 'ok' ? created : skipped).push(r.status === 'ok' ? `${s.fromName} → ${s.toName}` : `${s.fromName} → ${s.toName}: ${r.status === 'error' ? r.error.message : r.status}`);
     }

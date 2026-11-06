@@ -777,3 +777,11 @@ test('11. what else feeds a client: MySQL’s dumps run with its client commands
   await (my.status === 'approval_required' ? approve(app, o, my, 'my-db') : my);
   assert.ok(sent.some((x) => x.includes('--binary-mode')), 'the load uses it');
 });
+
+test('a compose file is a system file wherever it sits', async () => {
+  const { getTool } = await import('../src/tools/runtime.ts');
+  const write = getTool('file.write')!, action = write.action as (i: { path: string }) => string;
+  assert.equal(action({ path: '/opt/shop/docker-compose.yml' }), 'system_file_write');
+  assert.equal(action({ path: '/opt/shop/compose.prod.yaml' }), 'system_file_write');
+  assert.equal(action({ path: '/opt/shop/index.html' }), 'file_write');
+});

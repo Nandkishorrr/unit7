@@ -4,7 +4,7 @@ import { forbidden, Unit7Error } from '../errors.ts';
 import { type Role } from '../policy.ts';
 import { get } from '../db.ts';
 
-export const isAgent = (ctx: Ctx) => ctx.actor.kind === 'agent' || ctx.actor.role === 'agent';
+export const isAgent = (ctx: Pick<Ctx, 'actor'>) => ctx.actor.kind === 'agent' || ctx.actor.role === 'agent';
 
 // real values go to a person who may work on things; an AI, a key and a read-only seat get the masked view
 export const seesReal = (ctx: Ctx) => ctx.actor.kind === 'user' && ['owner', 'admin', 'developer'].includes(ctx.actor.role);

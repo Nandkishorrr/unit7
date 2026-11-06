@@ -41,7 +41,7 @@ const AT = {
 };
 
 // Where a write asks a person first, at any autonomy: the operating system, any SSH folder, Coolify's own files, Unit7's copies
-const SYSTEM_PATH = /^\/(etc|boot|bin|sbin|usr|lib(32|64|x32)?|var\/spool\/cron|var\/lib\/docker(?!\/volumes\/)|var\/lib\/unit7|data\/coolify)(\/|$)|(^|\/)\.ssh(\/|$)/;
+const SYSTEM_PATH = /^\/(etc|boot|bin|sbin|usr|lib(32|64|x32)?|var\/spool\/cron|var\/lib\/docker(?!\/volumes\/)|var\/lib\/unit7|data\/coolify)(\/|$)|(^|\/)\.ssh(\/|$)|(^|\/)(docker-)?compose(\.[\w-]+)?\.ya?ml$/; // a compose file can mount the whole server, so it's a system file wherever it sits
 const systemPath = (p: string) => SYSTEM_PATH.test(p) || PROTECTED.test(p);
 // the rules classify() uses, so a command and a file tool see the same secrets
 const isSecret = (p: string) => SECRET_FILE.test(p);

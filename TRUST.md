@@ -76,3 +76,4 @@ Unit7 is open source under the licence in [LICENSE](LICENSE). What's open today 
 ## Reporting a problem
 
 See [SECURITY.md](SECURITY.md).
+- A link an AI makes to Neon asks a person, because the app gets a full login. A link an AI makes to Supabase carries public keys only: a service key is a person’s to add. Warden’s automatic wiring does the same, and leaves Neon to a person.

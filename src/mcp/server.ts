@@ -57,7 +57,7 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 37. The person's rules in plain words bind you at the gate (rule_list). A denial that quotes one is final: tell them, don't look for another way.
 38. "What did my AI do?" is ai_flight. "This keeps happening" with a request to automate it is routine_when.
 39. Deep security, all read-only: security_stranger (what a stranger can do from outside; it counts rows and reads none), security_doors (Supabase rules, inside), security_hacked (break-in signs; a strong sign means rebuild, never clean), security_who, security_panels, security_running, security_defaults. "A company got hacked" is security_breach. "Could one night cost me a fortune?" is spend_brake. "If this server died today?" is safety_fire_drill.
-40. A delete an AI asks for waits 48 hours after a person says yes, and a person can cancel it (delete_held). "How did the week go?" is report_card. tools_find searches every tool, if this key lists only some.
+40. A delete an AI asks for goes to a person at any autonomy, then waits 48 hours, and a person can cancel it (delete_held). "How did the week go?" is report_card. tools_find searches every tool, if this key lists only some.
 41. Seven is the agent on shift inside Unit7: it looks, does the safe work and asks one question at a time. seven_status shows what it did and what it's waiting on. Don't redo what it already did.
 42. If no tool does what was asked (tools_find finds none), say so in one sentence, say why, and offer the closest way that works: another host Unit7 can use, or the exact steps for the person. Don't stop at "I can't". Never use server_exec or a pasted key to get around a locked key.
 43. "Put this live", "deploy this site", "new Vercel project": live_options (it says what it is and where it can go), then live_put with an uploadId or a repo. Only a person can give a folder: in a terminal they run unit7 live from the folder, which picks the best connected host. Hosts build it themselves and live_put checks it answers. It stops on keys in a plain website: tell the person which files. live_logs reads a host's build log and live_env sets its settings. github_create_repo and github_push save code in GitHub, never with a force push.
@@ -74,7 +74,10 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 54. For anything in addon_catalog use addon_install, never coolify_create_service: only it claims the admin login before a first visitor can.
 55. When no typed tool fits, connection_tools lists what an account’s hosted server offers and connection_call runs it. A failed GitHub Action: github_runs, then github_run_logs. Stripe webhooks failing: stripe_webhooks.
 56. To move a site off a host or builder: move_plan, show it, move_run, then move_switch, which always waits for approval. move_finish only suggests removing the old site.
-57. Email: email_check says what’s wrong. email_setup sends from a domain; run it again after DNS approvals. email_connect_app puts it in an app. email_forward sends hello@ to an inbox. Never ask for an SMTP password in chat: use ui_form. After a domain change, auth_urls fixes login and says what to paste at Google or GitHub.`;
+57. Email: email_check says what’s wrong. email_setup sends from a domain; run it again after DNS approvals. email_connect_app puts it in an app. email_forward sends hello@ to an inbox. Never ask for an SMTP password in chat: use ui_form. After a domain change, auth_urls fixes login and says what to paste at Google or GitHub.
+58. Compose from a repo waits for a person. Once approved, run live_put with update true.
+59. part_query shows an AI plain columns, counts and simple sums. Anything computed is hidden. MongoDB takes plain data.
+60. A stored key in a setting asks a person first, and link_create with Neon asks too. With Supabase it wires the public keys: a service key is a person’s to add, on the Wiring page or in the Vault.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).

@@ -46,7 +46,7 @@ test('an API on Unit7 linked to a website: both sides agree, private address on 
 
 import { createServer } from 'node:http';
 import { supabaseVars, suggest, type Thing } from '../src/tools/links.ts';
-import { supabase } from '../src/connectors/clouds.ts';
+import { neon, supabase } from '../src/connectors/clouds.ts';
 
 test('Supabase settings use the names the code reads, else its framework’s convention', () => {
   const names = (r: Parameters<typeof supabaseVars>[0]) => supabaseVars(r, 'https://abc.supabase.co', 'anon-jwt', 'sb_publishable_x').map((v) => `${v.key}=${v.value}`).sort();
@@ -88,7 +88,7 @@ function fakeVercel() {
     const send = (code: number, data: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
     if (!url.pathname.startsWith('/repos/') && req.headers.authorization !== 'Bearer vercel-test-token-123') return send(403, { error: { message: 'Not authorized' } });
     const p = url.pathname;
-    if (p === '/repos/ada/shop-web/contents/package.json') return send(200, { content: Buffer.from(JSON.stringify({ dependencies: { next: '15', '@supabase/supabase-js': '^2' } })).toString('base64') });
+    if (p === '/repos/ada/shop-web/contents/package.json') return send(200, { content: Buffer.from(JSON.stringify({ dependencies: { next: '15', '@supabase/supabase-js': '^2', pg: '8' } })).toString('base64') });
     if (p === '/v2/user') return send(200, { user: { username: 'ada' } });
     if (p === '/v2/teams') return send(200, { teams: [] });
     if (p === '/v10/projects' && req.method === 'GET') return send(200, { projects: [project] });
@@ -141,6 +141,59 @@ test('your CRM here → your site on Vercel, and Supabase → that site: setting
     assert.deepEqual(s.set.sort(), ['NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_URL']);
     assert.equal(v.deploys.length, 2);
   } finally { v.close(); }
+});
+
+test('an AI can wire public keys, but a database login or service key waits for a person', async () => {
+  const { getTool } = await import('../src/tools/runtime.ts');
+  const link = getTool('link.create')!, ai = { actor: { kind: 'agent', id: 'mcp', role: 'agent' } }, person = { actor: { kind: 'user', id: 'usr', role: 'owner' } };
+  const neonLink = { from: { kind: 'neon', accountId: 'acc', project: 'p' }, to: { kind: 'unit7', serviceId: 'svc' }, apply: true };
+  assert.ok(link.assess!(ai as never, neonLink as never)!.ask, 'a Neon login asks a person');
+  assert.equal(link.assess!(ai as never, { ...neonLink, apply: false } as never), undefined, 'a look costs nothing');
+  assert.equal(link.assess!(person as never, neonLink as never), undefined);
+  assert.equal(link.assess!(ai as never, { ...neonLink, from: { kind: 'supabase', accountId: 'acc', ref: 'r' } } as never), undefined, 'public keys go through');
+
+  const v = await fakeVercel();
+  try {
+    const app = testApp(), o = await testOrg(app);
+    const acc = ok(await o.h('account.connect', { provider: 'supabase', token: 'sbp_test_token_0000' }));
+    const env = ok(await o.h('project.create', { name: 'Biz', environments: ['production'] })).environments[0].id;
+    const api = ok(await o.h('service.create', { environmentId: env, name: 'api', source: { type: 'git', repo: 'ada/api' }, port: 4000 })).serviceId;
+    run(app.db, `UPDATE services SET config = json_set(config, '$.detection', json('{"stack":"express","envKeys":["SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY"]}')) WHERE id = ?`, api);
+    ok(await o.h('account.bind', { accountId: acc.accountId, environmentId: env }));
+    let asked = 0;
+    Object.assign(supabase, { url: async () => 'https://abc.supabase.co', publicKey: async () => ({ anon: 'eyJanon', publishable: 'sb_publishable_x' }), projects: async () => [{ id: 'abcdefghijklmnop', name: 'shop' }], secretKeys: async () => { asked++; return { serviceRole: 'eyJservice', secret: 'sb_secret_x' }; } });
+    const end = { from: { kind: 'supabase', accountId: acc.accountId, ref: 'abcdefghijklmnop' }, to: { kind: 'unit7', serviceId: api } };
+    const r = await o.a('link.create', end);
+    const out = ok(r) as { set: string[]; note?: string };
+    assert.equal(asked, 0, 'an AI never makes Unit7 fetch the service key');
+    assert.ok(!out.set.includes('SUPABASE_SERVICE_ROLE_KEY'));
+    assert.match(out.note ?? '', /SUPABASE_SERVICE_ROLE_KEY.*person/);
+    const p = ok(await o.h('link.create', end));
+    assert.equal(asked, 1, 'a person connecting them does');
+    assert.ok(p.set.includes('SUPABASE_SERVICE_ROLE_KEY'));
+  } finally { v.close(); }
+});
+
+test('nobody asks, but a Neon login stays a person’s to connect', async () => {
+  const v = await fakeVercel();
+  const api = createServer((req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url!.startsWith('/projects?') ? { projects: [{ id: 'proud-sun-123', name: 'shop' }] } : {})); });
+  await new Promise<void>((r) => api.listen(0, '127.0.0.1', () => r()));
+  const before = process.env.UNIT7_NEON_API;
+  process.env.UNIT7_NEON_API = `http://127.0.0.1:${(api.address() as { port: number }).port}`;
+  try {
+    const app = testApp(), o = await testOrg(app);
+    ok(await o.h('account.connect', { provider: 'vercel', token: 'vercel-test-token-123' }));
+    Object.assign(neon, { connectionString: async () => 'postgres://u:p@ep.example/db' });
+    ok(await o.h('account.connect', { provider: 'neon', token: 'neon_test_token_0000' }));
+    ok(await o.a('sync.run', {}));
+    const auto = ok(await o.a('link.autoconnect', {}));
+    assert.deepEqual(auto.created, []);
+    assert.match(auto.skipped.join(), /database login/);
+    assert.equal(get<{ n: number }>(app.db, 'SELECT COUNT(*) n FROM approvals WHERE org_id = ?', o.orgId)!.n, 0, 'an automatic run leaves nothing to answer');
+    assert.equal(v.envs.length, 0);
+    assert.deepEqual(ok(await o.h('link.autoconnect', {})).created, ['shop → shop-web'], 'a person pressing it does connect them');
+    assert.ok(v.envs.some((e) => e.key === 'DATABASE_URL'));
+  } finally { v.close(); api.close(); if (before === undefined) delete process.env.UNIT7_NEON_API; else process.env.UNIT7_NEON_API = before; }
 });
 
 test('a domain pointed at a Vercel project: Vercel’s own records, plus its ownership check', async () => {
