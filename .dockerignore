@@ -1,0 +1,10 @@
+node_modules
+dist
+.unit7
+.forge
+.git
+.env
+.env.*
+test
+*.db
+*.db-*

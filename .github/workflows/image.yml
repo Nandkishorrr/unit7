@@ -1,0 +1,19 @@
+# A signed image for each release tag. Anyone can check it with cosign, against this repository's workflow.
+name: image
+on:
+  push:
+    tags: ['v*']
+permissions: { contents: read, packages: write, id-token: write }
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
+      - id: build
+        uses: docker/build-push-action@v6
+        with: { push: true, tags: 'ghcr.io/${{ github.repository_owner }}/unit7:${{ github.ref_name }},ghcr.io/${{ github.repository_owner }}/unit7:latest' }
+      - uses: sigstore/cosign-installer@v3
+      - run: cosign sign --yes ghcr.io/${{ github.repository_owner }}/unit7@${{ steps.build.outputs.digest }}

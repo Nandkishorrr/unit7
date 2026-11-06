@@ -1,0 +1,304 @@
+// One click per connection. Every provider Unit7 knows, and the single way to connect each:
+//   mcp         the provider's hosted MCP with standard sign-in: its own page, Allow, back, connected
+//   github-app  Unit7 creates a private GitHub App in your account from a manifest, you pick repos, done
+//   openrouter  OpenRouter's sign-in hands back an API key for every model (Claude, Gemini, GPT…)
+//   key         no sign-in for local apps: the button opens the provider's key page pre-filled, and the
+//               key is picked up the moment you paste it on Unit7's page
+//   local       found on this machine; nothing to do
+// Nobody names accounts or picks options: names are automatic and permissions are fixed per provider.
+import { randomBytes, createHash, createSign } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import type { App } from '../app.ts';
+import { all, get, id, json, run } from '../db.ts';
+import { Unit7Error } from '../errors.ts';
+import { makeRef } from '../vault.ts';
+import { accountName, startOAuth, type OAuthProvider } from './mcp-oauth.ts';
+import { alertState, ensureReplies, newTopic } from '../sentinel/phone.ts';
+import { addGoogleSignIn, cliFor, forgetSignedIn, signInsFor, TOOLS_FOR, TOOL_LABEL } from './cloudcli.ts';
+
+export type Method =
+  | { kind: 'mcp'; mcpUrl: string }
+  | { kind: 'github-app' }
+  | { kind: 'openrouter' }
+  | { kind: 'key'; keyUrl: string; hint: string; pattern?: string; file?: true } // file: the key is a file (a .json) people may pick instead of paste
+  | { kind: 'local' }
+  | { kind: 'ntfy' };
+
+export interface Provider { id: string; name: string; group: string; what: string; method: Method; alt?: Extract<Method, { kind: 'key' }> }
+
+const cfToken = 'https://dash.cloudflare.com/profile/api-tokens?' + new URLSearchParams({
+  name: 'Unit7',
+  permissionGroupKeys: JSON.stringify([{ key: 'zone', type: 'edit' }, { key: 'dns', type: 'edit' }, { key: 'zone_settings', type: 'edit' }, { key: 'cache_purge', type: 'edit' }]),
+  accountId: '*', zoneId: 'all',
+});
+
+// Every `mcp` URL below was probed live (2026-10-06): dynamic registration accepted Unit7's localhost
+// callback. Providers whose sign-in isn't open to local apps get a pre-filled key page instead.
+const mcp = (id: string, name: string, group: string, what: string, mcpUrl: string): Provider => ({ id, name, group, what, method: { kind: 'mcp', mcpUrl } });
+export const CATALOG: Provider[] = [
+  { id: 'hostinger', name: 'Hostinger', group: 'Servers & domains', what: 'Your VPS, domains and DNS. Unit7 sets up servers for you.', method: { kind: 'mcp', mcpUrl: 'https://mcp.hostinger.com' },
+    alt: { kind: 'key', keyUrl: 'https://hpanel.hostinger.com/profile/api', hint: 'Create a token, then paste it here.' } },
+  { id: 'cloudflare', name: 'Cloudflare', group: 'Servers & domains', what: 'DNS and HTTPS for domains on Cloudflare.', method: { kind: 'key', keyUrl: cfToken, hint: 'Permissions are pre-filled. Click Continue, Create, then paste the token here.' } },
+  { id: 'godaddy', name: 'GoDaddy', group: 'Servers & domains', what: 'DNS for domains on GoDaddy. Unit7 points them at your apps.', method: { kind: 'key', keyUrl: 'https://developer.godaddy.com/personal-access-token', hint: 'Create a personal access token with DNS update permission, then paste it here.' } },
+  { id: 'porkbun', name: 'Porkbun', group: 'Servers & domains', what: 'DNS for domains on Porkbun.', method: { kind: 'key', keyUrl: 'https://porkbun.com/account/api', hint: 'Create an API key, then paste it as KEY:SECRET (both parts, colon between). Also switch on API Access for each domain.', pattern: '^pk1_[^:]+:sk1_' } },
+  { id: 'namecom', name: 'Name.com', group: 'Servers & domains', what: 'DNS for domains on Name.com.', method: { kind: 'key', keyUrl: 'https://www.name.com/account/settings/api', hint: 'Create a token, then paste it as USERNAME:TOKEN. With 2FA on, also switch on API access under Security.', pattern: '^[^:]+:.+' } },
+  { id: 'github', name: 'GitHub', group: 'Code', what: 'Deploy straight from your repos, private ones too.', method: { kind: 'github-app' },
+    alt: { kind: 'key', keyUrl: 'https://github.com/settings/tokens/new?scopes=repo&description=Unit7', hint: 'Click Generate token, then paste it here.', pattern: '^(gh[pousr]_|github_pat_)' } },
+  { id: 'openrouter', name: 'OpenRouter', group: 'AI models', what: 'Every model (Claude, Gemini, GPT) with one sign-in. Powers Unit7’s own AI box.', method: { kind: 'openrouter' } },
+  { id: 'anthropic', name: 'Anthropic API', group: 'AI models', what: 'Claude models for Unit7’s AI box, billed to your API account (not your Claude subscription).', method: { kind: 'key', keyUrl: 'https://platform.claude.com/settings/keys', hint: 'Click Create Key, then paste it here.', pattern: '^sk-ant-' } },
+  { id: 'google', name: 'Google Gemini', group: 'AI models', what: 'Gemini models for Unit7’s AI box. Has a free tier.', method: { kind: 'key', keyUrl: 'https://aistudio.google.com/apikey', hint: 'Click Create API key, then paste it here.', pattern: '^AIza' } },
+  { id: 'openai', name: 'OpenAI', group: 'AI models', what: 'GPT models for Unit7’s AI box.', method: { kind: 'key', keyUrl: 'https://platform.openai.com/api-keys', hint: 'Click Create new secret key, then paste it here.', pattern: '^sk-' } },
+  { id: 'ollama', name: 'Ollama', group: 'AI models', what: 'Free models running on this Mac. Found automatically when Ollama is open.', method: { kind: 'local' } },
+  { id: 'ntfy', name: 'Phone alerts', group: 'Alerts', what: 'A buzz on your phone when something needs you. Free ntfy app, no account.', method: { kind: 'ntfy' } },
+  { id: 'webhook', name: 'Slack or Discord', group: 'Alerts', what: 'The same alerts in a team channel.', method: { kind: 'key', keyUrl: 'https://api.slack.com/messaging/webhooks', hint: 'Create an incoming webhook (Slack) or a channel webhook (Discord, channel settings → Integrations), then paste its URL here.', pattern: '^https://(hooks\\.slack\\.com|(discord|discordapp)\\.com/api/webhooks)/' } },
+  { ...mcp('supabase', 'Supabase', 'Databases', 'Postgres, auth and storage projects. Unit7 wires them into your apps.', 'https://mcp.supabase.com/mcp'),
+    alt: { kind: 'key', keyUrl: 'https://supabase.com/dashboard/account/tokens', hint: 'Generate a token, then paste it here. It also covers custom domains and server keys, which the one-click sign-in can\u2019t.', pattern: '^sbp_' } },
+  mcp('neon', 'Neon', 'Databases', 'Serverless Postgres branches.', 'https://mcp.neon.tech/mcp'),
+  mcp('planetscale', 'PlanetScale', 'More services', 'MySQL and Postgres databases.', 'https://mcp.pscale.dev/mcp/planetscale'),
+  mcp('turso', 'Turso', 'More services', 'SQLite at the edge.', 'https://mcp.turso.tech/mcp'),
+  mcp('upstash', 'Upstash', 'More services', 'Redis and queues.', 'https://mcp.upstash.io/mcp'),
+  mcp('stripe', 'Stripe', 'More services', 'Payments: products, prices, webhooks.', 'https://mcp.stripe.com'),
+  mcp('resend', 'Resend', 'More services', 'Sending email from your app.', 'https://mcp.resend.com/mcp'),
+  mcp('sentry', 'Sentry', 'More services', 'Errors from your app, for Warden to read.', 'https://mcp.sentry.dev/mcp'),
+  // a token, not Vercel's MCP sign-in: that's only open to clients Vercel approves, and Unit7 needs the REST API (settings, domains)
+  { id: 'vercel', name: 'Vercel', group: 'Servers & domains', what: 'Projects, settings and domains on Vercel. Unit7 wires them to your databases and APIs.', method: { kind: 'key', keyUrl: 'https://vercel.com/account/tokens', hint: 'Click Create Token (scope: your team, or Full Account), then paste it here.' } },
+  { ...mcp('netlify', 'Netlify', 'Servers & domains', 'Sites on Netlify: settings, builds and domains.', 'https://netlify-mcp.netlify.app/mcp'),
+    alt: { kind: 'key', keyUrl: 'https://app.netlify.com/user/applications#personal-access-tokens', hint: 'Click New access token, then paste it here.' } },
+  { ...mcp('railway', 'Railway', 'Servers & domains', 'Apps and databases on Railway: variables, deploys and domains.', 'https://mcp.railway.com/mcp'),
+    alt: { kind: 'key', keyUrl: 'https://railway.com/account/tokens', hint: 'Create an account token (not a project token), then paste it here.' } },
+  { id: 'fly', name: 'Fly.io', group: 'Servers & domains', what: 'Apps and Postgres on Fly.io: secrets, restarts and domains.', method: { kind: 'key', keyUrl: 'https://fly.io/user/personal_access_tokens', hint: 'Create a personal access token (it sees all your organisations), then paste it here.' } },
+  { id: 'heroku', name: 'Heroku', group: 'Servers & domains', what: 'Apps and databases on Heroku: settings and domains.', method: { kind: 'key', keyUrl: 'https://dashboard.heroku.com/account/applications/authorizations/new', hint: 'Create an authorization (no expiry, or a long one), then paste its token here.' } },
+  { id: 'render', name: 'Render', group: 'Servers & domains', what: 'Services and databases on Render: settings, deploys and domains.', method: { kind: 'key', keyUrl: 'https://dashboard.render.com/u/settings#api-keys', hint: 'Click Create API Key, then paste it here.', pattern: '^rnd_' } },
+  { ...mcp('digitalocean', 'DigitalOcean', 'Servers & domains', 'Droplets, managed apps and DNS.', 'https://apps.mcp.digitalocean.com/mcp'),
+    alt: { kind: 'key', keyUrl: 'https://cloud.digitalocean.com/account/api/tokens', hint: 'Generate a token with domain read and write, then paste it here.' } },
+  // The big clouds: one click when their command-line tool is signed in on this Mac (Unit7 asks it for a short-lived
+  // token each time; connectors/cloudcli.ts), else a read-only key. Unit7 only reads them for now.
+  { id: 'gcp', name: 'Google Cloud', group: 'Servers & domains', what: 'Cloud Run, App Engine, Cloud SQL, Cloud DNS, your domains and who pays for what. Unit7 hides the hard parts.', method: { kind: 'key', file: true,
+    keyUrl: 'https://console.cloud.google.com/iam-admin/serviceaccounts/create', hint: 'Create a service account with the Viewer role, then Keys → Add key → JSON. Paste the file here or pick it. Quicker: run gcloud auth login on this Mac.' } },
+  { id: 'firebase', name: 'Firebase', group: 'Servers & domains', what: 'Hosting sites and their domains, App Hosting, functions, Firestore and Realtime Database.', method: { kind: 'key', file: true,
+    keyUrl: 'https://console.cloud.google.com/iam-admin/serviceaccounts/create', hint: 'Pick your Firebase project, create a service account with the Firebase Viewer role, then Keys → Add key → JSON. Paste the file here or pick it. Quicker: run firebase login on this Mac.' } },
+  { id: 'aws', name: 'AWS', group: 'Servers & domains', what: 'Amplify, Lightsail, EC2, RDS, Route 53 and this month’s bill, without the AWS console.', method: { kind: 'key', pattern: '^(AKIA|ASIA)[A-Z0-9]{12,}:',
+    keyUrl: 'https://console.aws.amazon.com/iam/home#/users', hint: 'Create a user with the ReadOnlyAccess policy, add an access key, then paste it as KEY_ID:SECRET. Quicker: sign in with the AWS CLI on this Mac.' } },
+  { id: 'azure', name: 'Microsoft Azure', group: 'Servers & domains', what: 'Static Web Apps, App Service, databases, Azure DNS and this month’s cost.', method: { kind: 'key', pattern: '^[0-9a-f-]{36}:[0-9a-f-]{36}:',
+    keyUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade', hint: 'Register an app, give it the Reader role on your subscription, add a client secret, then paste TENANT_ID:CLIENT_ID:SECRET. Quicker: run az login on this Mac.' } },
+  { id: 'hetzner', name: 'Hetzner Cloud', group: 'Servers & domains', what: 'Cloud servers and DNS zones on Hetzner. Unit7 can then set them up for you.', method: { kind: 'key',
+    keyUrl: 'https://console.hetzner.cloud/projects', hint: 'Open your project, then Security → API tokens → Generate API token (Read is enough). Paste it here.' } },
+];
+
+export const provider = (id: string) => CATALOG.find((p) => p.id === id);
+
+// --- what the Connections page shows --------------------------------------------------------------
+
+export function connections(app: App, orgId: string, extra: { ollama?: boolean; ghCli?: boolean; clis?: Record<string, string> } = {}) {
+  const accounts = all<{ id: string; provider: string; name: string; status: string; meta: string; verified_at: string | null }>(app.db, 'SELECT id, provider, name, status, meta, verified_at FROM accounts WHERE org_id = ? ORDER BY created_at', orgId);
+  return CATALOG.map((p) => ({
+    id: p.id, name: p.name, group: p.group, what: p.what,
+    method: p.method.kind, cli: (p.id === 'github' && !!extra.ghCli) || !!extra.clis?.[p.id], cliName: p.id === 'github' ? 'GitHub CLI' : extra.clis?.[p.id], file: p.method.kind === 'key' && !!p.method.file, keyUrl: p.method.kind === 'key' ? p.method.keyUrl : p.alt?.keyUrl, hint: p.method.kind === 'key' ? p.method.hint : p.alt?.hint,
+    pattern: p.method.kind === 'key' ? p.method.pattern : p.alt?.pattern,
+    accounts: p.id === 'ollama' ? (extra.ollama ? [{ id: 'local', name: 'This Mac', status: 'verified', pending: null, finishUrl: null }] : [])
+      : accounts.filter((a) => a.provider === p.id).map((a) => {
+        const m = json<{ pending?: string; slug?: string; replies?: string; approver?: string }>(a.meta, {});
+        return { id: a.id, name: a.name, status: a.status, pending: m.pending ?? null, finishUrl: m.pending === 'install' && m.slug ? `https://github.com/apps/${m.slug}/installations/new` : null,
+          ...(p.id === 'ntfy' && { phoneApprovals: !!(m.approver && (m as { proof?: unknown }).proof) }),
+          // alert channels: connected only once a test went through (phone: it arrived; team chat: it was taken)
+          ...(p.group === 'Alerts' && { alert: alertState(p.id, a.status, a.verified_at, a.meta) }) };
+      }),
+  }));
+}
+
+// --- start: the URL the Connect button sends the browser to ---------------------------------------
+
+const pending = new Map<string, { kind: string; orgId: string; userId: string; at: number; verifier?: string; accountId?: string }>();
+const fresh = (state: string, userId: string) => {
+  for (const [k, v] of pending) if (Date.now() - v.at > 15 * 60_000) pending.delete(k);
+  const p = pending.get(state);
+  if (!p || p.userId !== userId) throw new Unit7Error('oauth_state', 'That sign-in link expired. Click Connect again.', 400);
+  return p;
+};
+
+export async function startConnect(app: App, o: { providerId: string; orgId: string; userId: string; origin: string }): Promise<string> {
+  const p = provider(o.providerId);
+  if (!p) throw new Unit7Error('unknown_provider', `Unit7 doesn't know ${o.providerId}.`, 404);
+  const state = randomBytes(24).toString('base64url');
+  if (p.method.kind === 'mcp') {
+    const op: OAuthProvider = { id: p.id, name: p.name, mcpUrl: p.method.mcpUrl };
+    return startOAuth({ provider: op, name: accountName(app, o.orgId, p.id, p.name).name, orgId: o.orgId, userId: o.userId, redirectUri: `${o.origin}/api/oauth/callback` });
+  }
+  if (p.method.kind === 'openrouter') {
+    const verifier = randomBytes(32).toString('base64url');
+    pending.set(state, { kind: 'openrouter', orgId: o.orgId, userId: o.userId, at: Date.now(), verifier });
+    return 'https://openrouter.ai/auth?' + new URLSearchParams({ callback_url: `${o.origin}/api/connect/openrouter/done/${state}`, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', key_label: 'Unit7' });
+  }
+  if (p.method.kind === 'github-app') {
+    pending.set(state, { kind: 'github', orgId: o.orgId, userId: o.userId, at: Date.now() });
+    return `${o.origin}/api/connect/github/form/${state}`; // a tiny page that posts the manifest to GitHub
+  }
+  if (p.method.kind === 'key') return p.method.keyUrl;
+  if (p.method.kind === 'ntfy') throw new Unit7Error('use_setup', 'Phone alerts are set up with one click on the Connections page.', 400);
+  throw new Unit7Error('nothing_to_do', `${p.name} is found automatically.`, 400);
+}
+
+// --- OpenRouter: the sign-in returns a code, the code becomes an API key ---------------------------
+
+export async function finishOpenRouter(app: App, state: string, code: string, userId: string) {
+  const p = fresh(state, userId);
+  pending.delete(state);
+  const r = await fetch('https://openrouter.ai/api/v1/auth/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, code_verifier: p.verifier, code_challenge_method: 'S256' }), signal: AbortSignal.timeout(20_000) });
+  const j = await r.json().catch(() => ({})) as { key?: string; error?: { message?: string } };
+  if (!r.ok || !j.key) throw new Unit7Error('oauth_token', `OpenRouter didn't issue a key: ${j.error?.message ?? r.status}`, 502);
+  return saveAccount(app, p.orgId, 'openrouter', 'OpenRouter', j.key, { auth: 'oauth' });
+}
+
+function saveAccount(app: App, orgId: string, providerId: string, base: string, secret: string, meta: Record<string, unknown>, kind = 'api_token') {
+  const { name, slug } = accountName(app, orgId, providerId, base);
+  const ref = makeRef(providerId, slug, 'token');
+  const accountId = id('acc');
+  run(app.db, `INSERT INTO accounts (id, org_id, provider, name, slug, meta, status, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'verified', ?)`,
+    accountId, orgId, providerId, name, slug, JSON.stringify({ ref, ...meta }), new Date().toISOString());
+  app.vault.put(orgId, ref, secret, { kind, accountId, by: 'one-click sign-in' });
+  app.events.emit(orgId, 'account.connected', `${name} connected`, { severity: 'success', resource: accountId });
+  return { accountId, name };
+}
+
+// --- GitHub, zero browser steps: reuse the GitHub CLI's sign-in when it's logged in on this machine ---
+const gh = (args: string[]) => new Promise<string>((resolve, reject) =>
+  execFile('gh', args, { timeout: 8000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }, (e, out) => (e ? reject(e) : resolve(out.trim()))));
+export const githubCliReady = () => gh(['auth', 'token']).then((t) => t.length > 20, () => false);
+export async function connectGithubCli(app: App, orgId: string) {
+  const token = await gh(['auth', 'token']).catch(() => { throw new Unit7Error('gh_not_signed_in', 'The GitHub CLI isn’t signed in here. Click Connect GitHub to use the browser instead.', 409); });
+  const login = await gh(['api', 'user', '--jq', '.login']).catch(() => '');
+  const existing = get<{ id: string; name: string }>(app.db, `SELECT id, name FROM accounts WHERE org_id = ? AND provider = 'github' AND json_extract(meta, '$.login') = ?`, orgId, login);
+  if (existing) return { accountId: existing.id, name: existing.name };
+  return saveAccount(app, orgId, 'github', login ? `GitHub (${login})` : 'GitHub', token, { auth: 'gh-cli', login });
+}
+
+// --- GitHub: a private GitHub App made from a manifest (how Coolify and Dokploy do it) --------------
+// Click 1 on GitHub: "Create GitHub App". Click 2: "Install" on the repos you choose. Unit7 then mints
+// one-hour install tokens itself; there is no long-lived personal token anywhere.
+
+export function githubManifestPage(state: string, userId: string, origin: string): string {
+  fresh(state, userId);
+  const manifest = {
+    name: `Unit7 ${randomBytes(3).toString('hex')}`,
+    url: origin.startsWith('https://') ? origin : 'https://github.com/Nandkishorrr/unit7',
+    redirect_url: `${origin}/api/connect/github/created`,
+    setup_url: `${origin}/api/connect/github/installed`,
+    setup_on_update: true,
+    public: false,
+    default_permissions: { contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'write', deployments: 'write' },
+    default_events: [],
+  };
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<!doctype html><meta charset="utf-8"><title>Connecting GitHub…</title><link rel="icon" href="/favicon.svg?v=7" type="image/svg+xml">
+<body style="font:15px system-ui;background:#0b0d12;color:#e6e8ee;display:grid;place-items:center;height:100vh;margin:0">
+<form method="post" action="https://github.com/settings/apps/new?state=${esc(state)}"><input type="hidden" name="manifest" value="${esc(JSON.stringify(manifest))}">
+<p>Opening GitHub…</p><noscript><button>Continue to GitHub</button></noscript></form>
+<script>${SUBMIT}</script>`;
+}
+const SUBMIT = 'document.forms[0].submit()';
+export const MANIFEST_SCRIPT_HASH = `sha256-${createHash('sha256').update(SUBMIT).digest('base64')}`;
+
+// GitHub sent us back with a code: turn it into the app's credentials, then send the person to install it.
+export async function githubCreated(app: App, state: string, code: string, userId: string): Promise<string> {
+  const p = fresh(state, userId);
+  const r = await fetch(`https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`, { method: 'POST', headers: { accept: 'application/vnd.github+json', 'user-agent': 'Unit7' }, signal: AbortSignal.timeout(20_000) });
+  const j = await r.json().catch(() => ({})) as { id?: number; slug?: string; pem?: string; client_id?: string; client_secret?: string; owner?: { login?: string }; message?: string };
+  if (!r.ok || !j.id || !j.pem || !j.slug) throw new Unit7Error('github_app', `GitHub didn't finish creating the app: ${j.message ?? r.status}`, 502);
+  const { accountId } = saveAccount(app, p.orgId, 'github', j.owner?.login ? `GitHub (${j.owner.login})` : 'GitHub',
+    JSON.stringify({ app_id: j.id, pem: j.pem, client_id: j.client_id, client_secret: j.client_secret }),
+    { auth: 'github-app', appId: j.id, slug: j.slug, owner: j.owner?.login, pending: 'install' }, 'github_app');
+  p.accountId = accountId; p.at = Date.now();
+  return `https://github.com/apps/${j.slug}/installations/new?state=${encodeURIComponent(state)}`;
+}
+
+export function githubInstalled(app: App, state: string | undefined, installationId: string, userId: string): string {
+  const p = state ? fresh(state, userId) : undefined;
+  if (state) pending.delete(state);
+  // without our state (installed later from GitHub's side), the token code finds the install itself
+  if (p?.accountId && /^\d+$/.test(installationId)) run(app.db, `UPDATE accounts SET meta = json_remove(json_set(meta, '$.installationId', ?), '$.pending') WHERE id = ? AND org_id = ?`, Number(installationId), p.accountId, p.orgId);
+  return get<{ name: string }>(app.db, 'SELECT name FROM accounts WHERE id = ?', p?.accountId ?? '')?.name ?? 'GitHub';
+}
+
+// A one-hour install token for a GitHub App account (cached until five minutes before it expires).
+const ghTokens = new Map<string, { token: string; until: number }>();
+export async function githubAppToken(app: App, orgId: string, account: { id: string; meta: string }, secret: string): Promise<string> {
+  const hit = ghTokens.get(account.id);
+  if (hit && hit.until > Date.now()) return hit.token;
+  const s = JSON.parse(secret) as { app_id: number; pem: string };
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iat: now - 60, exp: now + 540, iss: String(s.app_id) })}`;
+  const jwt = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(s.pem).toString('base64url')}`;
+  const gh = (path: string, method = 'GET') => fetch(`https://api.github.com${path}`, { method, headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'user-agent': 'Unit7' }, signal: AbortSignal.timeout(20_000) });
+  let inst = json<{ installationId?: number }>(account.meta, {}).installationId;
+  if (!inst) {
+    const list = await (await gh('/app/installations')).json() as { id: number }[];
+    inst = Array.isArray(list) ? list[0]?.id : undefined;
+    if (!inst) throw new Unit7Error('github_not_installed', 'The Unit7 GitHub App isn’t installed on any repos yet. Open Connections and click Install on GitHub.', 409);
+    run(app.db, `UPDATE accounts SET meta = json_remove(json_set(meta, '$.installationId', ?), '$.pending') WHERE id = ? AND org_id = ?`, inst, account.id, orgId);
+  }
+  const r = await gh(`/app/installations/${inst}/access_tokens`, 'POST');
+  const j = await r.json().catch(() => ({})) as { token?: string; expires_at?: string; message?: string };
+  if (!r.ok || !j.token) throw new Unit7Error('github_token', `GitHub refused an install token: ${j.message ?? r.status}`, 502);
+  ghTokens.set(account.id, { token: j.token, until: Date.parse(j.expires_at ?? '') - 5 * 60_000 || Date.now() + 50 * 60_000 });
+  return j.token;
+}
+
+// Phone alerts: a private random ntfy topic for the alerts and a second one for the phone's answers, both kept in the
+// vault like any credential. Not "connected" yet: that waits until the phone shows a test arrived (sentinel/phone.ts),
+// and so do phone approvals. Asked again, it gives back the same topic, so the steps can be shown again.
+export function setupNtfy(app: App, orgId: string, byUserId?: string): { accountId: string; subscribeUrl: string } {
+  const had = get<{ id: string; meta: string }>(app.db, `SELECT id, meta FROM accounts WHERE org_id = ? AND provider = 'ntfy' ORDER BY created_at LIMIT 1`, orgId);
+  if (had) return { accountId: had.id, subscribeUrl: app.vault.resolve(orgId, json<{ ref: string }>(had.meta, { ref: '' }).ref) };
+  const url = newTopic('unit7-');
+  const { name, slug } = accountName(app, orgId, 'ntfy', 'Phone alerts');
+  const ref = makeRef('ntfy', slug, 'token'), accountId = id('acc');
+  run(app.db, `INSERT INTO accounts (id, org_id, provider, name, slug, meta) VALUES (?, ?, 'ntfy', ?, ?, ?)`, accountId, orgId, name, slug, JSON.stringify({ ref, auth: 'ntfy', ...(byUserId && { by: byUserId }) }));
+  app.vault.put(orgId, ref, url, { kind: 'api_token', accountId, by: 'phone alerts' });
+  ensureReplies(app, orgId, accountId);
+  app.events.emit(orgId, 'account.added', 'Phone alerts set up: waiting for your phone to get a test', { resource: accountId });
+  return { accountId, subscribeUrl: url };
+}
+
+// --- Google Cloud, Firebase, AWS, Azure with zero browser steps: their own CLI, signed in on this Mac ----------
+// The vault keeps which tool and which sign-in, never a token: each scan asks the tool for a fresh short-lived one.
+export const cloudClis = async () => Object.fromEntries((await Promise.all(Object.keys(TOOLS_FOR).map(async (id) => [id, (await cliFor(id))?.tool] as const)))
+  .filter(([, t]) => t).map(([id, t]) => [id, TOOL_LABEL[t!]]));
+// account: which of the tool's sign-ins (an email, a profile). Without one: the active sign-in, or else the first one
+// not connected yet. One already connected here is refused (an expired one is simply back in use).
+const WHAT: Record<string, string> = { gcp: 'Google account', firebase: 'Google account', aws: 'AWS profile', azure: 'Azure account' };
+const loginOf = (app: App, orgId: string, providerId: string, who: string) =>
+  get<{ id: string; name: string; status: string }>(app.db, `SELECT id, name, status FROM accounts WHERE org_id = ? AND provider = ? AND json_extract(meta, '$.auth') = 'cli' AND lower(json_extract(meta, '$.login')) = lower(?)`, orgId, providerId, who);
+export async function connectCloudCli(app: App, orgId: string, providerId: string, account?: string) {
+  const p = provider(providerId);
+  forgetSignedIn(); // a sign-in made a moment ago counts
+  const { signIns } = p ? await signInsFor(providerId) : { signIns: [] };
+  const found = account ? signIns.find((s) => s.who.toLowerCase() === account.toLowerCase())
+    : signIns.find((s) => s.active && !loginOf(app, orgId, providerId, s.who)) ?? signIns.find((s) => !loginOf(app, orgId, providerId, s.who)) ?? signIns[0];
+  if (!p || !found) throw new Unit7Error('cli_not_signed_in', account ? `${account} isn’t signed in on this Mac any more. Sign in again, or use a key.` : `Nothing is signed in to ${p?.name ?? providerId} on this Mac. Use a key instead, or sign in there first.`, 409);
+  const existing = loginOf(app, orgId, providerId, found.who);
+  if (existing?.status === 'verified') throw new Unit7Error('already_connected', `This ${WHAT[providerId] ?? 'account'} is already connected. Sign in with another one to add it.`, 409);
+  const secret = found.tool === 'aws' ? { cli: 'aws', profile: found.who } : found.tool === 'az' ? { cli: 'az', user: found.who, subscription: found.subscription } : { cli: found.tool, account: found.who };
+  if (existing) { // signed in again: back in use, on the sign-in found now
+    run(app.db, `UPDATE accounts SET status = 'verified', pause_until = NULL, meta = json_set(meta, '$.cli', ?) WHERE id = ?`, found.tool, existing.id);
+    app.vault.put(orgId, json<{ ref: string }>(get<{ meta: string }>(app.db, 'SELECT meta FROM accounts WHERE id = ?', existing.id)!.meta, { ref: '' }).ref, JSON.stringify(secret), { kind: 'cli_signin', accountId: existing.id, by: 'one-click sign-in' });
+    return { accountId: existing.id, name: existing.name };
+  }
+  return saveAccount(app, orgId, providerId, `${p.name} · ${found.who}`, JSON.stringify(secret), { auth: 'cli', cli: found.tool, login: found.who }, 'cli_signin');
+}
+
+// For the connect pop-up: every sign-in this Mac has for a tile (which are connected already), and how to add one:
+// 'browser' (gcloud's own sign-in, started from Unit7), or a command to run in Terminal.
+export async function cliSignIns(app: App, orgId: string, providerId: string) {
+  forgetSignedIn();
+  const { signIns, tools } = await signInsFor(providerId);
+  const login = tools.includes('gcloud') ? 'browser' : ({ firebase: 'firebase login:add', aws: 'aws configure sso', azure: 'az login', gcp: 'gcloud auth login' } as Record<string, string>)[providerId];
+  return { signIns: signIns.map((s) => ({ who: s.who, tool: TOOL_LABEL[s.tool], active: s.active, connected: loginOf(app, orgId, providerId, s.who)?.status === 'verified' })), login };
+}
+// "Sign in with another Google account" (Google Cloud and Firebase, through gcloud), then connect it
+export async function addCliSignIn(app: App, orgId: string, providerId: string) {
+  if (!['gcp', 'firebase'].includes(providerId)) throw new Unit7Error('use_terminal', 'Add the sign-in in Terminal, then come back.', 400);
+  const who = await addGoogleSignIn();
+  if (!who) return { added: null, ...(await cliSignIns(app, orgId, providerId)) }; // an account gcloud already had: pick it below
+  return { added: await connectCloudCli(app, orgId, providerId, who), ...(await cliSignIns(app, orgId, providerId)) };
+}

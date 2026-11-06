@@ -1,0 +1,497 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Unit7: a light grey canvas, white cards, ink for weight, royal blue to act, lime to celebrate. */
+:root {
+  --canvas: #e4e4e8;
+  --bg: #f3f3f5;
+  --surface: #ffffff;
+  --raised: #f1f1f4;
+  --sunken: #ebebef;
+  --line: rgb(16 16 22 / 0.07);
+  --line-strong: rgb(16 16 22 / 0.13);
+  --ink: #0e0e12;
+  --ink-2: #393941;
+  --muted: #5d5d67;
+  --faint: #6c6c76;
+  --blue: #1f5bff;
+  --blue-text: #1749d6;
+  --blue-soft: rgb(31 91 255 / 0.1);
+  --lime: #c6f432;
+  --lime-ink: #263300;
+  --lime-soft: rgb(198 244 50 / 0.28);
+  --ok: #15803d;
+  --ok-solid: #128540;
+  --warn: #b45309;
+  --bad: #dc2626;
+  --bad-solid: #dc2626;
+  --info: #1f5bff;
+  /* the old accent name: every page that says "ember" now gets the blue */
+  --ember: var(--blue);
+  --ember-soft: var(--blue-soft);
+  --shadow: 0 1px 2px rgb(16 16 24 / 0.04);
+  --shadow-lg: 0 24px 64px -16px rgb(16 16 24 / 0.22), 0 4px 14px rgb(16 16 24 / 0.06);
+  --lift: 0 14px 34px -14px rgb(16 16 24 / 0.2);
+  color-scheme: light;
+}
+.dark {
+  --canvas: #050506;
+  --bg: #0d0d10;
+  --surface: #17171b;
+  --raised: #222228;
+  --sunken: #111114;
+  --line: rgb(255 255 255 / 0.07);
+  --line-strong: rgb(255 255 255 / 0.13);
+  --ink: #f2f2f4;
+  --ink-2: #d2d2d8;
+  --muted: #a3a3ad;
+  --faint: #8c8c96;
+  --blue: #2f66ff;
+  --blue-text: #86a6ff;
+  --blue-soft: rgb(77 125 255 / 0.16);
+  --lime: #c6f432;
+  --lime-ink: #263300;
+  --lime-soft: rgb(198 244 50 / 0.14);
+  --ok: #4ade80;
+  --ok-solid: #128540;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --bad-solid: #dc2626;
+  --info: #86a6ff;
+  --ember: var(--blue);
+  --ember-soft: var(--blue-soft);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 24px 70px -12px rgb(0 0 0 / 0.7), 0 2px 10px rgb(0 0 0 / 0.4);
+  --lift: 0 16px 40px -14px rgb(0 0 0 / 0.8);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-blue: var(--blue);
+  --color-blue-text: var(--blue-text);
+  --color-blue-soft: var(--blue-soft);
+  --color-lime: var(--lime);
+  --color-lime-ink: var(--lime-ink);
+  --color-lime-soft: var(--lime-soft);
+  --color-ember: var(--ember);
+  --color-ember-soft: var(--ember-soft);
+  --color-ok: var(--ok);
+  --color-ok-solid: var(--ok-solid);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-bad-solid: var(--bad-solid);
+  --color-info: var(--info);
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
+  --shadow-soft: var(--shadow);
+  --shadow-float: var(--shadow-lg);
+  --shadow-lift: var(--lift);
+  --ease-out-soft: cubic-bezier(0.22, 0.75, 0.2, 1);
+}
+
+/* base rules live in the base layer, so any utility on an element still wins */
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  ::selection { background: var(--blue-soft); }
+  /* the outline follows each element's own corners: round on pills, soft on cards */
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+}
+
+/* motion: things arrive, rise a little, then stay put */
+@keyframes pulse-dot { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+@keyframes fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes shimmer { 0% { background-position: -200% 0 } 100% { background-position: 200% 0 } }
+@keyframes grow { from { transform: scaleY(0.04) } to { transform: none } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(0.98) } to { opacity: 1; transform: none } }
+@keyframes drawer-in { from { transform: translateX(24px); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes gauge-in { from { stroke-dasharray: 0 100 } }
+@keyframes sheet-in { from { transform: translateY(24px); opacity: 0 } to { transform: none; opacity: 1 } }
+.animate-working { animation: pulse-dot 1.2s ease-in-out infinite; }
+.animate-rise { animation: rise 0.42s var(--ease-out-soft) both; }
+.animate-pop { animation: pop-in 0.22s var(--ease-out-soft) both; }
+.animate-grow { animation: grow 0.7s var(--ease-out-soft) both; transform-origin: bottom; }
+.stagger > * { animation: rise 0.5s var(--ease-out-soft) both; }
+.stagger > :nth-child(2) { animation-delay: 50ms } .stagger > :nth-child(3) { animation-delay: 100ms }
+.stagger > :nth-child(4) { animation-delay: 150ms } .stagger > :nth-child(5) { animation-delay: 200ms }
+.stagger > :nth-child(6) { animation-delay: 250ms } .stagger > :nth-child(7) { animation-delay: 300ms }
+.stagger > :nth-child(8) { animation-delay: 350ms } .stagger > :nth-child(n+9) { animation-delay: 400ms }
+@keyframes wave { 0%, 100% { transform: rotate(0) } 25% { transform: rotate(16deg) } 50% { transform: rotate(-8deg) } 75% { transform: rotate(12deg) } }
+
+@layer components {
+  .tabular { font-variant-numeric: tabular-nums; }
+  .skeleton {
+    background: linear-gradient(90deg, var(--raised) 25%, var(--sunken) 50%, var(--raised) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s linear infinite;
+    border-radius: 16px;
+  }
+  /* clickable cards lift a touch */
+  .lift { transition: transform 0.25s var(--ease-out-soft), box-shadow 0.25s var(--ease-out-soft); }
+  .lift:hover { transform: translateY(-2px); box-shadow: var(--lift); }
+  /* Home's quick actions: a pastel per card, a touch deeper in dark mode */
+  .quick { background: var(--q); }
+  .dark .quick { background: var(--qd); }
+  /* the "nothing here" stripes on chart bars */
+  .hatch { background-image: repeating-linear-gradient(135deg, var(--line-strong) 0 1.5px, transparent 1.5px 7px); }
+}
+
+dialog::backdrop { background: rgb(10 10 14 / 0.4); backdrop-filter: blur(3px); animation: fade 0.2s ease-out; }
+dialog[open] { animation: pop-in 0.24s var(--ease-out-soft); }
+dialog.drawer[open] { animation: drawer-in 0.3s var(--ease-out-soft); }
+@media (max-width: 639px) { dialog.drawer[open] { animation-name: sheet-in; } }
+
+/* Warden: a round face badge. Blinks, the visor glow breathes, pops when something happens. */
+.warden-face * { transform-box: view-box; }
+.warden-eyes { animation: warden-blink 4.6s infinite; transform-origin: 24px 26.2px; }
+.warden-glow { animation: warden-glow 3.2s ease-in-out infinite; }
+.warden-pop { animation: warden-pop 0.5s ease-out 2; }
+@keyframes warden-blink { 0%, 93%, 100% { transform: scaleY(1) } 95% { transform: scaleY(0.1) } }
+@keyframes warden-glow { 0%, 100% { opacity: 0.15 } 50% { opacity: 0.45 } }
+@keyframes warden-pop { 0%, 100% { transform: scale(1) } 40% { transform: scale(1.12) } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after, dialog[open], dialog::backdrop { animation: none !important; transition-duration: 0.01ms !important; }
+  .lift:hover { transform: none; }
+}
+
+/* the Home chat: the greeting shrinks away, your message pops in, the rail slides in, the sparkle breathes */
+@keyframes hero-out { to { opacity: 0; transform: translateY(-18px) scale(0.96); filter: blur(2px) } }
+@keyframes bubble-in { from { opacity: 0; transform: translateY(10px) scale(0.94) } to { opacity: 1; transform: none } }
+@keyframes rail-in { from { opacity: 0; transform: translateX(-10px) } to { opacity: 1; transform: none } }
+@keyframes sparkle { 0%, 100% { transform: rotate(0) scale(1) } 50% { transform: rotate(8deg) scale(1.06) } }
+
+/* --- AI actions (AiButton, AiSparkle and .ai-ring in ui.tsx) ------------------------------------------------
+   Anything the AI does for you gets one look: a gradient ring that turns slowly, a sparkle that twinkles, a soft
+   glow and a light sweep on hover. .ai-btn-strong is the filled one, for the main next step. Under reduced
+   motion the rule above stops it all, and it stays a calm static gradient. */
+@property --ai-turn { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+:root { --ai-1: #1f5bff; --ai-2: #7c4dff; --ai-3: #d16bf5; --ai-4: #26b5f0; --ai-tint: rgb(124 77 255 / 0.07); --ai-glow: rgb(98 77 255 / 0.42); }
+.dark { --ai-1: #4d7cff; --ai-2: #9a7bff; --ai-3: #e08cff; --ai-4: #4cc9f7; --ai-tint: rgb(154 123 255 / 0.13); --ai-glow: rgb(124 104 255 / 0.5); }
+@keyframes ai-turn { to { --ai-turn: 360deg } }
+@keyframes ai-drift { 0%, 100% { background-position: 0% 50% } 50% { background-position: 100% 50% } }
+@keyframes ai-shine { from { background-position: 150% 0 } to { background-position: -60% 0 } }
+@keyframes ai-twinkle { 0%, 100% { transform: scale(1) rotate(0); opacity: 1 } 50% { transform: scale(0.84) rotate(-10deg); opacity: 0.8 } }
+@keyframes ai-twinkle-sm { 0%, 35%, 100% { transform: scale(0.5); opacity: 0.25 } 55% { transform: scale(1.1); opacity: 1 } 75% { transform: scale(0.7); opacity: 0.6 } }
+@keyframes ai-ping { 0% { box-shadow: 0 0 0 0 var(--ai-glow) } 100% { box-shadow: 0 0 0 7px rgb(124 77 255 / 0) } }
+@layer components {
+  .ai-btn {
+    position: relative; isolation: isolate; overflow: hidden;
+    color: var(--ink);
+    border: 1.5px solid transparent;
+    background:
+      linear-gradient(120deg, var(--ai-tint), transparent 70%) padding-box,
+      linear-gradient(var(--surface), var(--surface)) padding-box,
+      conic-gradient(from var(--ai-turn), var(--ai-1), var(--ai-2), var(--ai-3), var(--ai-4), var(--ai-1)) border-box;
+    box-shadow: 0 6px 18px -12px var(--ai-glow);
+    animation: ai-turn 7s linear infinite;
+    transition: box-shadow 0.3s var(--ease-out-soft), transform 0.15s;
+  }
+  .ai-btn:hover { box-shadow: 0 0 0 4px var(--ai-tint), 0 10px 26px -10px var(--ai-glow); }
+  .ai-btn::after {
+    content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
+    background: linear-gradient(105deg, transparent 30%, rgb(124 77 255 / 0.14) 47%, rgb(38 181 240 / 0.12) 53%, transparent 70%) no-repeat;
+    background-size: 220% 100%; background-position: 150% 0;
+  }
+  .ai-btn:hover::after { animation: ai-shine 1.2s var(--ease-out-soft); }
+  .ai-btn-strong {
+    color: #fff;
+    background: linear-gradient(115deg, #1f5bff, #5a4bff 35%, #7c4dff 55%, #2a5cff 80%, #1f5bff) border-box;
+    background-size: 260% 100%;
+    animation: ai-drift 9s ease-in-out infinite;
+    box-shadow: 0 8px 22px -10px rgb(77 70 255 / 0.6), inset 0 1px 0 rgb(255 255 255 / 0.2);
+  }
+  .ai-btn-strong:hover { box-shadow: 0 0 0 4px rgb(124 77 255 / 0.16), 0 12px 28px -10px rgb(77 70 255 / 0.75), inset 0 1px 0 rgb(255 255 255 / 0.2); }
+  .ai-btn-strong::after { background-image: linear-gradient(105deg, transparent 30%, rgb(255 255 255 / 0.3) 50%, transparent 70%); }
+  .ai-btn-strong .ai-spark path { fill: currentColor; }
+  .ai-spark path { transform-box: fill-box; transform-origin: center; }
+  .ai-spark .ai-spark-a { animation: ai-twinkle 3.2s ease-in-out infinite; }
+  .ai-spark .ai-spark-b { animation: ai-twinkle-sm 3.2s ease-in-out 0.5s infinite; }
+  .ai-spark .ai-spark-c { animation: ai-twinkle-sm 3.2s ease-in-out 1.6s infinite; }
+  .ai-spark.ai-still path { animation: none; }
+  /* a card that hands off to the AI: the same ring, on hover and keyboard focus */
+  .ai-ring::before {
+    content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none; border-radius: inherit; padding: 1.5px;
+    background: conic-gradient(from var(--ai-turn), var(--ai-1), var(--ai-2), var(--ai-3), var(--ai-4), var(--ai-1));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+    opacity: 0; transition: opacity 0.35s var(--ease-out-soft); animation: ai-turn 7s linear infinite;
+  }
+  .ai-ring:hover::before, .ai-ring:focus-visible::before { opacity: 1; }
+  /* the AI's logo while it works: a soft ring breathes out of it */
+  .ai-ping { border-radius: 9999px; animation: ai-ping 1.6s ease-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) { .ai-btn::after { display: none; } }
+
+/* --- Home's small details: a sky that drifts behind the greeting, quick cards that tilt toward the pointer, the
+   send arrow taking off, dots that hop while the AI works, an "all clear" burst. */
+@keyframes sky-drift { 0%, 100% { transform: translate3d(0, 0, 0) scale(1) } 50% { transform: translate3d(var(--dx, 4%), var(--dy, 3%), 0) scale(1.08) } }
+@keyframes star-twinkle { 0%, 100% { opacity: 0.15 } 50% { opacity: 0.85 } }
+@keyframes send-fly { 0% { transform: none } 42% { transform: translate(55%, -150%) rotate(10deg); opacity: 0 } 43% { transform: translateY(150%); opacity: 0 } 100% { transform: none; opacity: 1 } }
+@keyframes send-ring { from { box-shadow: 0 0 0 0 rgb(31 91 255 / 0.5) } to { box-shadow: 0 0 0 12px rgb(31 91 255 / 0) } }
+@keyframes dot-hop { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5 } 30% { transform: translateY(-4px); opacity: 1 } }
+@keyframes float-y { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-5px) } }
+@keyframes burst { 0% { transform: rotate(var(--a)) translateY(-6px) scale(0.3); opacity: 0 } 30% { opacity: 1 } 100% { transform: rotate(var(--a)) translateY(-38px) scale(1); opacity: 0 } }
+@layer components {
+  .sky-blob { position: absolute; border-radius: 9999px; filter: blur(52px); animation: sky-drift var(--t, 22s) ease-in-out infinite; }
+  .sky-star { position: absolute; width: 3px; height: 3px; border-radius: 9999px; background: currentColor; animation: star-twinkle var(--t, 3s) ease-in-out infinite; }
+  .quick-tilt {
+    transform: perspective(800px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(var(--ty, 0px));
+    transition: transform 0.3s var(--ease-out-soft), box-shadow 0.3s var(--ease-out-soft);
+  }
+  .quick-tilt:hover { --ty: -4px; box-shadow: var(--lift); }
+  .quick-tilt img {
+    transform: translate3d(calc(var(--px, 0) * 12px), calc(var(--py, 0) * 9px), 0) rotate(var(--rot, 0deg)) scale(var(--sc, 1));
+    transition: transform 0.45s var(--ease-out-soft);
+  }
+  .quick-tilt:hover img { --rot: -3deg; --sc: 1.07; }
+  .quick-tilt::after {
+    content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; border-radius: inherit;
+    background: radial-gradient(circle at var(--mx, 50%) var(--my, 0%), rgb(255 255 255 / 0.5), transparent 55%);
+    opacity: 0; transition: opacity 0.3s;
+  }
+  .quick-tilt:hover::after { opacity: 1; }
+  .send-fly svg { animation: send-fly 0.55s var(--ease-out-soft); }
+  .send-fly { animation: send-ring 0.6s ease-out; }
+  .hop { animation: dot-hop 1.15s ease-in-out infinite; }
+  .float-y { animation: float-y 4s ease-in-out infinite; }
+  .burst > i { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 9999px; animation: burst 0.9s var(--ease-out-soft) both; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quick-tilt, .quick-tilt img { transform: none !important; }
+  .burst { display: none; }
+}
+
+/* --- polish: toasts that count down, the 7 that assembles, pages that cross-fade -------------------------------------
+   A toast's thin line runs out over its life (it pauses while you hover it). The mark's blue bar slides in, the lime
+   stroke draws down, a glint passes, once. Page changes cross-fade with a small rise (View Transitions, where the
+   browser has them). Reduced motion: no line, a still mark, instant pages. */
+@keyframes toast-life { from { transform: scaleX(1) } to { transform: scaleX(0) } }
+.toast-life { animation: toast-life linear both; }
+@keyframes mark-bar { from { transform: translateX(-62%); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes mark-stroke { from { clip-path: inset(0 0 100% 0) } to { clip-path: inset(0 0 0 0) } }
+@keyframes mark-glint { 0% { transform: translateX(-140%) skewX(-18deg); opacity: 0 } 30% { opacity: 0.9 } 100% { transform: translateX(240%) skewX(-18deg); opacity: 0 } }
+@keyframes mark-settle { 0% { transform: scale(0.86) } 60% { transform: scale(1.04) } 100% { transform: none } }
+.mark-anim { animation: mark-settle 0.62s var(--ease-out-soft) both; }
+.mark-anim .mark-bar { animation: mark-bar 0.18s var(--ease-out-soft) 0.06s both; }
+.mark-anim .mark-stroke { animation: mark-stroke 0.22s cubic-bezier(0.3, 0.7, 0.3, 1) 0.24s both; }
+.mark-anim .mark-glint { animation: mark-glint 0.55s ease-out 0.5s both; }
+.mark-anim * { transform-box: fill-box; }
+main { view-transition-name: page; }
+::view-transition-old(root), ::view-transition-new(root), ::view-transition-group(page) { animation: none; }
+::view-transition-old(page) { animation: 0.12s ease-in both fade reverse; }
+::view-transition-new(page) { animation: 0.2s var(--ease-out-soft) both rise-sm; }
+@keyframes rise-sm { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+@media (prefers-reduced-motion: reduce) {
+  .toast-life { display: none; }
+  ::view-transition-old(page), ::view-transition-new(page) { animation: none !important; }
+}
+
+/* --- the pop-up (Modal in ui.tsx) and hover cards (HoverCard) ---------------------------------------------------------
+   The pop-up scales up from 0.96 and fades in over a blurred backdrop; on phones a sheet rises from the bottom. It goes
+   out a touch faster than it came. A hover card fades in and rises a few pixels. Reduced motion: the pop-up only fades
+   (both ways) and the hover card just appears. */
+@keyframes modal-in { from { opacity: 0; transform: scale(0.96) } to { opacity: 1; transform: none } }
+@keyframes modal-out { to { opacity: 0; transform: scale(0.97) } }
+@keyframes modal-sheet-in { from { transform: translateY(100%) } to { transform: none } }
+@keyframes modal-sheet-out { to { transform: translateY(100%) } }
+@keyframes fade-out { to { opacity: 0 } }
+@keyframes card-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+dialog.modal::backdrop { background: rgb(10 10 14 / 0.36); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); animation: fade 0.18s ease-out; }
+dialog.modal[open] { animation: modal-in 0.18s var(--ease-out-soft); }
+dialog.modal.closing { animation: modal-out 0.16s ease-in forwards; }
+dialog.modal.closing::backdrop { animation: fade-out 0.16s ease-in forwards; }
+@media (max-width: 639px) {
+  dialog.modal[open] { animation: modal-sheet-in 0.28s var(--ease-out-soft); }
+  dialog.modal.closing { animation: modal-sheet-out 0.16s ease-in forwards; }
+}
+.hovercard { animation: card-in 0.16s var(--ease-out-soft); }
+@media (prefers-reduced-motion: reduce) {
+  dialog.modal[open], dialog.modal[open]::backdrop { animation: fade 0.18s ease-out !important; }
+  dialog.modal.closing, dialog.modal.closing::backdrop { animation: fade-out 0.16s ease-in forwards !important; }
+}
+
+/* --- Connections: a count that pops when an account is added (with a ring that ripples out), and the check of the
+   "Connected" moment springing in. Reduced motion: they just appear. */
+@keyframes count-pop { 0% { transform: scale(0.5) } 55% { transform: scale(1.28) } 100% { transform: none } }
+@keyframes count-ring { from { box-shadow: 0 0 0 0 rgb(18 133 64 / 0.5) } to { box-shadow: 0 0 0 12px rgb(18 133 64 / 0) } }
+@keyframes check-pop { 0% { transform: scale(0.4) rotate(-12deg); opacity: 0 } 60% { transform: scale(1.12); opacity: 1 } 100% { transform: none } }
+.count-pop { animation: count-pop 0.5s var(--ease-out-soft), count-ring 0.8s ease-out; }
+.check-pop { animation: check-pop 0.45s var(--ease-out-soft) both; }
+
+/* --- status marks (StatusMark in ui.tsx) -------------------------------------------------------------------------------
+   A soft gradient ring around a glyph that draws itself once: lime → green fine, amber needs a look, red broken, blue
+   working, grey not yet. Live and working breathe a soft glow. A changed state cross-fades its glyph and slides the ring's
+   colours. Reduced motion: the global rule stops every animation, and since the drawn state is the resting one, it simply
+   shows drawn and still. */
+@keyframes smark-draw { from { stroke-dashoffset: 1 } to { stroke-dashoffset: 0 } }
+@keyframes smark-out { to { opacity: 0; transform: scale(0.5) } }
+@keyframes smark-pop { 0% { transform: scale(0.4) } 60% { transform: scale(1.08) } 100% { transform: none } }
+@keyframes smark-spin { to { transform: rotate(270deg) } }
+@keyframes smark-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--m2) 0%, transparent) }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--m2) 18%, transparent), 0 0 12px 1px color-mix(in srgb, var(--m2) 38%, transparent) }
+}
+@layer components {
+  .smark { --m1: #c6f432; --m2: #16a34a; --mg: var(--ok); --mi: #14290a; position: relative; display: inline-grid; place-items: center; flex-shrink: 0; border-radius: 9999px; }
+  .smark svg { overflow: visible; }
+  .smark * { transform-box: fill-box; transform-origin: center; }
+  .smark-warn { --m1: #fcd34d; --m2: #f97316; --mg: var(--warn); --mi: #3b1d00; }
+  .smark-bad { --m1: #fb7185; --m2: #dc2626; --mg: var(--bad); --mi: #fff; }
+  .smark-work { --m1: #26b5f0; --m2: #1f5bff; --mg: var(--blue-text); --mi: #fff; }
+  .smark-off { --m1: var(--line-strong); --m2: var(--line-strong); --mg: var(--faint); }
+  .smark-s1 { stop-color: var(--m1); transition: stop-color 0.45s var(--ease-out-soft); }
+  .smark-s2 { stop-color: var(--m2); transition: stop-color 0.45s var(--ease-out-soft); }
+  .smark-fill { fill: color-mix(in srgb, var(--m2) 13%, var(--surface)); transition: fill 0.45s var(--ease-out-soft); }
+  .smark-off .smark-fill { fill: transparent; }
+  .smark-ring { fill: none; stroke-width: 2; stroke-linecap: round; stroke-dasharray: 1; transform: rotate(-90deg); animation: smark-draw 0.5s var(--ease-out-soft) both; }
+  .smark-glyph { fill: none; stroke: var(--mg); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; animation: smark-draw 0.36s cubic-bezier(0.3, 0.7, 0.3, 1) 0.2s both; }
+  .smark-out { animation: smark-out 0.26s ease-in forwards; }
+  .smark-off .smark-glyph { stroke-width: 3.4; }
+  .smark-work .smark-glyph { stroke-width: 4.2; }
+  .smark-work .smark-ring { stroke-dasharray: 0.62 0.38; animation: smark-spin 1.15s linear infinite; }
+  .smark-live, .smark-work { animation: smark-breathe 2.8s ease-in-out infinite; }
+  /* the filled disc for the big moments: the disc pops, then the glyph draws in its dark (or white) ink */
+  .smark-solid.smark-ok, .smark-solid.smark-live { --m2: #22c55e; }
+  .smark-solid { box-shadow: 0 10px 26px -10px color-mix(in srgb, var(--m2) 70%, transparent); }
+  .smark-solid.smark-bad { --m1: #ef4444; --m2: #b91c1c; }
+  .smark-solid .smark-fill { animation: smark-pop 0.5s var(--ease-out-soft) both; }
+  .smark-solid .smark-glyph { stroke: var(--mi); stroke-width: 2.4; animation-delay: 0.28s; }
+}
+
+/* --- Connections tiles: the provider's own colour as a faint tint on hover (--brand, from its logo), a light sheen
+   that sweeps once, and a small celebration when an account connects. Reduced motion: the tint stays, nothing sweeps. */
+@keyframes ctile-sheen { from { background-position: 160% 0 } to { background-position: -60% 0 } }
+@keyframes ctile-pop { 0% { box-shadow: 0 0 0 0 rgb(163 230 53 / 0.55) } 35% { transform: scale(1.025) } 100% { box-shadow: 0 0 0 16px rgb(163 230 53 / 0); transform: none } }
+@layer components {
+  .ctile { isolation: isolate; }
+  .ctile::before {
+    content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
+    background: radial-gradient(130% 100% at 0% 0%, color-mix(in srgb, var(--brand, var(--blue)) 13%, transparent), transparent 62%);
+    opacity: 0; transition: opacity 0.35s var(--ease-out-soft);
+  }
+  .ctile::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+    background: linear-gradient(105deg, transparent 38%, rgb(255 255 255 / 0.5) 50%, transparent 62%) no-repeat;
+    background-size: 260% 100%; background-position: 160% 0;
+  }
+  .dark .ctile::after { background-image: linear-gradient(105deg, transparent 38%, rgb(255 255 255 / 0.06) 50%, transparent 62%); }
+  .ctile:hover::before, .ctile:focus-within::before { opacity: 1; }
+  .ctile:hover::after { animation: ctile-sheen 1.1s var(--ease-out-soft); }
+  .ctile-pop { animation: ctile-pop 0.8s var(--ease-out-soft); }
+  /* "Connect": an outlined pill that fills in when you point at its tile */
+  .connect-pill { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-2); transition: background 0.2s, color 0.2s, border-color 0.2s; }
+  .ctile:hover .connect-pill, .connect-pill:hover, .connect-pill:focus-visible { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+}
+
+/* --- Warden, calmer: a slower blink, a glance side to side every twenty seconds or so, a gentle bob while it works, and
+   a speech bubble that pops out of the badge (its tail points at it). Reduced motion: all still, the bubble just shows. */
+@keyframes warden-look { 0%, 84%, 100% { transform: none } 86%, 89% { transform: translateX(-2.2px) } 92%, 95% { transform: translateX(2.2px) } 97% { transform: none } }
+@keyframes warden-bob { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-1.5px) } }
+@keyframes warden-bubble { from { opacity: 0; transform: translate(10px, 12px) scale(0.82) } to { opacity: 1; transform: none } }
+.warden-face .warden-eyes { animation-duration: 6.4s; }
+.warden-look { animation: warden-look 21s ease-in-out 4s infinite; }
+.warden-bob { animation: warden-bob 2.2s ease-in-out infinite; }
+.warden-bubble { transform-origin: 100% 100%; animation: warden-bubble 0.32s var(--ease-out-soft) both; }
+.warden-bubble::after {
+  content: ''; position: absolute; right: 10px; bottom: -6px; width: 11px; height: 11px; rotate: 45deg;
+  background: var(--surface); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); border-bottom-right-radius: 3px;
+}
+
+/* --- Approvals: a decided card folds down into a one-line receipt while its check draws in. Reduced motion: the line
+   is just there. */
+@keyframes approve-fold { 0% { padding-block: var(--fold, 96px); opacity: 0.5 } 60% { opacity: 1 } 100% { opacity: 1 } }
+.approve-fold { animation: approve-fold 0.55s var(--ease-out-soft) both; }
+
+/* --- section icons with a soft gradient (IconCircle tone="grad"): blue into violet into a touch of lime */
+@layer components {
+  .icon-grad {
+    background: linear-gradient(140deg, rgb(31 91 255 / 0.14), rgb(124 77 255 / 0.11) 55%, rgb(198 244 50 / 0.34));
+    color: var(--blue-text);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.75), inset 0 0 0 1px rgb(31 91 255 / 0.08), 0 6px 14px -10px rgb(31 91 255 / 0.5);
+  }
+  .dark .icon-grad {
+    background: linear-gradient(140deg, rgb(77 125 255 / 0.3), rgb(154 123 255 / 0.2) 55%, rgb(198 244 50 / 0.16));
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08), inset 0 0 0 1px rgb(255 255 255 / 0.06);
+  }
+}
+
+/* --- 3D illustrations (Illustration in ui.tsx): still at rest, a gentle float while it or its card is hovered.
+   Reduced motion: the global rule above stops it. */
+@layer components {
+  .illo:hover, .illo-host:hover .illo { animation: float-y 3.2s ease-in-out infinite; }
+}
+
+/* --- the server page's header card (.srv-head, data-tone from its health): a faint wash in the corners and a dot grid
+   that fades out from behind the rings, both tinted by health (green when it's fine, amber when something needs a look,
+   red when it isn't answering, blue while it's being set up). "Add a tool" is a lime pill (.tool-btn) with a small raised
+   tile for its icon (.tool-3d) that straightens up and a light that sweeps across on hover. Reduced motion: the global
+   rule stops the sweep and the movement. */
+@layer components {
+  .srv-head { position: relative; isolation: isolate; --wash: transparent; --wash-2: transparent; --dots: rgb(16 16 22 / 0.09); }
+  .srv-head[data-tone='ok'] { --wash: rgb(18 133 64 / 0.075); --wash-2: rgb(198 244 50 / 0.2); --dots: rgb(18 133 64 / 0.2); }
+  .srv-head[data-tone='warn'] { --wash: rgb(245 158 11 / 0.12); --wash-2: rgb(251 191 36 / 0.12); --dots: rgb(180 83 9 / 0.22); }
+  .srv-head[data-tone='bad'] { --wash: rgb(220 38 38 / 0.075); --wash-2: rgb(248 113 113 / 0.08); --dots: rgb(220 38 38 / 0.18); }
+  .srv-head[data-tone='info'] { --wash: rgb(31 91 255 / 0.07); --wash-2: rgb(124 77 255 / 0.07); --dots: rgb(31 91 255 / 0.18); }
+  .dark .srv-head { --dots: rgb(255 255 255 / 0.07); }
+  .dark .srv-head[data-tone='ok'] { --wash: rgb(74 222 128 / 0.07); --wash-2: rgb(198 244 50 / 0.06); --dots: rgb(74 222 128 / 0.15); }
+  .dark .srv-head[data-tone='warn'] { --wash: rgb(251 191 36 / 0.09); --wash-2: rgb(245 158 11 / 0.06); --dots: rgb(251 191 36 / 0.17); }
+  .dark .srv-head[data-tone='bad'] { --wash: rgb(248 113 113 / 0.09); --wash-2: rgb(248 113 113 / 0.05); --dots: rgb(248 113 113 / 0.15); }
+  .dark .srv-head[data-tone='info'] { --wash: rgb(77 125 255 / 0.1); --wash-2: rgb(154 123 255 / 0.07); --dots: rgb(134 166 255 / 0.15); }
+  .srv-head::before, .srv-head::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; }
+  .srv-head::before { background: radial-gradient(55% 130% at 100% 0%, var(--wash), transparent 72%), radial-gradient(36% 110% at 0% 0%, var(--wash-2), transparent 70%); }
+  .srv-head::after {
+    background-image: radial-gradient(circle, var(--dots) 1px, transparent 1.5px); background-size: 14px 14px; background-position: right 7px top 7px;
+    -webkit-mask-image: radial-gradient(46% 115% at 100% 0%, #000 10%, transparent 80%); mask-image: radial-gradient(46% 115% at 100% 0%, #000 10%, transparent 80%);
+  }
+  .tool-btn {
+    position: relative; isolation: isolate; overflow: hidden; color: var(--lime-ink);
+    background: linear-gradient(135deg, #dcfc6a 0%, var(--lime) 48%, #b2e82a 100%);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.6), inset 0 -2px 0 rgb(38 51 0 / 0.12), 0 0 0 1px rgb(38 51 0 / 0.1), 0 10px 22px -12px rgb(92 128 0 / 0.8);
+    transition: transform 0.2s var(--ease-out-soft), box-shadow 0.3s var(--ease-out-soft);
+  }
+  .dark .tool-btn { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.5), inset 0 -2px 0 rgb(38 51 0 / 0.16), 0 10px 26px -12px rgb(198 244 50 / 0.45); }
+  .tool-btn:hover { transform: translateY(-1px); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.6), inset 0 -2px 0 rgb(38 51 0 / 0.12), 0 0 0 4px var(--lime-soft), 0 14px 26px -12px rgb(92 128 0 / 0.9); }
+  .tool-btn:active { transform: scale(0.98); }
+  .tool-btn::after {
+    content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
+    background: linear-gradient(105deg, transparent 30%, rgb(255 255 255 / 0.55) 50%, transparent 70%) no-repeat; background-size: 220% 100%; background-position: 150% 0;
+  }
+  .tool-btn:hover::after { animation: ai-shine 1.1s var(--ease-out-soft); }
+  .tool-3d {
+    color: var(--blue); background: linear-gradient(160deg, #ffffff 0%, #f1f4ff 55%, #dbe4ff 100%);
+    box-shadow: inset 0 1px 0 #fff, inset 0 -2.5px 0 rgb(31 91 255 / 0.18), 0 4px 8px -3px rgb(38 51 0 / 0.45);
+    transform: rotate(-7deg); transition: transform 0.35s var(--ease-out-soft);
+  }
+  .tool-btn:hover .tool-3d, .tool-btn:focus-visible .tool-3d { transform: translateY(-1px) scale(1.06); }
+}
+
+/* --- the recommended choice (pages/choices): the strong AI button, with a gentle light that sweeps across it every
+   few seconds so it reads as "this one". Still under reduced motion (the rule above stops the sweep). */
+@keyframes choice-sweep { 0% { background-position: 150% 0 } 32%, 100% { background-position: -60% 0 } }
+@layer components {
+  .choice-rec::after { animation: choice-sweep 4.6s var(--ease-out-soft) 0.6s infinite; }
+}
+@media (prefers-reduced-motion: reduce) { .choice-rec, .choice-rec::after { animation: none !important; } }
