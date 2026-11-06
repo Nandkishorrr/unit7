@@ -30,6 +30,8 @@ const SHAPES: [RegExp, string][] = [
   [/\btk_[a-z0-9]{29}\b/g, 'ntfy token'],
   [/\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}\b/g, 'resend key'],
   [/\bsk-or-v1-[a-f0-9]{40,}\b/g, 'openrouter key'],
+  [/\bpscale_tkn_[A-Za-z0-9_-]{20,}/g, 'planetscale token'],
+  [/\bsntry[us]_[A-Za-z0-9_-]{20,}/g, 'sentry token'],
 ];
 // scheme://user:PASSWORD@host — keep everything but the password
 const URL_PASSWORD = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]*:)([^\s@/]+)(@)/gi;

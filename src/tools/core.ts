@@ -14,7 +14,7 @@ import { hostinger } from '../connectors/hostinger.ts';
 import { keptMarks } from '../kept.ts';
 import { foundProjects } from './xray.ts';
 
-export const PROVIDERS = ['ssh', 'smtp', 'stripe', 'generic', 'coolify', ...CATALOG.map((p) => p.id)] as [string, ...string[]];
+export const PROVIDERS = ['ssh', 'smtp', 'generic', 'coolify', ...CATALOG.map((p) => p.id)] as [string, ...string[]];
 const ENV_KINDS = ['development', 'staging', 'production', 'custom'] as const;
 const ruleSchema = z.record(z.string().regex(/^[a-z_]+$/), z.enum(['allowed', 'restricted', 'prohibited']));
 

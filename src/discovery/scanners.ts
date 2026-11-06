@@ -12,6 +12,7 @@ import { vercel, supabase, neon, SUPABASE_API } from '../connectors/clouds.ts';
 import { fileText, githubToken, parseRepo } from '../connectors/github.ts';
 import { rest, gd, GODADDY, pb, PORKBUN, nc, NAMECOM } from '../connectors/dnswrite.ts';
 import { netlify, render, railway, digitalocean, heroku, fly, hostOf } from '../connectors/hosts.ts';
+import { stripe, resend, sentry, planetscale, turso, upstash, type StripeEndpoint } from '../connectors/services.ts';
 import { envRefs, domainKey, type Found, type Ref } from './model.ts';
 import { xrayFound } from './xray.ts';
 import { lastXray, runXray } from '../tools/xray.ts';
@@ -139,6 +140,47 @@ export const SCANNERS: Record<string, Scanner> = {
   async neon(ctx, acc) {
     const found = await pool(await neon.projects(ctx, acc), 4, async (p): Promise<Found> => ({ provider: 'neon', kind: 'database', extId: p.id, name: p.name, accountId: acc, url: `https://console.neon.tech/app/projects/${p.id}`,
       hosts: await neon.hosts(ctx, acc, p.id).catch(or([])), end: { kind: 'neon', accountId: acc, project: p.id }, platform: 'neon' }));
+    return { found, refs: [] };
+  },
+
+  // --- PlanetScale, Turso, Upstash: databases. A setting that holds one's address draws the line to it -----
+  async planetscale(ctx, acc) {
+    return { found: (await planetscale.databases(ctx, acc)).map((d): Found => ({ provider: 'planetscale', kind: 'database', extId: `${d.org}/${d.name}`, name: d.name, accountId: acc, url: d.html_url ?? `https://app.planetscale.com/${d.org}/${d.name}`,
+      status: d.state, engine: d.kind === 'postgresql' ? 'postgres' : 'mysql', platform: 'planetscale' })), refs: [] };
+  },
+  async turso(ctx, acc) {
+    return { found: (await turso.databases(ctx, acc)).flatMap((d): Found[] => {
+      const name = d.Name ?? d.name, host = d.Hostname ?? d.hostname;
+      return name ? [{ provider: 'turso', kind: 'database', extId: d.DbId ?? d.id ?? name, name, accountId: acc, ...(d.org && { url: `https://app.turso.tech/${d.org}/databases/${name}` }), ...(host && { hosts: [host.toLowerCase()] }), ...(d.block_reads && { status: 'paused' }), engine: 'sqlite', platform: 'turso' }] : [];
+    }), refs: [] };
+  },
+  async upstash(ctx, acc) {
+    return { found: (await upstash.databases(ctx, acc)).flatMap((d): Found[] => {
+      const id = d.database_id ?? d.id, name = d.database_name ?? d.name, host = d.endpoint && (d.endpoint.includes('.') ? d.endpoint : `${d.endpoint}.upstash.io`);
+      return id && name ? [{ provider: 'upstash', kind: 'database', extId: id, name, accountId: acc, url: `https://console.upstash.com/redis/${id}`, ...(host && { hosts: [host.toLowerCase()] }), status: d.state, engine: 'redis', platform: 'upstash' }] : [];
+    }), refs: [] };
+  },
+
+  // --- Stripe, Resend, Sentry: services an app uses, so `service` things: no site to watch, no data to back up ----------
+  // Stripe: one per account and mode, saying what it holds, with a line to each site a webhook calls
+  async stripe(ctx, acc) {
+    const found: Found[] = [], refs: Ref[] = [];
+    for (const p of await stripe.places(ctx, acc)) {
+      const [hooks, products] = await Promise.all([stripe.endpoints(ctx, acc, p).catch(or(undefined as StripeEndpoint[] | undefined)), stripe.products(ctx, acc, p).catch(or(undefined as { id: string }[] | undefined))]);
+      const extId = `${p.id}:${p.mode}`, count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+      found.push({ provider: 'stripe', kind: 'service', extId, name: `Stripe ${p.mode}${p.name ? ` · ${p.name}` : ''}`, accountId: acc, url: `https://dashboard.stripe.com/${p.mode === 'test' ? 'test/' : ''}dashboard`, platform: 'stripe',
+        status: [products && count(products.length, 'product'), hooks && count(hooks.length, 'webhook')].filter(Boolean).join(', ') || undefined });
+      for (const h of hooks ?? []) { const host = hostOf(h.url); if (host) refs.push({ from: `stripe:${extId}`, kind: 'env', via: `${p.mode} webhook`, host }); }
+    }
+    return { found, refs };
+  },
+  async resend(ctx, acc) {
+    return { found: (await resend.domains(ctx, acc)).flatMap((d): Found[] => (d.name ? [{ provider: 'resend', kind: 'service', extId: d.id ?? d.name, name: d.name, accountId: acc, url: `https://resend.com/domains${d.id ? `/${d.id}` : ''}`, status: d.status, platform: 'resend' }] : [])), refs: [] };
+  },
+  // one per project: hosterrors.ts reads each one's errors into the same view as an app's
+  async sentry(ctx, acc) {
+    const found: Found[] = [];
+    for (const org of await sentry.orgs(ctx, acc)) for (const p of await sentry.projects(ctx, acc, org)) found.push({ provider: 'sentry', kind: 'service', extId: `${org.slug}/${p.slug}`, name: p.name ?? p.slug, accountId: acc, url: `https://${org.slug}.sentry.io/projects/${p.slug}/`, platform: 'sentry', ...(org.api && { api: org.api }) });
     return { found, refs: [] };
   },
 
@@ -486,7 +528,7 @@ SCANNERS.hetzner = async (ctx, acc) => {
 //   Render: GET /v1/metrics/disk-usage?resource= https://api-docs.render.com/reference/get-disk-usage
 //   RDS, Cloud SQL, Azure: in their scanners above (CloudWatch FreeStorageSpace, Monitoring bytes_used, Azure Monitor).
 //   DigitalOcean shows used disk for MySQL only as a percent of a size it doesn't give, so its databases stay unknown;
-//   PlanetScale and Turso connect through their MCP only (no scanner yet).
+//   the listings of PlanetScale, Turso and Upstash say no size, so theirs stay unknown too.
 import { cached } from '../connectors/cloudcli.ts';
 import { bearerFor } from '../connectors/mcp-oauth.ts';
 import { railwayQuery, RENDER_API, renderAuth } from '../connectors/hosts.ts';

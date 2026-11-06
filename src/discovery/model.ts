@@ -37,6 +37,7 @@ export interface Found {
   how?: string;            // projects: what grouped them (Coolify labels, Docker Compose labels, the same folder…)
   size?: number;           // databases: bytes stored, when the provider says (the map draws it as a ring)
   repo?: string;           // the git repo it deploys from (owner/name or a URL), when the provider says: one product's parts share it
+  api?: string;            // where its provider's API lives for it, when that isn't the provider's main address (a Sentry region)
 }
 export type RefKind = 'dns' | 'domain' | 'env' | 'runs_on' | 'uses';
 export interface Ref { from: string; kind: RefKind; via: string; host?: string; ip?: string; supabase?: string; to?: string }

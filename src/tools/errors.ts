@@ -14,7 +14,7 @@ import { serverRow } from './servers.ts';
 import { replicaNames, type ServiceConfig } from '../deploy/deployer.ts';
 import { fid } from './helpers.ts';
 
-export interface ErrorEvent { kind: string; message: string; frame?: string; sample: string }
+export interface ErrorEvent { kind: string; message: string; frame?: string; sample: string; total?: number } // total: how often in all, when a service counts for itself
 
 const LIBRARY = /node_modules|node:internal|internal\/|site-packages|dist-packages|\/usr\/lib\/|<anonymous>|\(native\)/;
 const JS_ERROR = /^(?:Uncaught |Unhandled ?(?:promise )?rejection:? |\[[^\]]*\]\s*)?((?:[A-Z][\w$]*)?(?:Error|Exception))(?: \[[\w:]+\])?: (.+)$/;
