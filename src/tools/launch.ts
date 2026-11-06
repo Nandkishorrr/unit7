@@ -155,6 +155,24 @@ function said(r: ToolResult): { ok: true; output: any } | { ok: false; state: 'w
 // DNS that Unit7 couldn't write (the host has no API): the records to add, said once
 const needsYou = (o: any) => o?.dns === 'needs you' ? `Add ${(o.addThese ?? []).map((r: any) => `${r.type} ${r.name} → ${r.value}`).join(', ')} at ${o.at}. Unit7 finishes by itself once it’s there.` : undefined;
 
+// Is this name already doing what domain.point would do? A run after a person's OK lands here, and asking again would
+// only file the same approval. Unit7's record says which app it went to and that the records went in (public DNS can lag
+// behind them by minutes); Vercel says what they should be today, and its word that they're right is enough. Any doubt
+// is a no, and domain.point asks as usual. The HTTPS step right after checks real DNS either way.
+async function pointedAlready(ctx: Ctx, hostname: string, t: Record<string, any>) {
+  const d = get<{ status: string; target: string | null; records: string | null }>(ctx.db, 'SELECT status, target, records FROM domains WHERE hostname = ? AND org_id = ?', hostname, ctx.orgId);
+  if (!d) return false;
+  const { kind, redirectTo: _, ...saved } = json<Record<string, any>>(d.target, {});
+  if (JSON.stringify(saved) !== JSON.stringify(kind === 'unit7' ? { serviceId: t.serviceId } : t[kind])) return false;
+  const wentIn = d.status === 'pending' || d.status === 'active';
+  // ponytail: other hosts are taken on Unit7's record; ask them too once one of them reports what DNS should say
+  if (kind !== 'vercel') return wentIn;
+  const st = await vercel.domainStatus(ctx, saved.accountId, saved.project, saved.team, hostname).catch(() => undefined);
+  if (!st) return false;
+  const wrote = json<{ type: string; content: string }[]>(d.records, []);
+  return (st.verified && !st.misconfigured) || (wentIn && st.records.every((r) => wrote.some((w) => w.type === r.type && w.content === r.content)));
+}
+
 export async function launch(ctx: Ctx, i: { domain: string; target: Record<string, unknown>; dns: 'keep' | 'cloudflare'; prefer?: 'apex' | 'www' },
   call: Call = (tool, input) => execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: `launch ${i.domain}`, signal: ctx.signal })) {
   const domain = domainOf(i.domain);
@@ -179,6 +197,8 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
   const stop = (k: StepKey, s: { state: 'waiting' | 'failed'; note: string }) => { set(k, s.state, s.note); return end(false, s.state === 'failed' ? `${s.note} Fix that, then run it again: it picks up where it stopped.` : s.note); };
   const domainId = () => get<{ id: string }>(ctx.db, 'SELECT id FROM domains WHERE hostname = ? AND org_id = ?', domain, ctx.orgId)?.id;
   const deadline = () => Date.now() + LAUNCH.waitMs;
+  const pointOnce = async (hostname: string) => (await pointedAlready(ctx, hostname, point.data))
+    ? { ok: true as const, output: { note: 'It already points at this app.' } } : said(await call('domain.point', { hostname, ...i.target }));
 
   // 1. ready: bought at Hostinger, wait until it's registered; registered elsewhere, nothing to wait for
   set('ready', 'running');
@@ -210,7 +230,7 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
 
   // 3. point the bare domain at the app
   set('point', 'running');
-  const p = said(await call('domain.point', { hostname: domain, ...i.target }));
+  const p = await pointOnce(domain);
   if (!p.ok) return stop('point', p);
   const waitDns = needsYou(p.output);
   set('point', waitDns ? 'waiting' : 'ok', waitDns ?? p.output?.note);
@@ -239,10 +259,13 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
   if (i.target.supabase) set('www', 'skipped', 'An API address has no www.');
   else {
     set('www', 'running');
-    const w = said(await call('domain.point', { hostname: `www.${domain}`, ...i.target }));
+    const w = await pointOnce(`www.${domain}`);
     if (!w.ok) return stop('www', w);
     const wwwWait = needsYou(w.output);
-    const c = said(await call('domain.canonical', { domain, prefer: i.prefer ?? 'apex' }));
+    // domain.canonical writes this down once it's set, so a run after a person's OK doesn't file it again
+    const [main, other] = i.prefer === 'www' ? [`www.${domain}`, domain] : [domain, `www.${domain}`];
+    const redirect = json<{ redirectTo?: string }>(get<{ target: string | null }>(ctx.db, 'SELECT target FROM domains WHERE hostname = ? AND org_id = ?', other, ctx.orgId)?.target, {}).redirectTo;
+    const c = redirect === main ? { ok: true as const, output: { note: 'Already set.' } } : said(await call('domain.canonical', { domain, prefer: i.prefer ?? 'apex' }));
     if (!c.ok) return stop('www', c);
     set('www', wwwWait || c.output?.state === 'waiting' ? 'waiting' : 'ok', wwwWait ?? c.output?.note);
   }

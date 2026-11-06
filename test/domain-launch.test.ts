@@ -3,12 +3,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { Resolver } from 'node:dns/promises';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { hostinger } from '../src/connectors/hostinger.ts';
 import { decideApproval, type Ctx, type ToolResult } from '../src/tools/runtime.ts';
-import { id, run } from '../src/db.ts';
+import { all, id, run } from '../src/db.ts';
 import { Redactor } from '../src/redact.ts';
-import { LAUNCH, launch, splitName, typedCents } from '../src/tools/launch.ts';
+import { CANON, LAUNCH, launch, splitName, typedCents } from '../src/tools/launch.ts';
 
 process.env.UNIT7_HOSTINGER_CMD = process.execPath;
 process.env.UNIT7_HOSTINGER_ARGS = fileURLToPath(new URL('./fake-hostinger-domains.mjs', import.meta.url));
@@ -223,4 +226,83 @@ test('launch through the gate: an AI prepares it, a person approves; a dry run l
   run(app.db, `INSERT INTO accounts (id, org_id, provider, name, slug) VALUES (?, ?, 'vercel', 'Main', 'main')`, vercel, o.orgId);
   const ai = await o.a('domain.launch', { domain: 'example.com', target: { vercel: { accountId: vercel, project: 'site' } } });
   assert.equal(ai.status, 'approval_required');
+});
+
+test('an AI runs a launch again after each OK: what’s done isn’t asked again, and what isn’t done still is', async () => {
+  // Vercel names its own record per project, and doesn't see the new DNS yet
+  const vercelSays = { ip: '203.0.113.76', misconfigured: true, onProject: true };
+  const api = createServer((req, res) => {
+    const path = new URL(req.url!, 'http://x').pathname;
+    res.writeHead(path.startsWith('/v9/') && !vercelSays.onProject ? 404 : 200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(path === '/v2/user' ? { user: { username: 'sam' } } : path === '/v2/teams' ? { teams: [] } : path === '/v10/projects' ? { projects: [] }
+      : path.startsWith('/v9/') ? { verified: true, apexName: 'bakery.example' }
+      : path.startsWith('/v6/') ? { misconfigured: vercelSays.misconfigured, recommendedIPv4: [{ rank: 1, value: [vercelSays.ip] }], recommendedCNAME: [{ rank: 1, value: 'abc123.vercel-dns-017.com.' }] } : {}));
+  });
+  await new Promise<void>((r) => api.listen(0, '127.0.0.1', r));
+  process.env.UNIT7_VERCEL_API = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
+  // public DNS: the zone is at Hostinger, and what Unit7 writes there hasn't spread yet (the real re-run came 26 seconds after the OK)
+  const dns: Record<string, (name: string) => Promise<unknown>> = { resolveSoa: async (n) => { if (n !== 'bakery.example') throw new Error('not a zone'); return {}; }, resolveNs: async () => ['ns1.dns-parking.com'], resolveCname: async () => [], resolve4: async () => [], resolveMx: async () => [], resolveTxt: async () => [] };
+  const realDns = Object.fromEntries(Object.keys(dns).map((k) => [k, Resolver.prototype[k as keyof Resolver]])), realFetch = CANON.fetch;
+  Object.assign(Resolver.prototype, dns);
+  CANON.fetch = async () => new Response(null, { status: 301, headers: { location: 'https://bakery.example/unit7-check?from=redirect' } });
+  try {
+    const o = await withHostinger('Mia');
+    run(app.db, 'UPDATE orgs SET autonomy = 3 WHERE id = ?', o.orgId); // an AI may run the launch, but a person OKs what it changes at Vercel
+    const accountId = ok(await o.h('account.connect', { provider: 'vercel', token: 'vercel-test-token-123' })).accountId as string;
+    const launched = async (target: object = { vercel: { accountId, project: 'site' } }, prefer?: string) => ok(await o.a('domain.launch', { domain: 'bakery.example', target, prefer }));
+    const states = (r: any) => r.steps.map((s: any) => s.state);
+    const pending = () => all<{ id: string; tool: string; input: string }>(app.db, `SELECT id, tool, input FROM approvals WHERE org_id = ? AND status = 'pending'`, o.orgId);
+    const asked = () => pending().map((a) => { const i = JSON.parse(a.input); return `${a.tool} ${i.hostname ?? i.domain}`; });
+    const answer = async (yes: boolean) => { const r = await decideApproval(app, o.orgId, o.human, pending()[0]!.id, yes); assert.equal(r.status, yes ? 'ok' : 'rejected', JSON.stringify(r)); };
+
+    assert.deepEqual(states(await launched()), ['ok', 'ok', 'waiting', 'todo', 'todo', 'todo', 'todo']);
+    assert.deepEqual(asked(), ['domain.point bakery.example']);
+    await answer(true);
+    // the records went in, so that's done even though public DNS doesn't show it yet: on to HTTPS, email and www
+    const again = await launched();
+    assert.deepEqual(states(again), ['ok', 'ok', 'ok', 'waiting', 'ok', 'waiting', 'todo']);
+    assert.equal(again.steps[2].note, 'It already points at this app.');
+    assert.deepEqual(asked(), ['domain.point www.bakery.example']);
+    await answer(true);
+    // the same for www, and then for the redirect
+    await launched();
+    assert.deepEqual(asked(), ['domain.canonical bakery.example']);
+    await answer(true);
+    const done = await launched();
+    assert.deepEqual(states(done), ['ok', 'ok', 'ok', 'waiting', 'ok', 'ok', 'waiting'], 'only DNS spreading is left');
+    assert.equal(done.steps[5].note, 'Already set.');
+    assert.deepEqual(asked(), []);
+    // the other main address isn't set yet, so that one asks
+    await launched(undefined, 'www');
+    assert.deepEqual(asked(), ['domain.canonical bakery.example']);
+    await answer(false);
+
+    // Vercel saying the DNS is right is enough, whichever of its addresses it names today
+    Object.assign(vercelSays, { ip: '203.0.113.77', misconfigured: false });
+    assert.equal(states(await launched())[2], 'ok');
+    assert.deepEqual(asked(), []);
+    // anything not already done goes to a person, as it always did
+    const stillAsks = async (target?: object) => { assert.equal(states(await launched(target))[2], 'waiting'); assert.deepEqual(asked(), ['domain.point bakery.example']); await answer(false); };
+    await stillAsks({ vercel: { accountId, project: 'another-app' } });
+    vercelSays.misconfigured = true; // wants a different record now
+    await stillAsks();
+    Object.assign(vercelSays, { ip: '203.0.113.76', onProject: false }); // taken off the project
+    await stillAsks();
+    vercelSays.onProject = true;
+    for (const status of ['broken', 'waiting_dns']) { // it stopped pointing there, or the records never went in
+      run(app.db, `UPDATE domains SET status = ? WHERE hostname = 'bakery.example'`, status);
+      await stillAsks();
+    }
+  } finally {
+    api.close(); delete process.env.UNIT7_VERCEL_API;
+    Object.assign(Resolver.prototype, realDns); CANON.fetch = realFetch;
+  }
+});
+
+test('a name already at this app here isn’t pointed again; one at another app is', async () => {
+  const o = await testOrg(app, 'Bea');
+  run(app.db, `INSERT INTO domains (id, org_id, hostname, status, tls, target) VALUES (?, ?, 'already.example', 'pending', 'issuing', ?)`, id('dom'), o.orgId, JSON.stringify({ kind: 'unit7', serviceId: 'svc_aaaaaaaaaaaa' }));
+  const pointed = async (serviceId: string) => { const f = fakeCalls(); await launch(ctxFor(o), { domain: 'already.example', target: { serviceId }, dns: 'keep' }, f.call); return f.calls.filter((c) => c.tool === 'domain.point').map((c) => c.input.hostname); };
+  assert.deepEqual(await pointed('svc_aaaaaaaaaaaa'), ['www.already.example']);
+  assert.deepEqual(await pointed('svc_bbbbbbbbbbbb'), ['already.example', 'www.already.example']);
 });
