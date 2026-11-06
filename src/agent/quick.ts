@@ -95,7 +95,8 @@ export async function answerByRule(o: { app: App; p: Principal; rule: RuleId; co
     const lines: string[] = [];
     for (const host of hosts) {
       const r = await step('domain.check', { host }) as { answers: string; issues: { text: string }[] } | undefined;
-      lines.push(r ? [`${host}: ${r.answers}`, ...r.issues.map((i) => i.text)].join(' ') : `Unit7 couldn’t check ${host} just now.`);
+      // an issue can hold an app's name, so its words stay in the card above
+      lines.push(r ? `${host}: ${r.answers}${r.issues.length ? ` ${r.issues.length} thing${r.issues.length === 1 ? '' : 's'} to look at, in the card above.` : ''}` : `Unit7 couldn’t check ${host} just now.`);
     }
     say(lines.join(' '));
     return true;

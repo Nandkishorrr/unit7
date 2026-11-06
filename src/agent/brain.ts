@@ -237,16 +237,19 @@ async function runTool(app: App, orgId: string, actor: Actor, t: ReturnType<type
   return r.plan ?? {};
 }
 
+// A name from a server or a process list is that server's text: one short line, or a new line in it reads as the person speaking
+export const oneLine = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\u007f\u2028\u2029"]+/g, ' ').slice(0, 80);
+
 // A compact, safe snapshot of the org's infrastructure for the model's first turn.
 function summariseGraph(app: App, orgId: string): string {
   const g = graph({ db: app.db, orgId });
   if (!g.projects.length && !g.foundProjects.length && !g.servers.length) return 'Current state: nothing is set up yet — no projects or servers. If the user wants to deploy something, you may need to connect a server first (ask them for one, or check for a Hostinger account to provision one).';
-  const servers = g.servers.map((s: any) => `- server "${s.name}" (${s.host}), status ${s.status}`).join('\n');
-  const projects = [...g.projects.map((p: any) => `- project "${p.name}": ${p.environments.map((e: any) => `${e.name}[${e.services.length} svc, autonomy ${e.autonomy}]`).join(', ')}`),
-    ...g.foundProjects.map((p) => `- project "${p.name}" run by ${p.source} on ${p.server} (id ${p.id}): ${p.environments.map((e) => `${e.name}[${e.apps.length} apps]`).join(', ')}; change it with ${p.source === 'coolify' ? 'coolify_* and part_*' : 'part_*'} tools`)].join('\n');
-  const accounts = g.accounts.map((a: any) => `${a.provider}:${a.name}`).join(', ');
+  const servers = g.servers.map((s: any) => `- server "${oneLine(s.name)}" (${s.host}), status ${s.status}`).join('\n');
+  const projects = [...g.projects.map((p: any) => `- project "${oneLine(p.name)}": ${p.environments.map((e: any) => `${oneLine(e.name)}[${e.services.length} svc, autonomy ${e.autonomy}]`).join(', ')}`),
+    ...g.foundProjects.map((p) => `- project "${oneLine(p.name)}" run by ${p.source} on ${oneLine(p.server)} (id ${p.id}): ${p.environments.map((e) => `${oneLine(e.name)}[${e.apps.length} apps]`).join(', ')}; change it with ${p.source === 'coolify' ? 'coolify_* and part_*' : 'part_*'} tools`)].join('\n');
+  const accounts = g.accounts.map((a: any) => `${a.provider}:${oneLine(a.name)}`).join(', ');
   // what the person marked important (asset.keep): in use even without visitors, handled with extra care
-  const important = keptRows(app.db, orgId).filter((r) => r.important).map((r) => `"${r.name}"`).slice(0, 30).join(', ');
+  const important = keptRows(app.db, orgId).filter((r) => r.important).map((r) => `"${oneLine(r.name)}"`).slice(0, 30).join(', ');
   return `Current state (from the infrastructure graph):\nServers:\n${servers || '  none'}\nProjects:\n${projects || '  none'}\nConnected accounts: ${accounts || 'none'}${important ? `\nMarked important by the person (in use even without visitors; never suggest archiving or deleting them): ${important}` : ''}`;
 }
 

@@ -58,6 +58,7 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 ## Putting a site live
 
+- Netlify’s build logs aren’t in its API, so Unit7 can’t show them: read them on Netlify. Azure Static Web Apps has no logs or domains through Unit7. On AWS, Google Cloud and Azure, Unit7 runs one product each: Amplify, Cloud Run and Static Web Apps.
 - Prices and sizes are written into Unit7 from each host’s price page in November 2026, and they can change. The host’s bill is what counts. Railway has no size to pick: it bills what the app uses.
 - A build or start command can be changed on Coolify, your own server, Vercel, Render and DigitalOcean. Elsewhere the host works out its own build. Sizes aren’t offered for a plain website.
 - A site with no domain on Coolify gets a free test address on sslip.io. Its certificate comes from Let’s Encrypt, which can refuse when too many people ask at once, so it isn’t for real visitors. Add your domain for that.
@@ -81,13 +82,13 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 ## Connected accounts
 
-- Stripe shows a signing secret once, so stripe.webhooks infers mismatches, and comparing test and live needs both connected. Setting GitHub secrets needs gh installed. With no AI connected, the ask box answers four fixed asks.
+- Stripe shows a signing secret once, so stripe.webhooks infers mismatches, and comparing test and live needs both connected. Setting GitHub secrets needs gh installed.
 
 - A move doesn’t copy data, cron or host redirects, and never removes the old site. A site that runs from a compose file asks a person when it’s made and at each update.
 
 ## Email
 
-- Forwarding needs Cloudflare DNS and works on the bare domain only. Mailboxes aren’t hosted. DKIM is found by usual names unless the DNS host is connected. A Compose file that sets GOTRUE_SITE_URL is edited by hand. Older Cloudflare keys need Email Routing permissions.
+- Forwarding needs Cloudflare DNS. Mailboxes aren’t hosted. DKIM is found by usual names unless the DNS host is connected. A Compose file that sets GOTRUE_SITE_URL is edited by hand. Older Cloudflare keys need Email Routing permissions.
 
 ## PlanetScale, Turso and Upstash
 
