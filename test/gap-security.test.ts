@@ -3,8 +3,9 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { gunzipSync } from 'node:zlib';
 import { join } from 'node:path';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { get, id, json, run } from '../src/db.ts';
@@ -14,6 +15,8 @@ import { coolifyTiming } from '../src/connectors/coolify.ts';
 import { liveTiming } from '../src/live/vercel.ts';
 import { moveTiming } from '../src/tools/moves.ts';
 import { addHost } from '../src/live/hosts.ts';
+import { dumpProblem } from '../src/tools/data.ts';
+import { LOAD } from '../src/tools/wordpress.ts';
 import { readsOnly, touchesSecrets } from '../src/tools/supabase.ts';
 import { Redactor } from '../src/redact.ts';
 import { ROLES_BACK } from '../src/tools/move.ts';
@@ -191,6 +194,8 @@ test('2. a query can’t step out of itself into psql: not at a carriage return,
     `select 1 --x\r; commit; set default_transaction_read_only = off; select 2 --\n`,
     `select 1e'\\' ${shell} #'`,
     `select 1.e'\\' ${shell} #'`,
+    `select 1E--E ${shell}`,
+    `select 1e$$ ' $$ ${shell} --'`,
     `select E'a'\n'\\'' ${shell} --'`,
     `select ${'a'.repeat(200)}$$ ${shell} $$`,
     `select $${B}$ ' $${B}$ ${shell} --'`,
@@ -664,4 +669,87 @@ test('10. a secret’s key inside a string that is JSON is masked, and the tool 
     assert.equal((await o.a('supabase.sql', { ref: 'abcdefghijklmnopqrst', sql: 'select to_jsonb(t)::text from public.profiles t' })).status, 'denied');
     assert.ok(JSON.stringify(ok<any>(await o.h('supabase.sql', { ref: 'abcdefghijklmnopqrst', sql: 'select to_jsonb(t)::text from public.profiles t' }))).includes('rex'), 'a person reads it');
   } finally { api.close(); delete process.env.UNIT7_SUPABASE_API; }
+});
+
+test('11. a dump can’t reach a shell, however it’s written, and a real pg_dumpall file still loads', real, async () => {
+  const pg = pgUp as Pg, mark = join(pg.dir, 'dump-shell-ran'), touch = `touch ${mark}`;
+  const bad = [
+    `select 1\n\\w |${touch}\n;\n`,
+    `\\set x \`${touch}\`\n`,
+    `select 1 \\g (format=csv) |${touch}\n`,
+    `select 1 \\gexec\n`,
+    `\\! ${touch}\n`,
+    `\\copy t from program '${touch}'\n`,
+    `create temp table t(x text);\nCOPY t\nFROM PROGRAM '${touch}';\n`,
+    `create temp table t(x text);\nCOPY t FROM/**/PROGRAM '${touch}';\n`,
+    `create temp table t(x text);\ncopy t from -- a note\n program $$${touch}$$;\n`,
+    `create temp table t(x text);\nCOPY (select 1) TO PROGRAM '${touch}';\n`,
+    `do $$ begin execute 'copy (select 1) to program ''${touch}'''; end $$;\n`,
+    `create temp table t(x text);\nCOPY t FROM stdin; \\! ${touch}\n\\.\n`,
+    `-- a note\r\\! ${touch}\n`,
+    `select 1 /* */ \\! ${touch}\n`,
+    `select 1E--E \\! ${touch}\n`,
+    `select 1.5e-- \\! ${touch}\n`,
+    `select 1e$$ ' $$ \\! ${touch} --'\n`,
+    `SET standard_conforming_strings = off;\nselect 'x\\'' \\! ${touch} --'\n;\n`,
+    `create function f() returns int language sql begin atomic select 1; COPY t FROM stdin;\n\\! ${touch}\n\\.\nend;\n`,
+    `U&create function f() returns int language sql begin atomic select 1;copy t from stdin ;\n\\! ${touch}\n`,
+    `SET client_encoding = 'SJIS';\nselect 1;\n`,
+    `SET NAMES 'Shift-JIS';\n`,
+    `ALTER ROLE app SET client_encoding TO big5;\n`,
+    `select set_config('client_encoding', 'x', false);\n`,
+    `\\connect "host=attacker.example dbname=x"\n`,
+    `\\connect shop \\! ${touch}\n`,
+    `select 1\n\\connect shop\n`,
+    `select '`,
+  ];
+  for (const text of bad) assert.ok(dumpProblem(text).bad, JSON.stringify(text));
+  // through the tool, on a real psql: refused before anything runs
+  const { app, o, seen } = await withPg();
+  const upload = (text: string) => { const id_ = `upl_${'a'.repeat(12)}`, path = join(pg.dir, 'upload.sql'); writeFileSync(path, text); run(app.db, 'INSERT OR REPLACE INTO uploads (id, org_id, path, size, sha256, created_by) VALUES (?, ?, ?, ?, ?, ?)', id_, o.orgId, path, text.length, 'x', o.userId); return id_; };
+  const load = (text: string) => o.h('part.import', { serverId: SRV, part: PG, uploadId: upload(text), into: 'live', confirm: 'pg-db' }, {});
+  for (const text of bad.slice(0, 7)) {
+    const r = await load(text) as any;
+    assert.ok(['bad_upload', 'approval_required'].includes(code(r)), JSON.stringify(r));
+    if (r.status === 'approval_required') assert.equal(code(await approve(app, o, r, 'pg-db')), 'bad_upload', text);
+  }
+  assert.ok(!existsSync(mark), 'no shell ran');
+  assert.ok(!seen.some((x) => x.command.includes('LOAD') || x.stdin.includes(touch)));
+
+  // what pg_dump really writes passes: backslash lines of its own, COPY rows that look like anything, and strings and functions
+  pg.sql(`DROP TABLE IF EXISTS notes; CREATE TABLE notes (body text); INSERT INTO notes VALUES (E'\\\\! ${touch}'), ('ALTER ROLE x SUPERUSER;'), (E'\\\\.'), ('COPY t FROM PROGRAM ''${touch}'';');
+    CREATE FUNCTION odd() RETURNS text LANGUAGE sql BEGIN ATOMIC SELECT 'a;b'::text; END;
+    CREATE FUNCTION old() RETURNS text LANGUAGE plpgsql AS $x$ BEGIN RETURN 'c:\\temp;'; END $x$;
+    COMMENT ON TABLE notes IS 'it''s: a \\ note';`, 'shop');
+  const file = join(pg.dir, 'real.sql.gz');
+  pg.dumpTo(file);
+  const dump = gunzipSync(readFileSync(file)).toString('utf8');
+  assert.match(dump, /^\\connect /m);
+  assert.deepEqual(dumpProblem(dump), { whole: true });
+  assert.deepEqual(dumpProblem(dump.replace(/\n/g, '\r\n')), { whole: true }, 'and a dump that went through Windows');
+  assert.deepEqual(dumpProblem(`COPY public.t (a) FROM stdin;\n\\! a row\n\\.`), { whole: false }, 'the file can end right after its last \\.');
+  assert.ok(dumpProblem(`COPY public.t (a) FROM stdin;\nrow\n\\.\n\\! ${touch}\n`).bad, 'after its rows it’s a script again');
+});
+
+test('11. what else feeds a client: MySQL’s dumps run with its client commands off, and a pg_dump file can’t carry PROGRAM', async () => {
+  assert.match(LOAD, /--binary-mode/, 'wordpress.import');
+  const { app, o } = await world();
+  foundDb(app, o.orgId, [part({ id: 'c:my-db', name: 'my-db', engine: 'mysql', image: 'mysql:8.4', containers: ['my-db-1'], networks: ['shop_default'] })]);
+  const dir = mkdtempSync(join(tmpdir(), 'unit7-dump-')), path = join(dir, 'x');
+  const id_ = `upl_${'b'.repeat(12)}`;
+  run(app.db, 'INSERT INTO uploads (id, org_id, path, size, sha256, created_by) VALUES (?, ?, ?, ?, ?, ?)', id_, o.orgId, path, 1, 'x', o.userId);
+  const sent: string[] = [];
+  ssh(app).exec = async (_s, command) => { sent.push(command); return { code: 0, stdout: '12\nabc\n', stderr: '', truncated: false }; };
+  ssh(app).check = async () => '/tmp/unit7-import-x\n';
+  ssh(app).putFile = async () => undefined;
+  // pg_dump's own format, with a statement it would run
+  writeFileSync(path, Buffer.concat([Buffer.from('PGDMP'), Buffer.from('\x00\x01COPY t FROM PROGRAM \'id\';\x00', 'latin1')]));
+  const pgDump = await o.h('part.import', { serverId: SRV, part: PG, uploadId: id_, into: 'live', confirm: 'pg-db' }) as any;
+  const out = pgDump.status === 'approval_required' ? await approve(app, o, pgDump, 'pg-db') as any : pgDump;
+  assert.equal(code(out), 'bad_upload');
+  // the same words in a MySQL dump are text for a client that has its commands off
+  writeFileSync(path, `\\! id\nselect 1;\n`);
+  const my = await o.h('part.import', { serverId: SRV, part: 'c:my-db', uploadId: id_, into: 'live', confirm: 'my-db' }) as any;
+  await (my.status === 'approval_required' ? approve(app, o, my, 'my-db') : my);
+  assert.ok(sent.some((x) => x.includes('--binary-mode')), 'the load uses it');
 });

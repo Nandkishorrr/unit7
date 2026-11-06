@@ -20,6 +20,9 @@ const matched = (re: RegExp, sql: string, at: number) => { re.lastIndex = at; re
 const lineEnd = (sql: string, from: number, d: Dialect) => { for (let j = from; j < sql.length; j++) if (sql[j] === '\n' || (d === 'pg' && sql[j] === '\r')) return j; return sql.length; };
 // what an E'' string reads differently: a quote after an odd run of backslashes
 const ODD_SLASH = /(?:^|[^\\])(?:\\\\)*\\'/;
+// where a number stops depends on psql's age: 1e-- starts a comment for one and not for another, and so does 1e$$ a dollar quote
+const afterNumber = (sql: string, at: number) => /\d\.?$/.test(sql.slice(Math.max(0, at - 2), at));
+const GLUED = 'A number stuck to what follows it can be read two ways. Put a space after it.';
 
 // Strings, comments and dollar quotes the way psql and the database read them, so a ; or a backslash inside one isn't mistaken for
 // anything. A backslash outside one is a client command (psql's \!, mysql's \!), never SQL, and nothing else starts it. One token at
@@ -36,6 +39,7 @@ export function* lex(sql: string, d: Dialect, pos = { i: 0 }): Generator<Tok> {
   while (pos.i < sql.length) {
     const i = pos.i, c = sql[i]!;
     if (SPACE.has(c)) { pos.i++; continue; }
+    if (d === 'pg' && sql.startsWith('--', i) && word?.at === i - 1 && /^e$/i.test(word.v) && afterNumber(sql, word.at)) throw refuse(GLUED);
     if ((sql.startsWith('--', i) && (d === 'pg' || SPACE.has(sql[i + 2] ?? ' '))) || (d === 'my' && c === '#')) { pos.i = lineEnd(sql, i, d); yield { k: 'note', v: sql.slice(i, pos.i), at: i }; continue; }
     if (sql.startsWith('/*', i)) {
       // MySQL runs what's in these, so they're code, not comments
@@ -60,6 +64,7 @@ export function* lex(sql: string, d: Dialect, pos = { i: 0 }): Generator<Tok> {
     pos.i = i + 1;
     if (c === '\\') { yield { k: 'cmd', v: c, at: i }; continue; }
     const w = matched(WORD, sql, i);
+    if (w && d === 'pg' && w.includes('$') && afterNumber(sql, i)) throw refuse(GLUED);
     if (w) { pos.i = i + w.length; yield word = { k: 'word', v: w, at: i }; continue; }
     yield { k: 'op', v: c, at: i };
   }
