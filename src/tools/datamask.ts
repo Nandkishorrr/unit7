@@ -197,6 +197,14 @@ export function planMask(root: PlanNode, columns: string[], sqlWords: string[]):
   return m;
 }
 
+// What an AI may see of a Postgres read. EXPLAIN talks about a query, never its rows, and a built-in setting holds no secret: one with
+// a dot in its name is an app's own, and Supabase keeps its JWT secret in one.
+export function readMask(st: { first: string; toks: Tok[] }, plan: unknown, columns: string[]): Mask {
+  if (st.first === 'explain' || (st.first === 'show' && st.toks.length === 2 && st.toks[1]!.k === 'word')) return NONE();
+  if (!plan || renamesColumns(st.toks)) return { ...NONE(), all: true };
+  return planMask(plan as PlanNode, columns, st.toks.filter((t) => t.k === 'word' || t.k === 'name').map((t) => t.v));
+}
+
 // (MySQL) no outputs in its plan, so the statement has to prove it: one plain SELECT, item by item, each lined up with its column.
 // A subquery or a union can put anything under any name, and only the database knows what a view renamed.
 const word = (t: Tok | undefined, ...w: string[]) => t?.k === 'word' && w.includes(t.v.toLowerCase());
@@ -229,6 +237,15 @@ export function textMask(toks: Tok[], columns: string[]): Mask {
   items.forEach((x, i) => { if (!proved(x)) m.hide.add(i); });
   return m;
 }
+
+// What a database says about a query can hold its rows: a failed cast prints the value. So an AI gets fixed words, never the database's.
+const AI_HEARS: [RegExp, string][] = [
+  [/syntax error|error in your SQL syntax/i, 'The database couldn’t read that query. Check its syntax.'],
+  [/does not exist|doesn't exist|Unknown (column|table)/i, 'That query names a table, a column or a function that isn’t there. part.tables lists the tables.'],
+  [/read-only transaction|READ ONLY transaction/i, 'That would change data, and this login can only read. To change data, say write: true.'],
+  [/statement timeout|lock timeout|max_execution_time|max_statement_time/i, 'That took too long, so it was stopped.'],
+];
+export const aiHears = (said: string) => AI_HEARS.find(([re]) => re.test(said))?.[1] ?? 'The database refused that query. Its own words can hold row values, so they don’t go to an AI. A person can run it to see why.';
 
 export function maskRows(columns: string[], rows: string[][], m: Mask) {
   const masked = new Set<string>();

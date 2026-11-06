@@ -9,7 +9,8 @@ import { randomBytes } from 'node:crypto';
 import { defineTool, execute, type Ctx } from './runtime.ts';
 import { all, get, id, json, now, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
-import { fid, requireHuman } from './helpers.ts';
+import { fid, requireHuman, seesReal } from './helpers.ts';
+import { aiHears, hideShapes, isRows, maskRows, parseCsv, readMask, readStatement, usesDynamic } from './datamask.ts';
 import { forbidden } from '../errors.ts';
 import { serverRow } from './servers.ts';
 import { lastXray, runXray } from './xray.ts';
@@ -523,8 +524,7 @@ async function theCopy(ctx: Ctx, serverId: string, name: string) {
   if (!c) throw new Unit7Error('not_a_copy', `${name} isn’t a copy Unit7 made on ${s.name}.`, 404);
   return { s, c };
 }
-const SELECT_ONLY = /^\s*(select|with|table|show)\b/i;
-const PG_COPY = `docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=30000' "$1" psql -U postgres -v ON_ERROR_STOP=1 -AtqX -F '|'`;
+const PG_COPY = (flags: string) => `docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=30000' "$1" psql -U postgres -v ON_ERROR_STOP=1 -qX ${flags}`;
 
 defineTool({
   name: 'part.copies', title: 'Past copies open now', risk: 'read', action: 'read',
@@ -535,17 +535,32 @@ defineTool({
 
 defineTool({
   name: 'part.copy_read', title: 'Look inside a past copy', risk: 'read', action: 'read', timeoutMs: 40_000,
-  description: 'Run one read-only query on a past copy (Postgres), to find a row or a table as it was. The live database isn’t touched. At most 200 rows come back, and the copy holds real data, so treat what comes back with care.',
+  description: 'Run one read-only query on a past copy (Postgres), to find a row or a table as it was. The live database isn’t touched. At most 200 rows come back. The copy holds real data, so an AI sees of it what part.query shows: plain columns whose names aren’t personal, and counts.',
   input: z.object({ serverId: fid('srv'), copy: COPY_REF, sql: z.string().min(3).max(4000) }),
   async run(ctx, i) {
-    const sql = i.sql.replace(/;\s*$/, '');
-    if (!SELECT_ONLY.test(sql) || /[\\;]/.test(sql)) throw new Unit7Error('read_only', 'Only a single read query works here.', 400);
+    const st = readStatement(i.sql, 'pg'), real = seesReal(ctx);
     const { s } = await theCopy(ctx, i.serverId, i.copy);
     // the query goes to psql alone, on stdin: it never passes through a shell on the server
-    const r = await ssh(ctx.app).exec(s, asRoot(s) + script(PG_COPY, i.copy), { stdin: `${sql};\n`, timeoutMs: 35_000, signal: ctx.signal });
-    if (r.code !== 0) throw new Unit7Error('query_failed', ctx.redactor.redact(r.stderr).slice(0, 300), 400);
-    const rows = r.stdout.split('\n').filter(Boolean);
-    return { rows: rows.slice(0, 200).map((l) => ctx.redactor.redact(l)), more: Math.max(0, rows.length - 200) };
+    const ask = (flags: string, text: string) => ssh(ctx.app).exec(s, asRoot(s) + script(PG_COPY(flags), i.copy), { stdin: `${text}\n;\n`, timeoutMs: 35_000, signal: ctx.signal });
+    const hears = (r: { stderr: string }) => new Unit7Error('query_failed', real ? ctx.redactor.redact(r.stderr).slice(0, 300) : aiHears(r.stderr), 400);
+    if (real) {
+      const r = await ask(`-At -F '|'`, st.text);
+      if (r.code !== 0) throw hears(r);
+      const rows = r.stdout.split('\n').filter(Boolean);
+      return { rows: rows.slice(0, 200).map((l) => ctx.redactor.redact(l)), more: Math.max(0, rows.length - 200) };
+    }
+    // a past copy holds the same rows as the live one, and this login is its superuser, so the same masks as part.query
+    let plan: unknown;
+    if (isRows(st.first)) {
+      const p = await ask('-At', `EXPLAIN (VERBOSE, FORMAT JSON)\n${st.text}`);
+      if (p.code !== 0) throw hears(p);
+      try { plan = (JSON.parse(p.stdout) as { Plan: unknown }[])[0]?.Plan; } catch { plan = undefined; }
+    }
+    if (usesDynamic(`${st.text.toLowerCase()} ${JSON.stringify(plan ?? '')}`)) throw new Unit7Error('not_for_ai', 'That function runs text as a query or reads outside the tables, so Unit7 can’t tell what comes back. A person can run it.', 403);
+    const r = await ask('--csv', st.text);
+    if (r.code !== 0) throw hears(r);
+    const [columns = [], ...rows] = parseCsv(r.stdout), name = (c: string) => ctx.redactor.redact(hideShapes(c)), out = maskRows(columns, rows.slice(0, 200), readMask(st, plan, columns));
+    return { columns: columns.map(name), rows: out.rows.map((x) => x.map((c) => ctx.redactor.redact(c)).join('|')), masked: out.masked.map(name), more: Math.max(0, rows.length - 200) };
   },
 });
 

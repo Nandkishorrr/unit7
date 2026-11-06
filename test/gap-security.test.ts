@@ -531,6 +531,23 @@ test('8. the database’s own error words stay with the database', real, async (
   assert.ok(seen.length);
 });
 
+test('8. a past copy holds the same rows, so an AI sees of it what it sees of the live one, and hears no more', real, async () => {
+  const { app, o, pg } = await withPg();
+  const COPY = 'pg-db-copy-20261106-ab12', mine = ssh(app).exec;
+  ssh(app).exec = (s, command, x) => (command.includes('docker ps -a') ? Promise.resolve({ code: 0, stdout: `${COPY}|c:pg-db|2026-11-06 10:00:00 +0000 UTC\n`, stderr: '', truncated: false }) : mine(s, command.replace(/psql -U postgres/, 'psql -U postgres -d shop'), x));
+  const read = (sql: string, who = o.a) => who('part.copy_read', { serverId: SRV, copy: COPY, sql });
+  assert.deepEqual(ok<any>(await read('select id, plan from users order by id')).rows, ['1|pro', '2|free']);
+  const all = JSON.stringify(ok<any>(await read('select * from users order by id')));
+  assert.ok(!/shash|shop\.example/.test(all), all);
+  assert.ok(!/shash/.test(JSON.stringify(ok<any>(await read('select rolname, rolpassword from pg_authid')))));
+  const failed = JSON.stringify(await read('select cast(password_hash as int) from users'));
+  assert.ok(!/shash/.test(failed), failed);
+  assert.equal(code(await read(`select pg_read_file('/etc/hosts')`)), 'not_for_ai');
+  assert.equal(code(await read('select 1 --x\r\\! id\n')), 'bad_statement');
+  assert.deepEqual(ok<any>(await read('select email from users order by id', o.h)).rows, ['ann@shop.example', 'bob@shop.example'], 'a person sees it as it was');
+  assert.ok(pg);
+});
+
 test('8. MySQL: only a plain SELECT is proved, item by item', async () => {
   const mask = (sql: string, columns: string[]) => textMask(tokenize(sql, 'my'), columns);
   assert.equal(mask('select b, c, d from (select 1 a, 2 b, 3 c, 4 d, 5 e union all select * from users) x', ['b', 'c', 'd']).all, true, 'a subquery can put anything under any name');
