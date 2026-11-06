@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { testApp, testOrg, ok } from './helpers.ts';
+import { runHeld } from '../src/ops/index.ts';
 import { fakeApi, account, type Req } from './clouds-fakes.ts';
 import { COMPOSE_HOST, COOLIFY_HOST } from './xray-fixtures.ts';
 import { all, get, id, json, run } from '../src/db.ts';
@@ -916,7 +917,9 @@ test('neon.branch: list, create, a connection kept in the vault, and a delete on
   assert.equal((await o.h('neon.branch', { project: P, op: 'delete', branch: 'br-dev', confirmName: 'br-dev' })).status, 'approval_required', 'a person’s own delete is restricted too');
   assert.equal(sent(api, 'DELETE', /branches/).length, 0);
   await assert.rejects(decideApproval(app, o.orgId, o.human, (asked as { approvalId: string }).approvalId, true, 'br-main'), /Type the name/);
-  assert.equal((await decideApproval(app, o.orgId, o.human, (asked as { approvalId: string }).approvalId, true, 'br-dev') as { status: string }).status, 'ok');
+  await decideApproval(app, o.orgId, o.human, (asked as { approvalId: string }).approvalId, true, 'br-dev');
+  assert.equal(sent(api, 'DELETE', /branches/).length, 0, 'an AI’s delete waits 48 hours, even after a yes');
+  await runHeld(app, Date.now() + 49 * 3600_000);
   assert.equal(sent(api, 'DELETE', /branches\/br-dev$/).length, 1);
   assert.ok(!st.branches.some((b) => b.id === 'br-dev'));
   assert.ok(!app.vault.has(o.orgId, kept.connection), 'a deleted branch’s connection string leaves the vault');
@@ -924,11 +927,11 @@ test('neon.branch: list, create, a connection kept in the vault, and a delete on
 
 test('neon.branch delete refuses the main and protected branches, even after a yes', async (t) => {
   const { app, o, api } = await neonFake(t);
-  for (const [branch, why] of [['br-main', /main branch/], ['br-safe', /protected/], ['br-gone', /branch not found/]] as const) {
+  for (const branch of ['br-main', 'br-safe', 'br-gone']) {
     const asked = await o.a('neon.branch', { project: P, op: 'delete', branch, confirmName: branch });
-    const r = await decideApproval(app, o.orgId, o.human, (asked as { approvalId: string }).approvalId, true, branch) as { error: { message: string } };
-    assert.match(r.error.message, why);
+    await decideApproval(app, o.orgId, o.human, (asked as { approvalId: string }).approvalId, true, branch);
   }
+  await runHeld(app, Date.now() + 49 * 3600_000);
   assert.equal(sent(api, 'DELETE', /branches/).length, 0);
 });
 
