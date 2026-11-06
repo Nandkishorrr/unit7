@@ -71,8 +71,17 @@ export function installService(o: ServiceOptions): string {
   if (platform() === 'linux') {
     mkdirSync(dirname(UNIT), { recursive: true });
     writeFileSync(UNIT, `[Unit]\nDescription=Unit7 control plane\nAfter=network-online.target\n\n[Service]\nExecStart=${node} ${main} serve --port ${o.port}\nEnvironment=UNIT7_HOME=${o.home}\nEnvironment=PATH=${path}\nWorkingDirectory=${ROOT}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`);
-    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
-    execFileSync('systemctl', ['--user', 'enable', '--now', 'unit7'], { stdio: 'ignore' });
+    try {
+      execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
+      execFileSync('systemctl', ['--user', 'enable', '--now', 'unit7'], { stdio: 'ignore' });
+    } catch {
+      unlinkSync(UNIT);
+      console.log('✗ Unit7 can\'t run in the background here: this machine has no systemd user service, which is common in containers. Start it with `node src/main.ts serve`, under a process manager if it should stay up.');
+      process.exit(1);
+    }
+    // a user service stops at logout unless the user lingers, and on a VPS that's the moment you close SSH
+    try { execFileSync('loginctl', ['enable-linger', userInfo().username], { stdio: 'ignore' }); }
+    catch { console.log(`! Unit7 will stop when you log out. To keep it running, run: sudo loginctl enable-linger ${userInfo().username}`); }
     return UNIT;
   }
   throw new Error('Background service is supported on macOS and Linux. Run `unit7 serve` yourself.');
