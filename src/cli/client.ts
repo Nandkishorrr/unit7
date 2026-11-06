@@ -58,7 +58,7 @@ export async function tool(name: string, input: unknown = {}, o: { config?: CliC
   const r = await req(`/api/tools/${name}`, { body: { input, dryRun: o.dryRun }, ...c });
   if (r.status === 'ok') { if (!o.quiet) console.log(typeof r.output === 'string' ? r.output : JSON.stringify(r.output, null, 2)); return r.output; }
   if (r.status === 'dry_run') { console.log('Dry run:', JSON.stringify(r.plan, null, 2)); return r.plan; }
-  if (r.status === 'approval_required') { console.error(`⏳ Needs approval: ${r.why}\n   Approve it in Unit7: approving runs it, no need to run this again.`); process.exit(2); }
+  if (r.status === 'approval_required') { console.error(`⏳ Needs approval: ${r.why}${/run this again/i.test(r.why) ? '' : '\n   Approve it in Unit7: approving runs it, no need to run this again.'}`); process.exit(2); }
   if (r.status === 'denied') { console.error(`✗ Not allowed: ${r.why}`); process.exit(3); }
   console.error(`✗ ${r.error?.message ?? 'failed'}`); process.exit(1);
 }

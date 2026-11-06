@@ -84,7 +84,7 @@ export function parseWish(w: Wish): Intent {
 
 // --- the plan: steps, plus the card the person sees ---------------------------------------------------------
 interface Step { tool: string; title: string; input: Record<string, unknown>; keep?: Record<string, string> } // keep: the name later steps use ('$app') → its output field
-export interface Plan { intent: Intent; steps: Step[]; card: Extract<AskSpec, { kind: 'confirm' }> }
+export interface Plan { intent: Intent; steps: Step[]; card: Extract<AskSpec, { kind: 'confirm' }>; made?: Record<string, string> }
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const SHORT: Record<EngineName, string> = { postgresql: 'postgres', mysql: 'mysql', mariadb: 'mariadb', mongodb: 'mongo', redis: 'redis', keydb: 'keydb', dragonfly: 'dragonfly', clickhouse: 'clickhouse' };
 
@@ -111,7 +111,8 @@ export async function makePlan(api: Coolify, s: ServerRow, it: Intent): Promise<
       const via = (await githubApps(api).catch(() => [])).find((g) => g.repos.some((r) => r.fullName.toLowerCase() === full));
       from = `${gh.owner}/${gh.name}${a.branch ? ` (${a.branch})` : ''}${via ? `, through ${via.name}` : ', with a read-only deploy key if it’s private'}`;
     }
-    steps.push({ tool: 'coolify.create_app', title: `Create the app ${it.name}`, keep: { app: 'uuid' }, input: {
+    // a compose app waits for a person each time it's asked for, so one that's there isn't asked for again
+    if (!appThere || a.buildPack !== 'dockercompose') steps.push({ tool: 'coolify.create_app', title: `Create the app ${it.name}`, keep: { app: 'uuid' }, input: {
       ...where, name: it.name, ...(a.repo && { repo: a.repo }), ...(a.branch && { branch: a.branch }), ...(a.image && { image: a.image }), ...(a.dockerfile && { dockerfile: a.dockerfile }),
       ...(!a.image && !a.dockerfile && { buildPack: a.buildPack }), port: a.port,
     } });
@@ -148,7 +149,7 @@ export async function makePlan(api: Coolify, s: ServerRow, it: Intent): Promise<
     changes.push({ label: 'Deploy', after: `build and start ${it.name}` });
   }
   return {
-    intent: it, steps, card: {
+    intent: it, steps, ...(appThere && { made: { app: appThere.uuid as string } }), card: {
       kind: 'confirm', title: cut(`Build ${it.name} on ${s.name} with Coolify`, 140),
       note: `${steps.length} steps. Passwords and keys go straight into Coolify, never into this chat.`,
       changes: changes.slice(0, 12).map((c) => ({ label: cut(c.label, 80), ...(c.before && { before: cut(c.before, 200) }), after: cut(c.after, 200) })),
@@ -222,7 +223,7 @@ defineTool({
     }
     // run: each step through the gate, shown in the thread as it goes
     const show = threadFor(ctx);
-    const made: Record<string, string> = {};
+    const made: Record<string, string> = { ...p.made };
     const done: Record<string, unknown>[] = [];
     const undo: string[] = [];
     let url: string | undefined;

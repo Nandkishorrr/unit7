@@ -2,13 +2,14 @@
 // A host is one small file in src/live. A folder on this computer is a person's choice, never an AI's: what an AI publishes
 // comes from an upload (`unit7 live`, or a person picking in the app) or a repo.
 import { z } from 'zod';
-import { defineTool, type Ctx } from './runtime.ts';
+import { askPerson, defineTool, type Ctx } from './runtime.ts';
+import { COMPOSE_ASK } from './coolify.ts';
 import { fid, isAgent } from './helpers.ts';
 import { Unit7Error } from '../errors.ts';
 import { assertReachable } from '../netguard.ts';
 import { openSource, type Site } from '../live/source.ts';
 import { allHosts, hostOf, type Fit, type Host, type Place, type Placed } from '../live/hosts.ts';
-import { step } from '../live/coolify.ts';
+import { runsCompose, step } from '../live/coolify.ts';
 import { loginHint } from '../care/mail.ts';
 import { liveTiming } from '../live/vercel.ts';
 import '../live/netlify.ts';
@@ -108,6 +109,8 @@ defineTool({
       if (!chosen) throw new Unit7Error('no_host', i.to ? `${i.to} isn’t connected. Connect it in Connections, then run this again.` : 'Nothing is connected that can host this. Connect Vercel, GitHub or a server in Connections.', 400);
       if (!chosen.fit.ok) throw new Unit7Error('wrong_host', `${chosen.host.name} can’t host this: ${chosen.fit.why}`, 400);
       if (chosen.host.costs && !i.to) throw new Unit7Error('costs_money', `The place for this is ${chosen.host.name}, and it can cost money. ${chosen.host.costs} A person has to choose it, with to: "${chosen.host.id}".`, 400);
+      // the first time, Coolify's own step asks. An update brings a new compose file, so its yes covers the whole of it
+      if (i.update && chosen.host.id === 'coolify' && runsCompose(site.detection) && isAgent(ctx) && !ctx.approvalId) await askPerson(ctx, 'live.put', i, COMPOSE_ASK);
       const env = Object.entries(i.env ?? {}).map(([key, v]) => settingOf(ctx, key, v));
       const name = i.name ?? site.name;
       const placed = await chosen.host.put(ctx, { name, site, place: chosen.place, env, domain: i.domain, update: i.update, team: i.team, port: i.port });

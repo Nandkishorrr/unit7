@@ -3,13 +3,17 @@
 import { all } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { execute, type Ctx } from '../tools/runtime.ts';
+import { need } from '../tools/coolify.ts';
+import { serverRow } from '../tools/servers.ts';
+import { byName, envResources, hostsOf } from '../connectors/coolify.ts';
 import { createRepo, githubToken, pushFolder, repoExists, type Repo } from '../connectors/github.ts';
+import type { Detection } from '../connectors/detect.ts';
 import { addHost, type Host, type Put } from './hosts.ts';
 
-export async function step<T = any>(ctx: Ctx, tool: string, input: Record<string, unknown>): Promise<T> {
+export async function step<T = any>(ctx: Ctx, tool: string, input: Record<string, unknown>, next = 'Run this again once it’s approved.'): Promise<T> {
   const r = await execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: 'a step of putting a site live', signal: ctx.signal, conversationId: ctx.conversationId, underApproval: ctx.approvalId });
   if (r.status === 'ok') return r.output as T;
-  if (r.status === 'approval_required') throw new Unit7Error('approval_required', `${tool} is waiting on the Approvals page. Run this again once it’s approved.`, 409, { approvalId: r.approvalId });
+  if (r.status === 'approval_required') throw new Unit7Error('approval_required', `${tool} is waiting on the Approvals page: ${r.why} ${next}`, 409, { approvalId: r.approvalId });
   // nested: that run already noted any trouble on its own account, so whoever called it doesn't pin it on one of theirs
   throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : `${tool} didn’t run.`, 409, { nested: true, ...(r.status === 'error' && { logTail: r.error.logTail }) });
 }
@@ -26,10 +30,11 @@ export async function repoFor(ctx: Ctx, p: Put): Promise<{ repo: Repo; branch: s
   return { repo, branch: 'main' };
 }
 
+export const runsCompose = (d: Detection) => !d.dockerfile && d.builder === 'compose';
 const buildOf = (p: Put) => {
   const d = p.site.detection;
   if (d.dockerfile) return { buildPack: 'dockerfile' };
-  if (d.builder === 'compose') return { buildPack: 'dockercompose' };
+  if (runsCompose(d)) return { buildPack: 'dockercompose' };
   if (d.stack === 'static') return { buildPack: 'static', port: 80 };
   // a site that builds to plain files has no start of its own: serve what it built
   if (d.staticDir && !d.startCommand) return { buildPack: 'nixpacks', port: 3000, startCommand: `npx --yes serve -s ${d.staticDir} -l 3000` };
@@ -46,7 +51,9 @@ export const coolifyHost: Host = addHost({
     const { repo, branch } = await repoFor(ctx, p);
     ctx.progress('Creating the app in Coolify…');
     const pj = await step(ctx, 'coolify.create_project', { serverId, name: p.name, environment: 'production' });
-    const app = await step(ctx, 'coolify.create_app', { serverId, project: pj.project, environment: 'production', name: p.name, repo: `${repo.owner}/${repo.name}`, branch, ...buildOf(p), ...(p.domain && { domains: [p.domain] }), deploy: !p.env.length, reuse: true });
+    // a compose app waits for a person each time it's asked for, so one that's there is only looked up
+    const had = runsCompose(p.site.detection) ? byName((await envResources(need(ctx, serverRow(ctx, serverId)).api, pj.project, 'production')).application, p.name) : undefined;
+    const app = had ? { uuid: had.uuid as string, reused: true, domains: hostsOf(had.fqdn) } : await step(ctx, 'coolify.create_app', { serverId, project: pj.project, environment: 'production', name: p.name, repo: `${repo.owner}/${repo.name}`, branch, ...buildOf(p), ...(p.domain && { domains: [p.domain] }), deploy: !p.env.length, reuse: true }, 'Once it’s approved, run this again with update: true.');
     if (app.reused && !p.update) throw new Unit7Error('already_exists', `Coolify already has an app called ${p.name} in that project. Choose another name, or say you want to update it.`, 409);
     for (const e of p.env) await step(ctx, 'coolify.envs', { serverId, uuid: app.uuid, kind: 'application', op: 'set', key: e.key, value: e.value });
     if (p.env.length) await step(ctx, 'coolify.control', { serverId, uuid: app.uuid, kind: 'application', action: 'deploy' });

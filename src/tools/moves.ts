@@ -434,7 +434,8 @@ defineTool({
         if (err.code === 'approval_required') {
           // the build itself waits, or a step inside it, which means the build has started and the next run picks it up
           const approvalId = (err.detail as { approvalId?: string } | undefined)?.approvalId;
-          saveMove(ctx, moveId, { ...m, ...(approvalId ? { stage: 'waiting', waiting: approvalId } : { stage: 'failed', made: true }) });
+          const whole = !!approvalId && get<{ tool: string }>(ctx.db, 'SELECT tool FROM approvals WHERE id = ?', approvalId)?.tool === 'live.put';
+          saveMove(ctx, moveId, { ...m, made: !!m.made || !whole, ...(approvalId ? { stage: 'waiting', waiting: approvalId } : { stage: 'failed' }) });
           return { moveId, waiting: true, why: err.message, next: `A person approves it on the Approvals page. Then move.run with moveId ${moveId} goes on from there.` };
         }
         saveMove(ctx, moveId, { ...m, stage: 'failed', made: !!m.made || ['build_failed', 'build_slow'].includes(err.code) });

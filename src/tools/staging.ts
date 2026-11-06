@@ -336,7 +336,10 @@ async function coolifyPlan(ctx: Ctx, serverId: string, app: string, c: Choices) 
   const made: Record<string, string> = {}, steps: Step[] = [];
   const where = { serverId: s.id, project: '$project', environment: envName };
   steps.push({ tool: 'coolify.create_project', title: `Add a staging environment to ${home.project}`, input: { serverId: s.id, name: home.project, environment: envName }, keep: { project: 'project' } });
-  steps.push({ tool: 'coolify.create_app', title: `Add ${home.name} to staging`, keep: { app: 'uuid' }, input: { ...where, name: home.name, ...src, port } });
+  // a compose app waits for a person each time it's asked for, so one that's there isn't asked for again
+  const copy = there.find((r) => r.kind === 'application' && r.name === home.name);
+  if (copy && 'buildPack' in src && src.buildPack === 'dockercompose') made.app = copy.uuid;
+  else steps.push({ tool: 'coolify.create_app', title: `Add ${home.name} to staging`, keep: { app: 'uuid' }, input: { ...where, name: home.name, ...src, port } });
   const changes: { label: string; before?: string; after: string }[] = [
     { label: 'Environment', after: `staging in ${home.project}${there.length ? ', already there' : ', new'}` },
     { label: 'App', after: `${home.name}, the same code (${'image' in src ? src.image : 'repo' in src ? src.repo : 'its Dockerfile'})${there.some((r) => r.name === home.name) ? ', already there' : ''}` },

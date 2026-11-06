@@ -5,7 +5,7 @@
 // Unit7 changes Coolify's own settings only through these typed tools (coolify.connect, coolify.proxy), never with
 // raw edits through server.exec.
 import { z } from 'zod';
-import { defineTool, execute, type Ctx } from './runtime.ts';
+import { askPerson, defineTool, execute, type Ctx } from './runtime.ts';
 import { id, json, run, tx, now, type DB } from '../db.ts';
 import { Unit7Error, notFound } from '../errors.ts';
 import { fid, isAgent, requireHuman, requireRole } from './helpers.ts';
@@ -537,6 +537,8 @@ defineTool({
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
     const c = need(ctx, s);
+    // a deploy reads the compose file again, and whoever can push to the repo wrote it
+    if (i.action === 'deploy' && i.kind === 'application' && isAgent(ctx) && !ctx.approvalId && (await c.api.call('GET', `/applications/${encodeURIComponent(i.uuid)}`).catch(() => undefined))?.build_pack === 'dockercompose') await askPerson(ctx, 'coolify.control', i, COMPOSE_ASK);
     ctx.progress(`Asking Coolify on ${s.name} to ${i.action}…`);
     const r = await act(ctx, c.api, i);
     ctx.emit('coolify.action', coolifyActionWords(i.action, lastXray<Inventory>(ctx.db, ctx.orgId, s.id)?.data?.parts.find((p) => p.coolify?.uuid === i.uuid)?.name ?? `a Coolify ${i.kind}`, s.name, r.status),
@@ -734,9 +736,13 @@ async function deployKey(ctx: Ctx, api: Coolify, s: ServerRow, repo: Repo, app: 
 }
 
 const BUILD_PACKS = ['nixpacks', 'railpack', 'static', 'dockerfile', 'dockercompose'] as const;
+// a compose file can mount the server's whole disk, so it's a command on the server wherever it comes from
+export const COMPOSE_ASK = 'A compose file can run anything on the server, as root, so a person says yes first.';
+const fromCompose = (i: { buildPack: string }) => i.buildPack === 'dockercompose';
 defineTool({
-  name: 'coolify.create_app', title: 'Create an app in Coolify', risk: 'write', action: 'service_write', timeoutMs: 20 * 60_000,
-  description: 'Create an application in a Coolify project from one of: a GitHub repo (repo: owner/name or its URL; a private repo goes through the Coolify GitHub App that reaches it, see coolify.repos, and with no such app through a read-only deploy key Unit7 makes and adds to the repo, which needs GitHub connected; others as public), a ready image (image: name:tag), or a Dockerfile’s text. buildPack (nixpacks by default) and port (3000) say how it builds and listens; domains are optional (Coolify gives a free test address). It isn’t deployed until coolify.control deploy (or deploy:true), so settings can go in first. One with the same name in that environment is reused.',
+  name: 'coolify.create_app', title: 'Create an app in Coolify', risk: 'write', action: (i) => (fromCompose(i) ? 'server_exec' : 'service_write'), timeoutMs: 20 * 60_000,
+  assess: (_c, i) => (fromCompose(i) ? { tier: 3, ask: COMPOSE_ASK, impact: `The compose file in ${i.repo ?? 'that repo'} can run anything on the server, as root, now and on each deploy.`, shows: `Coolify builds ${i.repo ?? 'it'}${i.branch ? ` (${i.branch})` : ''} with its compose file` } : undefined),
+  description: 'Create an application in a Coolify project from one of: a GitHub repo (repo: owner/name or its URL; a private repo goes through the Coolify GitHub App that reaches it, see coolify.repos, and with no such app through a read-only deploy key Unit7 makes and adds to the repo, which needs GitHub connected; others as public), a ready image (image: name:tag), or a Dockerfile’s text. buildPack (nixpacks by default) and port (3000) say how it builds and listens; domains are optional (Coolify gives a free test address). dockercompose runs the repo’s compose file, which can run anything on the server, so it asks first. It isn’t deployed until coolify.control deploy (or deploy:true), so settings can go in first. One with the same name in that environment is reused.',
   input: z.object({
     ...WHERE, name: NAME,
     repo: z.string().trim().max(300).optional(), branch: z.string().regex(/^[\w./-]{1,100}$/).optional(),

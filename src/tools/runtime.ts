@@ -117,7 +117,7 @@ export interface Tool<I = any, O = any> {
   green?: boolean | ((input: I) => boolean);
   // What the gate needs beyond the input, from Unit7's own records (never from what a server prints): the risk tier,
   // whether the target is only discovered, how often an AI just did this, and the literal command an approval shows.
-  assess?: (ctx: Pick<Ctx, 'app' | 'db' | 'orgId' | 'actor' | 'conversationId'> & { dryRun?: boolean }, input: I) => Assessment;
+  assess?: (ctx: Pick<Ctx, 'app' | 'db' | 'orgId' | 'actor' | 'conversationId'> & { dryRun?: boolean }, input: I) => Assessment | undefined;
   run: (ctx: Ctx, input: I) => O | Promise<O>;
 }
 
@@ -270,7 +270,7 @@ export const afterChange: { prepare?: (ctx: Ctx, tool: string, input: Record<str
 export interface ExecOptions { dryRun?: boolean; reason?: string; approvalId?: string; signal?: AbortSignal; onProgress?: (m: string) => void; conversationId?: string;
   underApproval?: string; // a step of an action a person approved (its id): the step's own gate still decides; ctx.approvalId says the whole was approved
   onlyIfAllowed?: boolean; // Warden's own fixes: when a person would have to approve, nothing is asked or recorded (approval_required, no id)
-  askFirst?: boolean; // waits for a person even where the gate would let it run (only ever stricter)
+  askFirst?: boolean | string; // waits for a person even where the gate would let it run (only ever stricter); a string says why
   question?: string; // what a person is asked, in plain words
 }
 
@@ -383,7 +383,7 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
     // a fix someone asked for from a phone alert: the AI looks freely, then proposes one change, which waits for them
     const fix = !o.approvalId && isAgent && risk !== 'read' && plain.decision !== 'deny' ? proposing(db, orgId, o.conversationId, actor) : undefined;
     if (fix?.approval_id) { const why = 'One fix from the phone alert is already waiting for the person’s OK. Stop here and say in a line what it does.'; return { status: 'denied', why, auditId: audit('denied', { error: why }) }; }
-    const decided = o.askFirst && plain.decision === 'allow' ? { decision: 'approve' as const, why: 'Seven asks before doing this.' } : fix && plain.decision === 'allow' ? { decision: 'approve' as const, why: 'You asked for this fix from your phone, so it waits for your OK.' } : plain;
+    const decided = o.askFirst && plain.decision === 'allow' ? { decision: 'approve' as const, why: typeof o.askFirst === 'string' ? o.askFirst : 'Seven asks before doing this.' } : fix && plain.decision === 'allow' ? { decision: 'approve' as const, why: 'You asked for this fix from your phone, so it waits for your OK.' } : plain;
     // an approval card shows the tier, what happens, and the literal command
     const d = assessed?.shows || assessed?.impact ? { ...decided, why: [decided.why, `${TIER_NAMES[assessed.tier]}.`, assessed.impact, assessed.shows && `Runs: ${assessed.shows}`].filter(Boolean).join(' ') } : decided;
     if (d.decision === 'deny') return { status: 'denied', why: d.why, auditId: audit('denied', { error: d.why }) };
@@ -525,8 +525,11 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
     const err = e instanceof Unit7Error ? e : new Unit7Error('internal', (e as Error)?.message ?? String(e), 500);
     if (!(e instanceof Unit7Error)) console.error(`tool ${name} crashed`, redactor.redact(String((e as Error)?.stack ?? e)));
     const message = redactor.redact(err.message);
-    const auditId = audit('error', { error: `${err.code}: ${message}`, durationMs: Date.now() - started, resources, approvalId });
+    // a step inside this waits for a person: that's where it stands, not a failure
+    const waiting = err.code === 'approval_required' ? (err.detail as { approvalId?: string } | undefined)?.approvalId : undefined;
+    const auditId = audit(waiting ? 'pending_approval' : 'error', { error: `${err.code}: ${message}`, durationMs: Date.now() - started, resources, approvalId: approvalId ?? waiting });
     if (approvalId) run(db, `UPDATE approvals SET status = 'done', result = ? WHERE id = ?`, `error: ${message}`, approvalId);
+    if (waiting) return { status: 'approval_required', approvalId: waiting, why: message };
     if (risk !== 'read') {
       app.events.emit(orgId, 'action.failed', `${tool.title} failed: ${message}`, {
         severity: 'warning', projectId, environmentId: env?.id, data: { tool: name, auditId, code: err.code },
@@ -536,6 +539,14 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
     const tail = (err.detail as { logTail?: unknown } | undefined)?.logTail;
     return { status: 'error', error: { code: err.code, message, ...(typeof tail === 'string' && tail.trim() && { logTail: redactor.redact(tail).slice(-8000) }) }, auditId };
   }
+}
+
+// What a tool only finds out while it runs (a name that's taken, how an app is built) can still ask. The same call goes to
+// Approvals and this run stops there, saying so. Approving runs it again, with ctx.approvalId set.
+export async function askPerson(ctx: Ctx, tool: string, input: unknown, why: string): Promise<never> {
+  const r = await execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { askFirst: why, reason: why, signal: ctx.signal, conversationId: ctx.conversationId });
+  if (r.status === 'approval_required') throw new Unit7Error('approval_required', r.why, 409, { approvalId: r.approvalId });
+  throw new Unit7Error('denied', r.status === 'denied' ? r.why : r.status === 'error' ? r.error.message : 'That didn’t run.', 403);
 }
 
 // A waiting approval that's hard to undo (tier 3: data, or it can't be taken back) asks the person approving it to

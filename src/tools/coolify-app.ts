@@ -4,10 +4,10 @@ import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
 import { json } from '../db.ts';
 import { Unit7Error, notFound } from '../errors.ts';
-import { defineTool, type Ctx } from './runtime.ts';
+import { askPerson, defineTool, type Ctx } from './runtime.ts';
 import { fid, isAgent } from './helpers.ts';
 import { serverRow } from './servers.ts';
-import { KIND, UUID, apiChange, need } from './coolify.ts';
+import { COMPOSE_ASK, KIND, UUID, apiChange, need } from './coolify.ts';
 import { CHANGE_UNDO } from './manage.ts';
 import { inventoryOf } from './xray.ts';
 import { addHook, githubToken, parseRepo, repoHooks } from '../connectors/github.ts';
@@ -62,6 +62,8 @@ for (const sw of SWITCHES) {
       const s = serverRow(ctx, i.serverId), c = need(ctx, s);
       const app = await c.api.call('GET', `/applications/${enc(i.uuid)}`), name = String(app?.name ?? 'this app');
       if (app?.build_pack === 'dockerimage' || !app?.git_repository || /coollabsio\/coolify/.test(app.git_repository)) throw new Unit7Error('no_repo', `${name} runs from an image or a Dockerfile, not a repo, so it has no pushes or pull requests to follow.`, 409);
+      // from here on a push or a pull request runs its compose file with nobody asked
+      if (i.on && app?.build_pack === 'dockercompose' && isAgent(ctx) && !ctx.approvalId) await askPerson(ctx, sw.tool, i, COMPOSE_ASK);
       const before = app?.settings?.[sw.field] as boolean | undefined;
       let changeId: string | undefined;
       if (before !== i.on) {
