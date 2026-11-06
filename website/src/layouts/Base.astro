@@ -3,7 +3,7 @@ import '../styles/global.css';
 import archivo from '@fontsource-variable/archivo/files/archivo-latin-wdth-normal.woff2?url';
 import archivoItalic from '@fontsource-variable/archivo/files/archivo-latin-wdth-italic.woff2?url';
 import geist from '@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url';
-import { SITE_URL, REPO_URL, SIGNULL_URL, LATEST } from '../site';
+import { SITE_URL, REPO_URL, SIGNULL_URL, LATEST, UPDATES_FORM } from '../site';
 
 interface Props { title: string; description: string; theme?: 'night' | 'dawn' | 'day'; noindex?: boolean; }
 const { title, description, theme = 'night', noindex = false } = Astro.props;
@@ -52,6 +52,7 @@ const ld = {
   <link rel="preload" href={archivoItalic} as="font" type="font/woff2" crossorigin />
   <link rel="preload" href={geist} as="font" type="font/woff2" crossorigin />
   <script is:inline type="application/ld+json" set:html={JSON.stringify(ld)}></script>
+  <script is:inline defer src="/_vercel/insights/script.js"></script>
   <script is:inline>
     (function () {
       var d = document.documentElement, paused = false;
@@ -123,6 +124,7 @@ const ld = {
       <div class="foot__print small">
         <p>© 2026 Signull. Unit 7 is open source under the Apache License 2.0.</p>
         <p>Screens show a demo workspace. Every name, domain and IP is made up. Trademarks belong to their owners.</p>
+        <p>Visits are counted with Vercel Web Analytics, with no tracking cookies.{UPDATES_FORM && ' Email addresses are kept in Kit and used only for Unit 7 updates.'}</p>
       </div>
     </div>
     <span class="foot__word" aria-hidden="true">Unit 7</span>

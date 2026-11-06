@@ -129,7 +129,7 @@ If a step fails, show me the error and fix it before moving on.
 git clone https://github.com/Nandkishorrr/unit7.git && cd unit7
 npm install
 npm run build                     # builds the web app into dist/web
-node src/main.ts serve            # http://localhost:4800
+node bin/unit7.mjs serve          # http://localhost:4800
 ```
 
 Open http://localhost:4800. The first visitor sets it up and becomes the owner. Then add a server (SSH) or

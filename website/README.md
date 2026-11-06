@@ -16,6 +16,7 @@ npm run preview  # serve dist/ locally
 ## Change the URLs
 
 - Repo, Signull site, coffee link: `src/site.ts`. Everything reads from there, including the install commands and `llms.txt`.
+- Email box: `UPDATES_FORM` in `src/site.ts`, the Kit form's address. Empty hides the box.
 - The site's own address is also in `astro.config.mjs`, `public/robots.txt` and `public/sitemap.xml`.
 
 ## Where things are

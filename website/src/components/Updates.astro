@@ -1,0 +1,59 @@
+---
+import { UPDATES_FORM } from '../site';
+---
+{UPDATES_FORM && (
+  <form class="upd" action={UPDATES_FORM} method="post" data-updates>
+    <label class="upd__q" for="upd-email">Get an email when a new version ships.</label>
+    <div class="upd__row">
+      <span class="upd__field"><input class="upd__in" id="upd-email" type="email" name="email_address" required autocomplete="email" spellcheck="false" placeholder="you@example.com" /></span>
+      <button class="btn btn--ghost" type="submit">Email me</button>
+    </div>
+    <p class="small upd__note" role="status">Optional. Only new versions, and you can unsubscribe any time.</p>
+  </form>
+)}
+
+<style>
+  .upd { margin-top: 2.25rem; max-width: 34rem; padding-inline: .9rem; }
+  .upd__q { display: block; margin-bottom: .85rem; font-weight: 600; color: var(--text); }
+  .upd__row { display: flex; gap: 1.25rem; }
+  .upd__row[hidden] { display: none; }
+  /* An input can't carry a pseudo-element, so the slanted frame lives on its wrapper. */
+  .upd__field { position: relative; isolation: isolate; display: flex; flex: 1; min-width: 0; }
+  .upd__field::before { content: ''; position: absolute; inset: 0; z-index: -1; transform: skewX(var(--skew)); border-radius: 2px; box-shadow: inset 0 0 0 1.5px var(--line-3); transition: box-shadow .25s var(--ease); }
+  .upd__field:focus-within::before { box-shadow: inset 0 0 0 2px var(--focus); }
+  .upd__in { width: 100%; min-height: 3.25rem; padding: 0 1.25rem; border: 0; outline: 0; background: none; color: var(--text); font: 500 1rem/1 var(--sans); }
+  .upd__in::placeholder { color: var(--faint); }
+  .upd__note { margin-top: .85rem; color: var(--muted); }
+  .upd[data-done] .upd__note { color: var(--text); font-size: 1rem; }
+  @media (max-width: 480px) { .upd__row { flex-direction: column; } }
+</style>
+
+<script>
+  // Without JavaScript, or if Kit refuses this request, the form posts normally and Kit shows its own page.
+  for (const form of document.querySelectorAll<HTMLFormElement>('[data-updates]')) {
+    const note = form.querySelector('[role="status"]')!;
+    const button = form.querySelector('button')!;
+    const row = form.querySelector<HTMLElement>('.upd__row')!;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      button.disabled = true;
+      note.textContent = 'Sending…';
+      let d;
+      try {
+        const r = await fetch(form.action, { method: 'POST', body: new FormData(form), headers: { Accept: 'application/json' } });
+        d = await r.json();
+      } catch {
+        form.submit();
+        return;
+      }
+      if (d.status === 'success') {
+        row.hidden = true;
+        form.dataset.done = '';
+        note.textContent = 'Almost done. Check your email and click the link to confirm.';
+      } else {
+        button.disabled = false;
+        note.textContent = "That address didn't work. Please check it and try again.";
+      }
+    });
+  }
+</script>

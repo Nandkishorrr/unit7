@@ -3,3 +3,4 @@ export const SITE_URL = 'https://signull.cloud';
 export const REPO_URL = 'https://github.com/Nandkishorrr/unit7';
 export const SIGNULL_URL = 'https://signull.in';
 export const COFFEE_URL = 'https://buymeacoffee.com/nandkishorrr';
+export const UPDATES_FORM = 'https://app.kit.com/forms/10155187/subscriptions'; // the Kit form's address; empty hides the email box

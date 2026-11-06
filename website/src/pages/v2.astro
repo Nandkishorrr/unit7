@@ -1,5 +1,6 @@
 ---
 import Base from '../layouts/Base.astro';
+import Updates from '../components/Updates.astro';
 import { REPO_URL } from '../site';
 
 type S = 'Done' | 'In testing' | 'In progress';
@@ -483,6 +484,7 @@ const wont = [
         <a class="btn" href="/open-source/#install">Get Unit 7 today</a>
         <a class="btn btn--ghost" href={REPO_URL} rel="noopener">Watch on GitHub</a>
       </div>
+      <Updates />
     </div>
   </section>
 </Base>
