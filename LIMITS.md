@@ -39,6 +39,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Self-hosted Supabase: auth changes need Coolify, there are no sign-in providers or email templates, realtime off lasts until the next deploy, and functions have no history.
 
+## WordPress
+
+- No multisite import. Uploads are capped at 100 MB. It needs the official image with a reachable MySQL or MariaDB container, and Coolify with Traefik for new sites. Premium plugin updates may not show.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

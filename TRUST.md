@@ -52,6 +52,7 @@ Unit7 can use an AI you connect: an API key, a local model, or your own signed-i
 ## What an AI can read
 
 - supabase.sql denies an AI vault, key and sign-in tables by name. An app’s own table under a plain name is only column-masked.
+- wp-cli output is data. WordPress admin passwords reach only the vault and the person asking, and a failed update’s automatic put-back touches files, never the database.
 
 ## Licence promise
 
