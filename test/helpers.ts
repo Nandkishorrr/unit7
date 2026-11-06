@@ -12,6 +12,8 @@ import '../src/tools/index.ts';
 
 // tests must never find (and write test backups into) the real Google Drive / Dropbox on this computer
 process.env.UNIT7_SYNC_HOME ??= mkdtempSync(join(tmpdir(), 'unit7-synchome-'));
+// or an AI key in the shell: "is an AI connected?" would ask that provider, and a yes starts a real run on that key
+for (const k of ['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY']) delete process.env[k];
 
 export function testApp(): App {
   const home = mkdtempSync(join(tmpdir(), 'unit7-test-'));
