@@ -17,6 +17,7 @@ import { liveTiming } from '../src/live/vercel.ts';
 import { hostOf } from '../src/live/hosts.ts';
 import { decideApproval, type ToolResult } from '../src/tools/runtime.ts';
 import { differs, linksOf, moveTiming } from '../src/tools/moves.ts';
+import { Unit7Error } from '../src/errors.ts';
 
 liveTiming.pollMs = 1; liveTiming.answerMs = 20;
 Object.assign(moveTiming, { tries: 2, waitMs: 1, pageMs: 2000 });
@@ -101,6 +102,7 @@ async function world(o: World = {}) {
     if (/^\/services\/srv-1\/env-vars\//.test(p) && method === 'PUT') { const key = decodeURIComponent(p.split('/').pop()!); st.made[0].envVars = [...(st.made[0].envVars ?? []).filter((e: any) => e.key !== key), { key, value: JSON.parse(body).value }]; return {}; }
     if (p === `/services/${id}/custom-domains` && method === 'POST') { st.domains.push(JSON.parse(body).name); return [201, {}]; }
     if (p === `/services/${id}/env-vars`) return (st.made[0]?.envVars ?? []).map((envVar: unknown) => ({ envVar, cursor: 'c' }));
+    if (p === '/logs') return { logs: [{ message: 'npm ERR! missing script: build' }] };
     if (/\/verify$/.test(p)) return {};
     return undefined;
   });
@@ -122,6 +124,7 @@ test('a plan says what a Vercel site is, where it can go and all that comes alon
   const w = await world();
   try {
     run(w.app.db, `INSERT INTO costs (org_id, provider, account, label, amount, currency, kind, at) VALUES (?, 'vercel', 'old', 'Vercel old', 20, 'USD', 'spent', ?)`, w.org.orgId, now());
+    run(w.app.db, `INSERT INTO servers (id, org_id, name, host, key_ref, status, facts, monthly_price, price_currency) VALUES ('srv_demodemodemo', ?, 'box', '203.0.113.9', 'credential://ssh/box/private-key', 'ready', '{}', 12, 'USD')`, w.org.orgId);
     const res = await w.org.a('move.plan', { assetId: w.assetId });
     const out = ok<any>(res), text = JSON.stringify(res);
     assert.equal(out.what.host, 'Vercel');
@@ -146,6 +149,7 @@ test('a plan says what a Vercel site is, where it can go and all that comes alon
     assert.match(out.staysBehind.join(' '), /VERCEL_URL/);
     assert.match(out.warnings[0], /^This looks commercial \(it takes payments \(stripe\)\).*Hobby plan is for personal, non-commercial use only/, 'a Hobby site that takes payments is warned about');
     assert.deepEqual(out.costsNow.lines, ['Vercel old: 20 USD so far this month']);
+    assert.match(out.whereTo.find((p: any) => p.to === 'server').costs, /already costs 12 USD a month/);
     const render = out.whereTo.find((p: any) => p.to === 'render');
     assert.equal(render.ok, true);
     assert.ok(!out.whereTo.some((p: any) => p.to === 'vercel' && p.accountId === w.acc), 'the account it’s already on isn’t somewhere to go');
@@ -310,6 +314,9 @@ test('copying what Unit7 can read waits for a person when an AI asks, the value 
     assert.ok(!('PREVIEW_ONLY' in sent), 'production’s settings only');
     assert.ok(!('VERCEL_URL' in sent), 'and never what a host sets by itself');
     assert.ok(!JSON.stringify(out).includes(SECRET));
+    const stepRow = get<{ actor_kind: string; actor_name: string }>(w.app.db, `SELECT actor_kind, actor_name FROM audit WHERE org_id = ? AND tool = 'live.put' AND result = 'success'`, w.org.orgId)!;
+    assert.equal(stepRow.actor_kind, 'user', 'a yes to the whole covers its steps: they don’t wait again');
+    assert.match(stepRow.actor_name, /Unit7 agent \(approved by Ada\)/, 'and the audit says who said yes');
     // a stored key is the same call for an AI
     const stored = { assetId: w.assetId, to: 'render', name: 'shop-two', skipMissing: true, env: { STRIPE_SECRET_KEY: 'credential://demo/acct/stripe' } };
     assert.equal((await w.org.a('move.run', stored)).status, 'approval_required');
@@ -357,6 +364,7 @@ test('a failed build can be tried again over what it made, and a name that was a
     const e = failed(await w.org.a('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }));
     assert.equal(e.code, 'build_failed');
     assert.match(e.message, /Nothing changed on the old site/);
+    assert.match((e as { logTail?: string }).logTail!, /missing script/, 'the build’s log comes along');
     const moveId = /moveId (chg_[\w-]+)/.exec(e.message)![1]!;
     assert.equal(moveRow(w, moveId).m.made, true);
     const out = ok<any>(await w.org.h('move.run', { moveId, rebuild: true, env: GIVEN }));
@@ -384,6 +392,20 @@ test('a new host refusing its key doesn’t get the old host’s account marked 
     assert.equal(status(w.acc), 'verified', 'Vercel did nothing wrong');
     assert.equal(status(w.renderAcc), 'failing', 'the account that refused is the one marked');
   } finally { w.close(); }
+});
+
+test('a step inside the build that waits for a person is picked up by the next run, on what it had started', async () => {
+  const w = await world(), render = hostOf('render')!, real = render.put;
+  render.put = async () => { throw new Unit7Error('approval_required', 'coolify.envs is waiting on the Approvals page. Run this again once it’s approved.', 409); };
+  try {
+    const out = ok<any>(await w.org.h('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }));
+    assert.equal(out.waiting, true);
+    assert.match(out.next, /goes on from there/);
+    assert.equal(moveRow(w, out.moveId).m.made, true);
+    render.put = real;
+    const done = ok<any>(await w.org.h('move.run', { moveId: out.moveId, env: GIVEN }));
+    assert.equal(done.ready, true);
+  } finally { render.put = real; w.close(); }
 });
 
 test('a host that can cost money: an AI can’t start it, and a person’s build waits on Approvals once, then the move goes on from there', async () => {

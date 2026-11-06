@@ -11,7 +11,7 @@ export async function step<T = any>(ctx: Ctx, tool: string, input: Record<string
   if (r.status === 'ok') return r.output as T;
   if (r.status === 'approval_required') throw new Unit7Error('approval_required', `${tool} is waiting on the Approvals page. Run this again once it’s approved.`, 409, { approvalId: r.approvalId });
   // nested: that run already noted any trouble on its own account, so whoever called it doesn't pin it on one of theirs
-  throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : `${tool} didn’t run.`, 409, { nested: true });
+  throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : `${tool} didn’t run.`, 409, { nested: true, ...(r.status === 'error' && { logTail: r.error.logTail }) });
 }
 
 // a private repo holding this site, new or updated
