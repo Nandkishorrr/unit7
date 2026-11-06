@@ -248,10 +248,16 @@ test('a certificate running out on a site Unit7 routes through Caddy: “Renew n
     const f = rep.findings.find((x: Finding) => x.id === 'domain:tls:shop.example.com');
     assert.deepEqual({ ...real(f.fix), change: undefined }, { tool: 'domain.renew_https', input: { domainId: dom }, label: 'Renew now', safe: true, change: undefined });
   } finally { renewing.certificate = real_; renewing.waitMs = 5000; renewing.tries = 8; }
-  // on a Coolify server Traefik renews its own: Unit7 says so instead of pretending
+  // on a Coolify server Traefik renews its own: Unit7 says why it didn't, from Traefik's log (test/gap-domains.test.ts has the rest)
   const c = await routedDomain({ web: 'coolify-proxy|traefik:v3.6' });
-  fakeServer(c.app);
-  assert.match(JSON.stringify(await c.o.h('domain.renew_https', { domainId: c.dom })), /Coolify’s proxy, which renews its own certificates/);
+  renewing.certificate = async () => ({ why: 'unable to verify the first certificate' });
+  try {
+    const log = 'time=x level=error msg="Unable to obtain ACME certificate for domains" error="acme: error: 400 :: urn:ietf:params:acme:error:connection :: Timeout during connect (likely firewall problem)" domains=["shop.example.com"]';
+    fakeServer(c.app, (x) => x.includes('docker logs') ? done(log) : undefined);
+    const r = ok(await c.o.h('domain.renew_https', { domainId: c.dom }));
+    assert.equal(r.renewed, false);
+    assert.match(r.why, /port 80/);
+  } finally { renewing.certificate = real_; }
 });
 
 // --- item 6a: a server that stops answering ------------------------------------------------------------------

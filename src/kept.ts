@@ -62,7 +62,7 @@ export function importantTouched(db: DB, orgId: string, input: unknown): string 
   const hit = service(svc)
     ?? service(via('SELECT service_id s FROM deployments WHERE id = ?', i.deploymentId))
     ?? (typeof i.asset === 'string' ? asset('id = ?', i.asset) : undefined)
-    ?? (typeof i.domain === 'string' ? domain(i.domain) : undefined)
+    ?? (typeof i.domain === 'string' ? domain(i.domain) : typeof i.from === 'string' ? domain(i.from.replace(/^https?:\/\//, '').split('/')[0]!) : undefined)
     ?? (typeof i.projectId === 'string' ? project(i.projectId) : undefined)
     ?? (env?.kind === 'production' ? project(env.project_id) : undefined)
     ?? (typeof i.key === 'string' ? (i.key.startsWith('prj_') ? project(i.key) : asset('id = ?', i.key)) : undefined);

@@ -10,7 +10,7 @@ import { Unit7Error } from '../errors.ts';
 
 interface Svc { id: string; name: string; slug: string; project_id: string; environment_id: string; server_id: string | null; config: string; current_deployment_id: string | null }
 const svcOf = (ctx: Ctx, serviceId: string) => get<Svc>(ctx.db, 'SELECT * FROM services WHERE id = ? AND org_id = ?', serviceId, ctx.orgId);
-const urlOf = (ctx: Ctx, serviceId: string) => { const d = get<{ hostname: string; tls_mode: string }>(ctx.db, 'SELECT hostname, tls_mode FROM domains WHERE service_id = ? ORDER BY auto, created_at LIMIT 1', serviceId); return d && `${d.tls_mode === 'off' ? 'http' : 'https'}://${d.hostname}`; };
+const urlOf = (ctx: Ctx, serviceId: string) => { const d = get<{ hostname: string; tls_mode: string }>(ctx.db, `SELECT hostname, tls_mode FROM domains WHERE service_id = ? AND hostname NOT LIKE '*%' ORDER BY auto, created_at LIMIT 1`, serviceId); return d && `${d.tls_mode === 'off' ? 'http' : 'https'}://${d.hostname}`; };
 const gitOf = (cfg: ServiceConfig): { repo: Repo; branch?: string; accountId?: string } | undefined => {
   if (cfg.source?.type !== 'git') return undefined;
   const repo = parseRepo(cfg.source.repo);

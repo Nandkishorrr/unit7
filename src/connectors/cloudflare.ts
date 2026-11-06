@@ -3,12 +3,12 @@ import type { Ctx } from '../tools/runtime.ts';
 import { Unit7Error } from '../errors.ts';
 import { assertReachable } from '../netguard.ts';
 
-const API = 'https://api.cloudflare.com/client/v4';
+export const cfApi = () => process.env.UNIT7_CLOUDFLARE_API ?? 'https://api.cloudflare.com/client/v4';
 
 async function cf(ctx: Ctx, accountId: string | undefined, path: string, init: { method?: string; body?: unknown } = {}) {
   const { value } = ctx.credentialFor('cloudflare', accountId);
-  await assertReachable('api.cloudflare.com');
-  const res = await fetch(`${API}${path}`, {
+  await assertReachable(new URL(cfApi()).hostname);
+  const res = await fetch(`${cfApi()}${path}`, {
     method: init.method ?? (init.body ? 'POST' : 'GET'),
     headers: { authorization: `Bearer ${value}`, 'content-type': 'application/json' },
     body: init.body ? JSON.stringify(init.body) : undefined,
@@ -54,8 +54,19 @@ export const cloudflare = {
       throw /permission|auth/i.test(e.message) ? new Unit7Error('cloudflare_error', 'Your Cloudflare token can edit DNS but not add domains. In Connections, add a new Cloudflare key (the button pre-fills the right permissions).', 403) : e;
     });
   },
-  addRecord: (ctx: Ctx, accountId: string, zoneId: string, r: { type: string; name: string; content: string; ttl?: number; priority?: number; proxied?: boolean }) =>
+  addRecord: (ctx: Ctx, accountId: string, zoneId: string, r: { type: string; name: string; content?: string; data?: object; ttl?: number; priority?: number; proxied?: boolean }) =>
     cf(ctx, accountId, `/zones/${zoneId}/dns_records`, { body: { ...r, ttl: r.ttl ?? 1, proxied: r.proxied ?? false } }).catch((e: Unit7Error) => { if (!/already exists|identical record/i.test(e.message)) throw e; }),
+  // a custom domain on a Pages project (POST /accounts/{id}/pages/projects/{name}/domains), in whichever account has it;
+  // the key needs "Cloudflare Pages: Edit", which Unit7's DNS key doesn't ask for
+  async pagesDomain(ctx: Ctx, accountId: string, project: string, domain: string) {
+    const name = encodeURIComponent(project);
+    for (const a of await cf(ctx, accountId, '/accounts?per_page=50') as { id: string }[]) {
+      if (!(await cf(ctx, accountId, `/accounts/${a.id}/pages/projects/${name}`).then(() => true, () => false))) continue;
+      await cf(ctx, accountId, `/accounts/${a.id}/pages/projects/${name}/domains`, { body: { name: domain } }).catch((e: Unit7Error) => { if (!/already/i.test(e.message)) throw e; });
+      return;
+    }
+    throw new Unit7Error('not_found', `Cloudflare has no Pages project called ${project} that this key can reach. A key needs “Cloudflare Pages: Edit” for this: add one in Connections.`, 404);
+  },
   zonePlan: (ctx: Ctx, accountId: string, zoneId: string) => cf(ctx, accountId, `/zones/${zoneId}`).then((z: { plan?: { name: string; price: number; currency: string; frequency?: string } }) => z.plan),
   async zones(ctx: Ctx, accountId: string) {
     const out: { id: string; name: string; status: string }[] = [];

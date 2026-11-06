@@ -252,8 +252,10 @@ export const vercel = {
   },
   // one project domain sends visitors to another (PATCH /v9/projects/{idOrName}/domains/{domain}: redirect,
   // redirectStatusCode 301/302/307/308); null makes it serve the project again
-  redirectDomain: (ctx: Ctx, acc: string, project: string, team: string | undefined, domain: string, to: string | null) =>
-    vc(ctx, acc, `/v9/projects/${encodeURIComponent(project)}/domains/${encodeURIComponent(domain)}`, { team, method: 'PATCH', body: { redirect: to, redirectStatusCode: to ? 301 : null } }),
+  redirectDomain: (ctx: Ctx, acc: string, project: string, team: string | undefined, domain: string, to: string | null, code = 301) =>
+    vc(ctx, acc, `/v9/projects/${encodeURIComponent(project)}/domains/${encodeURIComponent(domain)}`, { team, method: 'PATCH', body: { redirect: to, redirectStatusCode: to ? code : null } }),
+  domainRedirect: (ctx: Ctx, acc: string, project: string, team: string | undefined, domain: string) =>
+    vc<{ redirect?: string | null; redirectStatusCode?: number | null }>(ctx, acc, `/v9/projects/${encodeURIComponent(project)}/domains/${encodeURIComponent(domain)}`, { team }).then((r) => ({ to: r.redirect ?? null, code: r.redirectStatusCode ?? null })),
   // Vercel as a DNS host (nameservers ns1/ns2.vercel-dns.com): which of your teams holds the zone
   async dnsTeam(ctx: Ctx, acc: string, zone: string): Promise<{ team?: string } | undefined> {
     const teams = await vc<{ teams?: { id: string }[] }>(ctx, acc, '/v2/teams').then((r) => r.teams ?? [], () => []);

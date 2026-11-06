@@ -14,6 +14,7 @@ import { proxyFor, type Site } from '../deploy/caddy.ts';
 import { replicaNames, routeService, type ServiceConfig, type ServiceRow } from '../deploy/deployer.ts';
 import { vercel } from '../connectors/clouds.ts';
 import { netlify } from '../connectors/hosts.ts';
+import { canonicalOnCoolify } from './redirects.ts';
 
 const TLDS = ['com', 'io', 'co', 'app', 'dev', 'net', 'org', 'xyz'];
 export const LAUNCH = { pollMs: 15_000, waitMs: 3 * 60_000 }; // how long it waits for the domain and HTTPS (tests shorten it)
@@ -197,8 +198,8 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
   const stop = (k: StepKey, s: { state: 'waiting' | 'failed'; note: string }) => { set(k, s.state, s.note); return end(false, s.state === 'failed' ? `${s.note} Fix that, then run it again: it picks up where it stopped.` : s.note); };
   const domainId = () => get<{ id: string }>(ctx.db, 'SELECT id FROM domains WHERE hostname = ? AND org_id = ?', domain, ctx.orgId)?.id;
   const deadline = () => Date.now() + LAUNCH.waitMs;
-  const pointOnce = async (hostname: string) => (await pointedAlready(ctx, hostname, point.data))
-    ? { ok: true as const, output: { note: 'It already points at this app.' } } : said(await call('domain.point', { hostname, ...i.target }));
+  const pointOnce = async (hostname: string, extra: Record<string, unknown> = {}) => (await pointedAlready(ctx, hostname, point.data))
+    ? { ok: true as const, output: { note: 'It already points at this app.' } } : said(await call('domain.point', { hostname, ...i.target, ...extra }));
 
   // 1. ready: bought at Hostinger, wait until it's registered; registered elsewhere, nothing to wait for
   set('ready', 'running');
@@ -230,7 +231,8 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
 
   // 3. point the bare domain at the app
   set('point', 'running');
-  const p = await pointOnce(domain);
+  // a Coolify app takes both names in one restart; www's own step below only finds it done
+  const p = await pointOnce(domain, i.target.coolify ? { also: [`www.${domain}`], wait: false } : {});
   if (!p.ok) return stop('point', p);
   const waitDns = needsYou(p.output);
   set('point', waitDns ? 'waiting' : 'ok', waitDns ?? p.output?.note);
@@ -259,7 +261,7 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
   if (i.target.supabase) set('www', 'skipped', 'An API address has no www.');
   else {
     set('www', 'running');
-    const w = await pointOnce(`www.${domain}`);
+    const w = await pointOnce(`www.${domain}`, i.target.coolify ? { wait: false } : {});
     if (!w.ok) return stop('www', w);
     const wwwWait = needsYou(w.output);
     // domain.canonical writes this down once it's set, so a run after a person's OK doesn't file it again
@@ -283,7 +285,7 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
 
 defineTool({
   name: 'domain.launch', title: 'Set up a domain', risk: 'write', action: 'dns_write', timeoutMs: 20 * 60_000,
-  description: 'After buying a domain, or for one you already own (“connect my existing domain”): waits until it’s ready, keeps its DNS where it is or moves it to Cloudflare (dns: "cloudflare"), points it at an app, gets HTTPS, protects its email, makes www send visitors to the bare domain (or the other way, prefer: "www") and checks it’s live. Each step is its own checked action, and it stops at the first that fails with what to do; run it again and it picks up there. target is what domain.point takes (serviceId, or vercel/netlify/render/railway/heroku/fly/supabase); a dry run lists the apps with theirs.',
+  description: 'After buying a domain, or for one you already own (“connect my existing domain”): waits until it’s ready, keeps its DNS where it is or moves it to Cloudflare (dns: "cloudflare"), points it at an app, gets HTTPS, protects its email, makes www send visitors to the bare domain (or the other way, prefer: "www") and checks it’s live. Each step is its own checked action, and it stops at the first that fails with what to do; run it again and it picks up there. target is what domain.point takes (serviceId, or coolify/vercel/netlify/render/railway/heroku/fly/pages/hostinger/supabase); a dry run lists the apps with theirs.',
   input: z.object({ domain: z.string().trim().min(3).max(253), target: z.record(z.string(), z.unknown()).optional(), dns: z.enum(['keep', 'cloudflare']).default('keep'),
     prefer: z.enum(['apex', 'www']).default('apex').describe('The main address: the bare domain (default) or www. The other one redirects to it.') }),
   async dryRun(ctx, i) {
@@ -347,6 +349,11 @@ export async function setCanonical(ctx: Ctx, raw: string, prefer: 'apex' | 'www'
       await routeService(ctx, s, svc, container, reps, { hostname: main, tls: (m!.tls_mode ?? 'auto') as Site['tls'] });
       await routeService(ctx, s, svc, container, reps, { hostname: other, tls: (o!.tls_mode ?? 'auto') as Site['tls'] });
     } catch (e) { restore(); throw e; }
+  } else if (kind === 'coolify') {
+    needBoth();
+    how = 'traefik';
+    mark(m); mark(o, main);
+    try { await canonicalOnCoolify(ctx, t.serverId!, main, other); } catch (e) { restore(); throw e; }
   } else if (kind === 'vercel') {
     needBoth();
     how = 'vercel';
@@ -380,7 +387,7 @@ export async function setCanonical(ctx: Ctx, raw: string, prefer: 'apex' | 'www'
 
 defineTool({
   name: 'domain.canonical', title: 'Choose the main address', risk: 'write', action: 'proxy_config', timeoutMs: 3 * 60_000, idempotent: true,
-  description: 'Make www and the bare domain one address: the other one sends visitors to the main one with a permanent (301) redirect that keeps the page and the query. prefer "apex" (default: example.com is the main one) or "www". Works where Unit7 runs the app (its proxy) and on Vercel and Netlify (their own redirect setting); on Render, Railway, Heroku and Fly it says what to do. Both names must point at the same app first (domain.point). Checks afterwards that the redirect answers. Running it again changes nothing.',
+  description: 'Make www and the bare domain one address: the other one sends visitors to the main one with a permanent (301) redirect that keeps the page and the query. prefer "apex" (default: example.com is the main one) or "www". Works where Unit7 runs the app (its proxy), on a Coolify app (its Traefik) and on Vercel and Netlify (their own redirect setting); on Render, Railway, Heroku and Fly it says what to do. Both names must point at the same app first (domain.point). Checks afterwards that the redirect answers. Running it again changes nothing.',
   input: z.object({ domain: z.string().trim().min(3).max(253), prefer: z.enum(['apex', 'www']).default('apex') }),
   assess(_ctx, i) {
     const apex = domainOf(i.domain), main = i.prefer === 'www' ? `www.${apex}` : apex;

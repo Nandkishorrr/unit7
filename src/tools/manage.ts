@@ -621,6 +621,13 @@ const changeOf = (db: DB, orgId: string, changeId: string) => get<ChangeRow>(db,
 // changes that aren't on a server (a DNS record removed, a cloud machine stopped): their tools register how to take them
 // back by verb (tools/clouds-*.ts), so Activity's Undo works for them through this same tool and gate
 export const CHANGE_UNDO: Record<string, (ctx: Ctx, change: { id: string; verb: string; summary: string; undo: string }) => Promise<Record<string, unknown> | void>> = {};
+// one such change, kept with what takes it back and offered in Activity
+export function keepChange(ctx: Ctx, part: string, verb: string, summary: string, undo: object) {
+  const changeId = id('chg');
+  sql(ctx.db, 'INSERT INTO changes (id, org_id, server_id, part, verb, summary, undo, status, actor) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)', changeId, ctx.orgId, part, verb, summary, JSON.stringify({ steps: [], ...undo }), 'done', ctx.actor.name);
+  ctx.emit('change.made', `${summary}. It can be undone.`, { resource: part, data: { changeId, part, undo: 'change.undo' } });
+  return changeId;
+}
 defineTool({
   name: 'change.undo', title: 'Undo a change on a server', risk: 'write', action: 'change_undo', timeoutMs: 30 * 60_000,
   description: 'Take back a change Unit7 made on a server (settings, an update, a stop, caps, data moved to the trash) with the undo it recorded before making it, then check the app is healthy. change.list shows what can be undone.',

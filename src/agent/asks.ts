@@ -220,6 +220,13 @@ export interface SourceOption {
 }
 const DB_KINDS = new Set(['postgres', 'mysql', 'mariadb', 'redis', 'mongo']);
 const POINTABLE = new Set(['unit7', 'vercel', 'netlify', 'render', 'railway', 'heroku', 'fly', 'supabase']);
+// a Coolify application from a server's X-ray ("<server>/coolify:<uuid>"), or a Hostinger website: their domain.point target
+const coolifyPart = /^(srv_[\w-]+)\/coolify:([\w-]{3,64})$/;
+const pointFound = (a: { provider: string; ext_id: string; name: string; account_id: string | null; m: Found }) => {
+  const c = a.provider === 'coolify' ? coolifyPart.exec(a.ext_id) : undefined;
+  if (c) return { coolify: { serverId: c[1], uuid: c[2] } };
+  return a.provider === 'hostinger' && a.m.platform === 'hostinger-web' && a.account_id ? { hostinger: { accountId: a.account_id, website: a.name } } : undefined;
+};
 const INSTANT = /\.(sslip|nip)\.io$/; // Unit7's own stand-in addresses, not a domain anyone connects
 const svcState = (s: string): SourceOption['state'] => /healthy|running|active/.test(s) ? { tone: 'ok', text: 'Running' }
   : /deploy|build|start/.test(s) ? { tone: 'warn', text: 'Deploying' } : /fail|crash|error|unhealthy/.test(s) ? { tone: 'bad', text: 'Not working' }
@@ -243,8 +250,8 @@ const services = (app: App, orgId: string) => all<Svc>(app.db, `SELECT s.id, s.n
   (SELECT hostname FROM domains d WHERE d.service_id = s.id ORDER BY (hostname LIKE '%.sslip.io' OR hostname LIKE '%.nip.io'), d.created_at LIMIT 1) host
   FROM services s JOIN projects p ON p.id = s.project_id JOIN environments e ON e.id = s.environment_id WHERE s.org_id = ? ORDER BY p.name, e.name, s.name`, orgId);
 type Found = { platform?: string; status?: string; dns?: string; zone?: string; ips?: string[]; end?: { kind: string } & Record<string, string> };
-const assets = (app: App, orgId: string, kind: string) => all<{ id: string; provider: string; name: string; url: string | null; meta: string }>(app.db,
-  `SELECT id, provider, name, url, meta FROM assets WHERE org_id = ? AND kind = ? AND provider <> 'unit7' ORDER BY provider, name`, orgId, kind)
+const assets = (app: App, orgId: string, kind: string) => all<{ id: string; provider: string; name: string; url: string | null; meta: string; ext_id: string; account_id: string | null }>(app.db,
+  `SELECT id, provider, name, url, meta, ext_id, account_id FROM assets WHERE org_id = ? AND kind = ? AND provider <> 'unit7' ORDER BY provider, name`, orgId, kind)
   .map((a) => ({ ...a, m: json<Found>(a.meta, {}) }));
 const pointWith = (end?: Found['end']) => {
   if (!end || !POINTABLE.has(end.kind)) return undefined;
@@ -284,10 +291,13 @@ function build(app: App, orgId: string, source: Source): SourceOption[] {
       id: s.id, label: s.name, full: `${s.name} (${s.project}, ${s.env})`, logo: s.stack ?? 'unit7', provider: 'unit7', sub: `${s.project} · ${s.env}`, url: s.host ? `https://${s.host}` : undefined, state: svcState(s.status),
       use: { serviceId: s.id, provider: 'unit7', project: s.project, environment: s.env, pointWith: { serviceId: s.id } },
     }));
-    const elsewhere: SourceOption[] = assets(app, orgId, 'app').map((a) => ({
-      id: a.id, label: a.name, logo: a.provider, provider: a.provider, sub: a.m.platform && a.m.platform !== a.provider ? a.m.platform : undefined, url: a.url ?? undefined, state: assetState(a.m.status),
-      use: { provider: a.provider, name: a.name, ...(a.url && { url: a.url }), ...(pointWith(a.m.end) && { pointWith: pointWith(a.m.end) }) },
-    }));
+    const elsewhere: SourceOption[] = assets(app, orgId, 'app').map((a) => {
+      const point = pointWith(a.m.end) ?? pointFound(a);
+      return {
+        id: a.id, label: a.name, logo: a.provider, provider: a.provider, sub: a.m.platform && a.m.platform !== a.provider ? a.m.platform : undefined, url: a.url ?? undefined, state: assetState(a.m.status),
+        use: { provider: a.provider, name: a.name, ...(a.url && { url: a.url }), ...(point && { pointWith: point }) },
+      };
+    });
     return [...own, ...elsewhere];
   }
   if (source === 'databases') {
@@ -344,7 +354,9 @@ export const ASK_RULES = `This chat shows live cards and pickers, so:
 - If an ask comes back expired or cancelled, stop and say in one line you'll carry on when they're ready.
 - After a fix, re-check with the matching read tool before saying it's fixed. If the check still shows the problem, say so plainly and offer the next fix. Never say 'fixed' on a guess. A fix's result says verified (fixed, or still with why); otherwise alert_recheck with the alert's key. Look with reads (server_routes, domain_check with host, server_xray), never server_exec: reads need no approval.
 Guided flows:
-- Connect a domain: ui_choose source domains (allowNew "Add a new domain") → ui_choose source apps (allowNew "New website") → if subdomains matter, ui_choose options (the bare domain, www…) → preview the DNS change (confirm per autonomy) → domain_point with the app's pointWith plus the hostname → domain_check, then one line about HTTPS.
+- Connect a domain: ui_choose source domains (allowNew "Add a new domain") → ui_choose source apps (allowNew "New website") → if subdomains matter, ui_choose options (the bare domain, www…) → preview the DNS change (confirm per autonomy) → domain_point with the app's pointWith plus the hostname → domain_check, then one line about HTTPS. A Coolify app works the same: its pointWith is enough, and domain_point sets the name in Coolify, writes DNS, restarts the app and checks HTTPS in one call. For a whole new domain (www, HTTPS, email protection too), domain_launch with the same pointWith as target.
+- A DNS record ("add an MX", "a TXT for Google", "an SRV"): dns_list first → dns_set as a dry run to show what changes → dns_set. A record for mail asks a person first and says what stops working; never work around that.
+- Send a domain or a page somewhere else: domain_redirect (from, to). Give a client their own address: client_subdomain (name, domain and, if they have several apps, the app's pointWith as target). A wildcard (*.example.com): domain_point on a server or Coolify app, then tell them what its certificate result says: never say HTTPS works until domain_check says so.
 - Deploy: ui_choose source apps or projects (allowNew "New project") → environment as options when there's more than one → deployment_create → one line with the URL.
 - Add a database: ui_choose source apps (what it's for) → engine as options (Postgres unless they say) → database_create with injectInto → redeploy if needed.
 - Back up / restore: ui_choose source databases → backup_create; to restore, backup_list, ui_choose options of backups, ui_confirm with danger → backup_restore.

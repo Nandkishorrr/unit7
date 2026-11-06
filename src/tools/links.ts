@@ -57,7 +57,7 @@ const svc = (ctx: Ctx, serviceId: string) => {
 function addressFor(ctx: Ctx, s: ReturnType<typeof svc>, consumer: End): string {
   const cfg = json<ServiceConfig>(s.config, {});
   if (consumer.kind === 'unit7' && s.server_id && svc(ctx, consumer.serviceId).server_id === s.server_id) return `http://${internalHost(s)}:${cfg.port ?? 3000}`;
-  const d = get<{ hostname: string; tls_mode: string }>(ctx.db, `SELECT hostname, tls_mode FROM domains WHERE service_id = ? AND status != 'broken' ORDER BY auto, created_at LIMIT 1`, s.id);
+  const d = get<{ hostname: string; tls_mode: string }>(ctx.db, `SELECT hostname, tls_mode FROM domains WHERE service_id = ? AND status != 'broken' AND hostname NOT LIKE '*%' ORDER BY auto, created_at LIMIT 1`, s.id);
   if (!d) throw new Unit7Error('no_address', `${s.name} has no public address yet. Deploy it (or point a domain at it) first.`, 409);
   return `${d.tls_mode === 'off' ? 'http' : 'https'}://${d.hostname}`;
 }

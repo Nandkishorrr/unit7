@@ -321,7 +321,7 @@ export const fly = {
 async function doList<T>(ctx: Ctx, acc: string, path: string, field: string): Promise<T[]> {
   const out: T[] = [];
   for (let page = 1; page < 50; page++) {
-    const r = await rest<Record<string, any>>('DigitalOcean', `${DO}${path}${path.includes('?') ? '&' : '?'}per_page=200&page=${page}`, { headers: await doAuth(ctx, acc) });
+    const r = await rest<Record<string, any>>('DigitalOcean', `${DO()}${path}${path.includes('?') ? '&' : '?'}per_page=200&page=${page}`, { headers: await doAuth(ctx, acc) });
     out.push(...(r[field] ?? []));
     if (!r.links?.pages?.next) break;
   }
@@ -330,12 +330,12 @@ async function doList<T>(ctx: Ctx, acc: string, path: string, field: string): Pr
 export const digitalocean = {
   droplets: (ctx: Ctx, acc: string) => doList<{ id: number; name: string; status: string; networks: { v4: { ip_address: string; type: string }[] } }>(ctx, acc, '/droplets', 'droplets'),
   apps: (ctx: Ctx, acc: string) => doList<{ id: string; spec: { name: string; services?: { envs?: { key: string; value?: string }[] }[]; static_sites?: { envs?: { key: string; value?: string }[] }[]; envs?: { key: string; value?: string }[] }; default_ingress?: string; domains?: { spec: { domain: string } }[]; active_deployment?: { phase: string } }>(ctx, acc, '/apps', 'apps'),
-  databases: async (ctx: Ctx, acc: string) => (await rest<{ databases?: { id: string; name: string; engine: string; status: string; connection?: { host?: string }; private_connection?: { host?: string } }[] }>('DigitalOcean', `${DO}/databases`, { headers: await doAuth(ctx, acc) })).databases ?? [],
+  databases: async (ctx: Ctx, acc: string) => (await rest<{ databases?: { id: string; name: string; engine: string; status: string; connection?: { host?: string }; private_connection?: { host?: string } }[] }>('DigitalOcean', `${DO()}/databases`, { headers: await doAuth(ctx, acc) })).databases ?? [],
   domains: (ctx: Ctx, acc: string) => doList<{ name: string }>(ctx, acc, '/domains', 'domains'),
   records: (ctx: Ctx, acc: string, zone: string) => doList<{ type: string; name: string; data: string }>(ctx, acc, `/domains/${zone}/records`, 'domain_records'),
-  monthToDate: async (ctx: Ctx, acc: string) => Number((await rest<{ month_to_date_usage?: string }>('DigitalOcean', `${DO}/customers/my/balance`, { headers: await doAuth(ctx, acc) })).month_to_date_usage ?? 0),
+  monthToDate: async (ctx: Ctx, acc: string) => Number((await rest<{ month_to_date_usage?: string }>('DigitalOcean', `${DO()}/customers/my/balance`, { headers: await doAuth(ctx, acc) })).month_to_date_usage ?? 0),
   async recentLines(ctx: Ctx, acc: string, appId: string, since: Date) {
-    const r = await rest<{ historic_urls?: string[] }>('DigitalOcean', `${DO}/apps/${appId}/logs?type=RUN&follow=false`, { headers: await doAuth(ctx, acc) });
+    const r = await rest<{ historic_urls?: string[] }>('DigitalOcean', `${DO()}/apps/${appId}/logs?type=RUN&follow=false`, { headers: await doAuth(ctx, acc) });
     if (!r.historic_urls?.[0]) return [];
     const text = await (await fetch(r.historic_urls[0], { signal: AbortSignal.timeout(20_000) })).text();
     // "<component> <timestamp> <message>"

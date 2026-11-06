@@ -46,7 +46,7 @@ export function targets(app: App, orgId: string): { host: string; asset: string;
     try { const h = new URL(a.url!).hostname.toLowerCase(); if (!out.has(h)) out.set(h, { host: h, asset: a.id, name: a.name }); } catch { /* not a URL */ }
   }
   for (const d of all<{ host: string; asset: string; name: string }>(app.db, `SELECT d.name host, a.id asset, a.name name FROM edges e JOIN assets d ON d.id = e.source JOIN assets a ON a.id = e.target
-      WHERE e.org_id = ? AND d.kind = 'domain' AND a.kind = 'app' AND e.kind IN ('domain', 'dns') AND e.status != 'misconfigured'`, orgId)) if (!out.has(d.host) && !off.has(d.asset)) out.set(d.host, d);
+      WHERE e.org_id = ? AND d.kind = 'domain' AND a.kind = 'app' AND e.kind IN ('domain', 'dns') AND e.status != 'misconfigured'`, orgId)) if (!out.has(d.host) && !off.has(d.asset) && !d.host.startsWith('*.')) out.set(d.host, d);
   return [...out.values()].slice(0, 500); // ponytail: 500 addresses per organisation per round
 }
 

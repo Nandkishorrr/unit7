@@ -78,7 +78,7 @@ export async function scanUnit7(ctx: Ctx): Promise<Scan> {
     `SELECT id, name, slug, kind, environment_id, server_id, config FROM services WHERE org_id = ?`, ctx.orgId)) {
     const cfg = json<ServiceConfig>(s.config, {});
     const key = `unit7:${s.id}`;
-    const domains = all<{ hostname: string }>(ctx.db, 'SELECT hostname FROM domains WHERE service_id = ?', s.id).map((d) => d.hostname.toLowerCase());
+    const domains = all<{ hostname: string }>(ctx.db, 'SELECT hostname FROM domains WHERE service_id = ?', s.id).map((d) => d.hostname.toLowerCase()).filter((h) => !h.startsWith('*.'));
     const vars = merged(ctx.db, ctx.orgId, { type: 'service', id: s.id, label: '' });
     const envKeys = vars.map((v) => v.key);
     // what Unit7 wired itself: a setting that is one of its databases' addresses names that database, whatever the value says

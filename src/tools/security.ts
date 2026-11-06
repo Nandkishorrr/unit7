@@ -335,6 +335,10 @@ async function domainFindings(ctx: Ctx): Promise<Finding[]> {
   const caddy = new Set(all<{ hostname: string; facts: string }>(ctx.db, `SELECT d.hostname, sv.facts FROM domains d JOIN services s ON s.id = d.service_id JOIN servers sv ON sv.id = s.server_id WHERE d.org_id = ?`, ctx.orgId)
     .filter((d) => proxyOf(json(d.facts, {})).kind === 'caddy').map((d) => d.hostname));
   const renew = (host: string): Fix => ({ tool: 'domain.renew_https', input: { domainId: managed.get(host) }, label: 'Renew now', safe: true, change: 'Asks Unit7’s web proxy to renew the certificate now, then checks it from outside. Nothing else changes.' });
+  // names Coolify's proxy answers: Traefik's own log says why
+  const onCoolify = new Map(all<{ id: string; facts: string }>(ctx.db, 'SELECT id, facts FROM servers WHERE org_id = ?', ctx.orgId).filter((s) => proxyOf(json(s.facts, {})).kind === 'coolify')
+    .flatMap((s) => (lastXray(ctx.db, ctx.orgId, s.id)?.data?.parts ?? []).flatMap((p) => (p.hosts ?? []).map((h) => [h.toLowerCase(), s.id] as const))));
+  const why = (host: string): Fix => ({ tool: 'domain.renew_https', input: { serverId: onCoolify.get(host), host }, label: 'Find out why', safe: true, change: 'Reads Traefik’s log on the server and says why the certificate failed. Nothing changes.' });
   const recheck = (host: string): Fix => managed.has(host) ? { tool: 'domain.check', input: { domainId: managed.get(host) }, label: 'Check again', safe: true, change: 'Checks DNS and HTTPS again. HTTPS certificates renew by themselves; this confirms it.' }
     : { tool: 'watch.check', input: { daily: true }, label: 'Check again', safe: true, change: 'Runs the outside checks again: sites, certificates, renewals, email.' };
   const out: Finding[] = [];
@@ -345,7 +349,7 @@ async function domainFindings(ctx: Ctx): Promise<Finding[]> {
     if (w.kind === 'tls' && !/\.(sslip|nip)\.io$/.test(w.host) && (w.status === 'expiring' || w.status === 'broken')) {
       const left = w.value ? Math.floor((Date.parse(w.value) - Date.now()) / 86400_000) : undefined;
       add({ id: `domain:tls:${w.host}`, about, severity: w.status === 'broken' || (left !== undefined && left <= 3) ? 'high' : 'medium', title: w.status === 'broken' ? `${w.host}’s HTTPS certificate is broken` : `${w.host}’s HTTPS certificate runs out soon`,
-        detail: 'Visitors get a scary warning when it lapses. It should renew by itself; this means renewal is failing.', evidence: w.detail ?? undefined, fix: caddy.has(w.host) && managed.has(w.host) ? renew(w.host) : recheck(w.host) });
+        detail: 'Visitors get a scary warning when it lapses. It should renew by itself; this means renewal is failing.', evidence: w.detail ?? undefined, fix: caddy.has(w.host) && managed.has(w.host) ? renew(w.host) : onCoolify.has(w.host) ? why(w.host) : recheck(w.host) });
     }
     if (w.kind === 'registration' && w.status !== 'ok') add({ id: `domain:registration:${w.host}`, about, severity: w.status === 'expired' ? 'critical' : 'high', title: w.status === 'expired' ? `${w.host} has expired` : `${w.host} expires soon`,
       detail: 'If the registration lapses, everything on it goes offline and someone else can buy it.', evidence: w.detail ?? undefined,

@@ -80,7 +80,7 @@ export const google = {
   functions: (ctx: Ctx, acc: string, p: string) => glist<{ name: string; state?: string; url?: string; environment?: string; labels?: Record<string, string>; serviceConfig?: { uri?: string; environmentVariables?: Record<string, string> } }>(ctx, acc, `${G('cloudfunctions')}/v2/projects/${p}/locations/-/functions`, 'functions'),
   sql: (ctx: Ctx, acc: string, p: string) => glist<SqlInstance>(ctx, acc, `${G('sqladmin')}/v1/projects/${p}/instances`, 'items'),
   dnsZones: (ctx: Ctx, acc: string, p: string) => glist<{ name: string; dnsName: string; visibility?: string }>(ctx, acc, `${G('dns')}/dns/v1/projects/${p}/managedZones`, 'managedZones'),
-  dnsRecords: (ctx: Ctx, acc: string, p: string, zone: string) => glist<{ name: string; type: string; rrdatas?: string[] }>(ctx, acc, `${G('dns')}/dns/v1/projects/${p}/managedZones/${zone}/rrsets`, 'rrsets'),
+  dnsRecords: (ctx: Ctx, acc: string, p: string, zone: string) => glist<{ name: string; type: string; ttl?: number; rrdatas?: string[] }>(ctx, acc, `${G('dns')}/dns/v1/projects/${p}/managedZones/${zone}/rrsets`, 'rrsets'),
   registrations: (ctx: Ctx, acc: string, p: string) => glist<{ domainName: string; expireTime?: string; state?: string; managementSettings?: { renewalMethod?: string } }>(ctx, acc, `${G('domains')}/v1/projects/${p}/locations/global/registrations`, 'registrations'),
   // Firebase
   firebaseProjects: (ctx: Ctx, acc: string) => glist<{ projectId: string; displayName?: string }>(ctx, acc, `${G('firebase')}/v1beta1/projects`, 'results'),

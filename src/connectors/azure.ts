@@ -49,7 +49,7 @@ export const azure = {
   postgres: (ctx: Ctx, acc: string, s: string) => arm<Res<{ fullyQualifiedDomainName?: string; state?: string; version?: string }>>(ctx, acc, `${sub(s)}/providers/Microsoft.DBforPostgreSQL/flexibleServers?api-version=2022-12-01`),
   sqlServers: (ctx: Ctx, acc: string, s: string) => arm<Res<{ fullyQualifiedDomainName?: string; state?: string }>>(ctx, acc, `${sub(s)}/providers/Microsoft.Sql/servers?api-version=2021-11-01`),
   dnsZones: (ctx: Ctx, acc: string, s: string) => arm<Res<object>>(ctx, acc, `${sub(s)}/providers/Microsoft.Network/dnszones?api-version=2018-05-01`),
-  records: (ctx: Ctx, acc: string, zoneId: string) => arm<Res<{ ARecords?: { ipv4Address: string }[]; AAAARecords?: { ipv6Address: string }[]; CNAMERecord?: { cname: string } }> & { type: string }>(ctx, acc, `${zoneId}/all?api-version=2018-05-01`),
+  records: (ctx: Ctx, acc: string, zoneId: string) => arm<Res<NonNullable<AzRecordSet['properties']>> & { type: string }>(ctx, acc, `${zoneId}/all?api-version=2018-05-01`),
   // this month so far, per subscription
   async monthToDate(ctx: Ctx, acc: string, s: string) {
     const r = await call<{ properties?: { columns?: { name: string }[]; rows?: unknown[][] } }>('Azure', `${ARM()}${sub(s)}/providers/Microsoft.CostManagement/query?api-version=2023-03-01`, {
@@ -95,7 +95,7 @@ export const azureMoney = {
 // Azure DNS: one record set (zone resource id + type + relative name). PUT replaces that set; If-Match makes it fail
 // instead of overwriting a set someone just changed, If-None-Match: * only creates. '@' is the apex.
 // https://learn.microsoft.com/en-us/rest/api/dns/record-sets/create-or-update?view=rest-dns-2018-05-01
-export type AzRecordSet = { etag?: string; properties?: { TTL?: number; ARecords?: { ipv4Address: string }[]; AAAARecords?: { ipv6Address: string }[]; CNAMERecord?: { cname: string }; TXTRecords?: { value: string[] }[]; MXRecords?: { preference: number; exchange: string }[]; targetResource?: { id?: string } } };
+export type AzRecordSet = { etag?: string; properties?: { TTL?: number; ARecords?: { ipv4Address: string }[]; AAAARecords?: { ipv6Address: string }[]; CNAMERecord?: { cname: string }; TXTRecords?: { value: string[] }[]; MXRecords?: { preference: number; exchange: string }[]; SRVRecords?: { priority: number; weight: number; port: number; target: string }[]; caaRecords?: { flags: number; tag: string; value: string }[]; NSRecords?: { nsdname: string }[]; targetResource?: { id?: string } } };
 export const azureDns = {
   get: (ctx: Ctx, acc: string, zoneId: string, type: string, rel: string) => armGet<AzRecordSet>(ctx, acc, `${zoneId}/${type}/${encodeURIComponent(rel)}?api-version=2018-05-01`).catch((e) => { if ((e as { status?: number }).status === 404) return undefined; throw e; }),
   put: (ctx: Ctx, acc: string, zoneId: string, type: string, rel: string, properties: AzRecordSet['properties'], etag?: string) =>

@@ -31,6 +31,9 @@ const until = (iso: string) => {
 const UNDO: Record<string, string> = {
   'domain.point': 'To undo, take the domain off the app. Its DNS record stays where it is.',
   'domain.remove': 'To undo, add the domain to the app again.',
+  'dns.set': 'To undo, use Undo in Activity: it puts the old record back.',
+  'dns.remove': 'To undo, use Undo in Activity: it puts the record back.',
+  'domain.redirect': 'To undo, use Undo in Activity: it puts things back as they were.',
   'domain.protect_email': 'To undo, ask Unit7 to remove the records it added.',
   'domain.move_dns': 'To undo, switch the nameservers back. The old records stay where they are.',
   'service.stop': 'To undo, deploy it again.',

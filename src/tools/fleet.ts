@@ -32,7 +32,7 @@ export const FLEET_WORDS = {
 
 // --- which way to spread visitors -------------------------------------------------------------------------------------------
 async function chooseMode(ctx: Ctx, svc: ServiceRow, want: 'front' | 'dns' | undefined, mainName: string) {
-  const own = all<{ hostname: string }>(ctx.db, 'SELECT hostname FROM domains WHERE service_id = ? AND org_id = ?', svc.id, ctx.orgId).map((d) => d.hostname).filter((h) => !isTestHost(h));
+  const own = all<{ hostname: string }>(ctx.db, 'SELECT hostname FROM domains WHERE service_id = ? AND org_id = ?', svc.id, ctx.orgId).map((d) => d.hostname).filter((h) => !isTestHost(h) && !h.startsWith('*.'));
   const cloudflare = !!get(ctx.db, `SELECT 1 FROM accounts WHERE org_id = ? AND provider = 'cloudflare'`, ctx.orgId);
   const paid = cloudflare ? ' Cloudflare’s Load Balancing can also do this, as a paid add-on: Unit7 never buys it for you.' : '';
   if (want === 'dns') {

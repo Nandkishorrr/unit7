@@ -48,7 +48,7 @@ export function knownSites(ctx: Pick<Ctx, 'db' | 'orgId'>, serverId: string, ski
   for (const d of all<{ hostname: string; service_id: string | null; target: string | null; app: string | null }>(ctx.db,
     'SELECT d.hostname, d.service_id, d.target, s.name app FROM domains d LEFT JOIN services s ON s.id = d.service_id WHERE d.org_id = ? ORDER BY d.hostname', ctx.orgId)) {
     const h = d.hostname.toLowerCase();
-    if (testAddress(h) || skip.includes(h) || json<{ redirectTo?: string }>(d.target, {}).redirectTo || (d.service_id && archived.has(d.service_id))) continue;
+    if (testAddress(h) || h.startsWith('*.') || skip.includes(h) || json<{ redirectTo?: string; kind?: string }>(d.target, {}).redirectTo || json<{ kind?: string }>(d.target, {}).kind === 'redirect' || (d.service_id && archived.has(d.service_id))) continue;
     out.set(h, { url: `https://${h}`, name: d.app ? `${h} (${d.app})` : h });
   }
   // what the X-ray found, minus archived projects and parts

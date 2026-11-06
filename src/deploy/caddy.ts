@@ -32,6 +32,17 @@ export interface Site {
   rateLimit?: { events: number; window: string }; // reserved for the edge phase
   blocked?: string[];      // CIDRs Shield has blocked
   redirectTo?: string;     // the main address (domain.canonical): this name only sends visitors there, 301, path and query kept
+  redirects?: Redirect[];  // domain.redirect: a whole name, or paths on it, sent to any address
+  service?: string;        // Traefik only: a service it already knows (name@docker), instead of an upstream of Unit7's
+}
+
+// One redirect. path is left out for the whole name; "/old" also covers everything under it. keepPath adds what came
+// after the matched part (and the query) to the address. Both are checked again wherever they're written into a config.
+export interface Redirect { path?: string; to: string; permanent: boolean; keepPath: boolean }
+export const REDIRECT_TO = /^https?:\/\/[a-z0-9.-]+(:\d{1,5})?(\/[\w.~:/?@!&+,;=%-]*)?$/i, REDIRECT_PATH = /^(?!.*\.\.)\/[\w.~/-]*[\w~-]$/;
+function checked(rs: Redirect[] = []) {
+  for (const r of rs) if (!REDIRECT_TO.test(r.to) || (r.path && !REDIRECT_PATH.test(r.path))) throw new Unit7Error('bad_redirect', `“${r.path ?? ''} → ${r.to}” isn’t a redirect Unit7 can write.`, 400);
+  return [...rs].sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0)); // the longest path answers first
 }
 
 // where each stack puts its content-hashed build files (Next.js already marks its own immutable)
@@ -53,8 +64,17 @@ export const SITES_GUARD = 1;
 export const SECRET_PATHS = ['/.env*', '/.git', '/.git/*', '/.svn/*', '/.hg/*', '/.DS_Store', '/.aws', '/.aws/*', '/.ssh', '/.ssh/*', '/*.pem', '/*.key'];
 const CADDY_SECRETS = `\t@unit7_secrets path ${SECRET_PATHS.join(' ')}\n\trespond @unit7_secrets 404\n`;
 
+// Caddy's redirects: {re.<name>.1} is what came after the path, {?query} the query when there is one
+const caddyRedirects = (rs: Redirect[]) => rs.map((r, n) => {
+  const code = r.permanent ? 'permanent' : 'temporary';
+  if (!r.path) return `\tredir ${r.keepPath ? `${r.to.replace(/\/$/, '')}{uri}` : r.to} ${code}\n`;
+  return `\t@unit7_redir${n} path_regexp unit7_redir${n} ^${r.path.replace(/\./g, '[.]')}(/.*)?$\n\tredir @unit7_redir${n} ${r.keepPath ? `${r.to.replace(/\/$/, '')}{re.unit7_redir${n}.1}{?query}` : r.to} ${code}\n`;
+}).join('');
+
 export function renderSite(s: Site): string {
   if (s.redirectTo) return renderRedirect(s, s.redirectTo);
+  const redirects = checked(s.redirects);
+  if (!s.upstream || redirects.some((r) => !r.path)) return renderRedirects(s, redirects);
   const upstreams = [s.upstream, ...(s.replicas ?? [])];
   upstreams.forEach((u) => safeName(u, 'container name'));
   // a fleet's other servers: private address and port only, nothing else gets into the file
@@ -93,7 +113,7 @@ export function renderSite(s: Site): string {
     ? `\n\t@hashed path ${s.cacheStatic}\n\theader @hashed {\n\t\tCache-Control "public, max-age=31536000, immutable"\n\t\tmatch status 200\n\t\tdefer\n\t}` : '';
   return `${addr} {
 \timport unit7_blocklist
-${CADDY_SECRETS}\tlog {
+${CADDY_SECRETS}${caddyRedirects(redirects)}\tlog {
 \t\toutput stdout
 \t\tformat json
 \t}
@@ -117,10 +137,19 @@ ${CADDY_SECRETS}${s.tls === 'internal' ? '\ttls internal\n' : ''}\tredir ${s.tls
 }
 `;
 }
-// the name's redirect, from Unit7's own records (domain.canonical writes it), so every caller of putSite (a deploy, a
-// re-point, a scale) keeps writing the redirect instead of the app
-const redirectOf = (app: App, hostname: string) =>
-  json<{ redirectTo?: string }>(get<{ target: string | null }>(app.db, 'SELECT target FROM domains WHERE hostname = ?', hostname)?.target, {}).redirectTo;
+// a name with no app behind it: only its redirects, and "not found" for the rest of it
+function renderRedirects(s: Site, rs: Redirect[]): string {
+  assertHostname(s.hostname);
+  const addr = s.tls === 'off' ? `http://${s.hostname}` : s.hostname;
+  return `${addr} {
+\timport unit7_blocklist
+${CADDY_SECRETS}${s.tls === 'internal' ? '\ttls internal\n' : ''}${caddyRedirects(rs)}${rs.some((r) => !r.path) ? '' : '\trespond 404\n'}}
+`;
+}
+// the name's redirects, from Unit7's own records (domain.canonical and domain.redirect write them), so every caller of
+// putSite (a deploy, a re-point, a scale) keeps writing them
+const targetOf = (app: App, hostname: string) =>
+  json<{ redirectTo?: string; redirects?: Redirect[] }>(get<{ target: string | null }>(app.db, 'SELECT target FROM domains WHERE hostname = ?', hostname)?.target, {});
 
 async function reload(app: App, s: ServerRow) {
   // validate first: a broken file must never take the proxy down
@@ -165,7 +194,8 @@ const canaryOf = (app: App, s: ServerRow, hostname: string) => app.db.prepare(`S
   JOIN services sv ON sv.id = c.service_id AND sv.server_id = ? WHERE d.hostname = ? AND c.status IN ('starting', 'running', 'held') ORDER BY c.created_at DESC LIMIT 1`).get(s.id, hostname) as { share: number; old_containers: string } | undefined;
 
 export async function putSite(app: App, s: ServerRow, site: Site) {
-  site = { ...site, redirectTo: site.redirectTo ?? redirectOf(app, site.hostname) };
+  const saved = targetOf(app, site.hostname);
+  site = { ...site, redirectTo: site.redirectTo ?? saved.redirectTo, redirects: site.redirects ?? saved.redirects };
   site = { ...site, remotes: site.remotes ?? remotesOf(app, s, site.hostname) };
   const canary = site.weights ? undefined : canaryOf(app, s, site.hostname);
   if (canary) site = withCanary(site, json<string[]>(canary.old_containers, []), canary.share);
@@ -188,7 +218,7 @@ export async function putSite(app: App, s: ServerRow, site: Site) {
 export async function removeSite(app: App, s: ServerRow, hostname: string) {
   const su = s.username === 'root' ? '' : 'sudo ';
   const proxy = proxyFor(s);
-  if (proxy.kind === 'coolify') { await ssh(app).exec(s, script(`${su}rm -f "$1"`, `${proxy.dir}/${traefikFileName(hostname)}`)); return; }
+  if (proxy.kind === 'coolify') { await ssh(app).exec(s, script(`${su}rm -f "$1" "$2"`, `${proxy.dir}/${traefikFileName(hostname)}`, `${proxy.dir}/${redirectFileName(hostname)}`)); return; }
   await ssh(app).exec(s, script(`${su}rm -f "$1" "$1.prev"`, `/etc/unit7/caddy/sites/${siteFileName(hostname)}`));
   await reload(app, s).catch(() => undefined); // removing a site that was already broken shouldn't fail
 }
@@ -201,20 +231,33 @@ export const traefikFileName = (hostname: string) => `unit7-${hostname.replace(/
 // Traefik has no "answer 404" middleware in every version, so Unit7's own routers leave the secret paths out: no
 // router matches them, and Traefik answers its own 404. Coolify's routers are never touched. PathRegexp (the *.pem
 // and *.key files at the root) is Traefik 3 only; a Traefik 2 proxy gets the rest.
+// a wildcard is a HostRegexp, one label deep like its certificate; Traefik 2 spells its pattern differently
+const hostRule = (hostname: string, v2: boolean) => {
+  if (!hostname.startsWith('*.')) return `Host(\`${hostname}\`)`;
+  const base = hostname.slice(2);
+  return v2 ? `HostRegexp(\`{sub:[a-z0-9-]+}.${base}\`)` : `HostRegexp(\`^[a-z0-9-]+[.]${base.replace(/\./g, '[.]')}$\`)`;
+};
 export function traefikRule(hostname: string, v2 = false) {
   const m = SECRET_PATHS.map((p) => p === '/*.pem' || p === '/*.key' ? '' : p.endsWith('*') ? `PathPrefix(\`${p.slice(0, -1)}\`)` : `Path(\`${p}\`)`).filter(Boolean);
   if (!v2) m.push('PathRegexp(`^/[^/]+[.](pem|key)$`)');
-  return `Host(\`${hostname}\`) && !(${m.join(' || ')})`;
+  return `${hostRule(hostname, v2)} && !(${m.join(' || ')})`;
 }
 export const traefikV2 = (s: Pick<ServerRow, 'facts'>) => /\|traefik:v?2(\.|$)/.test(json<{ web?: string }>(s.facts, {}).web ?? '');
 
 export function renderTraefik(s: Site, v2 = false): string {
-  const upstreams = [s.upstream, ...(s.replicas ?? [])];
+  if (s.service && !/^[\w.-]+@docker$/.test(s.service)) throw new Unit7Error('bad_route', `“${s.service}” isn’t a Traefik service name.`, 400);
+  const upstreams = s.service ? [] : [s.upstream, ...(s.replicas ?? [])];
   upstreams.forEach((u) => safeName(u, 'container name'));
-  assertHostname(s.hostname);
+  assertHostname(s.hostname, true);
   const id = `unit7-${s.hostname.replace(/[^a-zA-Z0-9]/g, '-')}`;
   const servers = upstreams.map((u) => `          - url: "http://${u}:${Math.trunc(s.port)}"`).join('\n');
   const secure = s.tls !== 'off';
+  const wild = s.hostname.startsWith('*.');
+  // a wildcard stands behind every exact name (priority 1, or its long rule would win) and asks for the wildcard certificate
+  const low = wild ? ['      priority: 1'] : [];
+  const certificate = !wild ? '      tls:\n        certResolver: letsencrypt'
+    : `      tls:\n        certResolver: letsencrypt\n        domains:\n          - main: ${s.hostname.slice(2)}\n            sans:\n              - "${s.hostname}"`;
+  const service = s.service ?? id;
   if (s.redirectTo) {
     // a redirectRegex middleware on Unit7's own routers for this name (Coolify's are never touched): http and https
     // both go straight to the main address, ${2} keeps the path and the query. The service is only there because a
@@ -227,7 +270,7 @@ export function renderTraefik(s: Site, v2 = false): string {
       `    ${id}-http:`,
       `      rule: "${traefikRule(s.hostname, v2)}"`,
       '      entryPoints: [http]',
-      `      service: ${id}`,
+      `      service: ${service}`,
       `      middlewares: [${to}]`,
       ...(secure ? [
         `    ${id}:`,
@@ -257,32 +300,66 @@ export function renderTraefik(s: Site, v2 = false): string {
     `    ${id}-http:`,
     `      rule: "${traefikRule(s.hostname, v2)}"`,
     '      entryPoints: [http]',
-    `      service: ${id}`,
+    `      service: ${service}`,
+    ...low,
     ...(secure ? [`      middlewares: [${id}-https]`] : []),
     ...(secure ? [
       `    ${id}:`,
       `      rule: "${traefikRule(s.hostname, v2)}"`,
       '      entryPoints: [https]',
-      `      service: ${id}`,
-      s.tls === 'internal' ? '      tls: {}' : '      tls:\n        certResolver: letsencrypt',
+      `      service: ${service}`,
+      ...low,
+      s.tls === 'internal' ? '      tls: {}' : certificate,
       '  middlewares:',
       `    ${id}-https:`,
       '      redirectScheme:',
       '        scheme: https',
       '        permanent: true',
     ] : []),
-    '  services:',
-    `    ${id}:`,
-    '      loadBalancer:',
-    '        servers:',
-    servers,
+    ...(s.service ? [] : [
+      '  services:',
+      `    ${id}:`,
+      '      loadBalancer:',
+      '        servers:',
+      servers,
+    ]),
     '',
   ].join('\n');
 }
 
+// --- redirects on Coolify's Traefik: one more file in the folder it watches. The folder lives in Coolify's proxy path, so
+// its Restart Proxy (which only rewrites the compose file) leaves it alone. Unit7's routers outrank whatever else answers
+// the name (Coolify's own routers among them, untouched), so the redirect wins; other paths go on to the app.
+export const redirectFileName = (hostname: string) => `unit7-redirect-${hostname.replace(/[^a-zA-Z0-9.-]/g, '_')}.yaml`;
+export function renderTraefikRedirects(hostname: string, list: Redirect[]): string {
+  assertHostname(hostname);
+  const host = hostname.replace(/\./g, '[.]');
+  const routers: string[] = [], middlewares: string[] = [];
+  checked(list).forEach((r, n) => {
+    const id = `unit7-redirect-${hostname.replace(/[^a-zA-Z0-9]/g, '-')}-${n}`;
+    const rule = `Host(\`${hostname}\`) && ${r.path ? `(Path(\`${r.path}\`) || PathPrefix(\`${r.path}/\`))` : 'PathPrefix(`/`)'}`;
+    const to = r.to.replace(/\/$/, '');
+    // the query comes with the regex's last group; Traefik's redirectRegex reads the whole address
+    const [regex, replacement] = r.path
+      ? [`^https?://${host}(:[0-9]+)?${r.path.replace(/\./g, '[.]')}([/?].*)?$`, r.keepPath ? `${to}\${2}` : r.to]
+      : [`^https?://${host}(:[0-9]+)?/(.*)$`, r.keepPath ? `${to}/\${2}` : r.to];
+    const router = (name: string, entry: string, tls: string[]) => [`    ${name}:`, `      rule: "${rule}"`, `      entryPoints: [${entry}]`, '      service: noop@internal', `      priority: ${100_000 + (r.path?.length ?? 0)}`, `      middlewares: [${id}-to]`, ...tls];
+    routers.push(...router(`${id}-http`, 'http', []), ...router(id, 'https', ['      tls:', '        certResolver: letsencrypt']));
+    middlewares.push(`    ${id}-to:`, '      redirectRegex:', `        regex: '${regex}'`, `        replacement: '${replacement}'`, `        permanent: ${r.permanent}`);
+  });
+  return ['http:', '  routers:', ...routers, '  middlewares:', ...middlewares, ''].join('\n');
+}
+export async function putTraefikRedirects(app: App, s: ServerRow, hostname: string, list: Redirect[]) {
+  const proxy = proxyFor(s), su = s.username === 'root' ? '' : 'sudo ';
+  if (proxy.kind !== 'coolify') throw new Unit7Error('not_traefik', `${s.name} doesn’t run Coolify’s proxy.`, 409);
+  const file = `${proxy.dir}/${redirectFileName(hostname)}`;
+  if (!list.length) { await ssh(app).check(s, script(`${su}rm -f "$1"`, file), { what: 'Taking the redirect off Coolify’s proxy', timeoutMs: 30_000 }); return; }
+  await ssh(app).check(s, script(`printf '%s' "$2" | ${su}tee "$1" >/dev/null`, file, renderTraefikRedirects(hostname, list)), { what: 'Adding the redirect to Coolify’s proxy', timeoutMs: 30_000 });
+}
+
 async function putTraefikSite(app: App, s: ServerRow, site: Site, proxy: { dir: string; network: string }) {
   const su = s.username === 'root' ? '' : 'sudo ';
-  for (const c of [site.upstream, ...(site.replicas ?? [])]) {
+  for (const c of site.service ? [] : [site.upstream, ...(site.replicas ?? [])]) {
     // already on the network is fine; anything else is a real failure
     await ssh(app).check(s, script('docker network connect "$1" "$2" 2>&1 | grep -v "already exists" | grep . >&2 && exit 1 || exit 0', proxy.network, c), { what: `Joining ${c} to Coolify's network`, timeoutMs: 30_000 });
   }
@@ -334,8 +411,9 @@ export async function pointsHere(hostname: string, serverHost: string): Promise<
   }
 }
 
-export function assertHostname(h: string) {
-  if (!/^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(h)) {
+// wildcard: *.example.com is fine too. Only one label deep: that's all a certificate can cover.
+export function assertHostname(h: string, wildcard = false) {
+  if (!/^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(wildcard ? h.replace(/^\*\./, '') : h)) {
     throw new Unit7Error('bad_hostname', `"${h}" is not a valid domain name.`);
   }
 }

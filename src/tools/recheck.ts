@@ -214,6 +214,7 @@ export function recheck(ctx: Ctx, t: Targets, o: { traffic?: boolean; usage?: bo
 const KINDS: Record<string, string[]> = {
   'domain.protect_email': ['email'], 'domain.remove_record': ['takeover', 'dns', 'dup', 'down', 'tls'], 'domain.point': ['dns', 'dup', 'down', 'takeover', 'tls'],
   'domain.remove': ['dns', 'dup', 'down', 'slow', 'tls'], 'domain.canonical': ['dns', 'dup', 'down', 'tls'], 'domain.renew_https': ['tls'], 'domain.move_dns': ['dns', 'takeover'],
+  'dns.set': ['takeover', 'dns', 'dup', 'down', 'tls', 'email'], 'dns.remove': ['takeover', 'dns', 'dup', 'down', 'tls', 'email'], 'domain.redirect': ['dns', 'dup', 'down', 'tls'],
   'coolify.set_domain': ['dns', 'dup', 'down', 'tls'], 'coolify.remove': ['dns', 'dup', 'down', 'paused'], 'service.remove': ['dns', 'dup', 'down', 'paused'],
   'link.create': ['ext-supabase', 'paused'], 'link.remove': ['ext-supabase', 'paused'], 'account.verify': ['scan'], 'account.connect': ['scan'],
 };
@@ -467,7 +468,7 @@ export async function inspectHost(ctx: Ctx, raw: string, dns: Lookup = publicRes
 // --- after every other change: look again in the background --------------------------------------------------------
 // A change to what an alert is about (DNS, routes, apps, links, accounts) rechecks it a moment later, as Unit7 itself.
 const RECHECKER: Actor = { kind: 'system', id: 'recheck', userId: null, name: 'Unit7', role: 'agent', agent: 'Unit7' };
-const AFFECTS = /^(domain|coolify|link|part|docker|serverapp|addon|cloud|service|server\.(close_port|tidy_logs|harden|protect_sites|swap|time_sync|repair)|security\.fix_settings|account\.(connect|verify|bind)|asset\.delete|change\.undo|deployment\.(create|rollback))\b/;
+const AFFECTS = /^(domain|dns|client\.subdomain|coolify|link|part|docker|serverapp|addon|cloud|service|server\.(close_port|tidy_logs|harden|protect_sites|swap|time_sync|repair)|security\.fix_settings|account\.(connect|verify|bind)|asset\.delete|change\.undo|deployment\.(create|rollback))\b/;
 export function startRecheck(app: App, delayMs = 3000) {
   const waiting = new Map<string, { t: NodeJS.Timeout; input: unknown[] }>();
   return app.events.on((e) => {

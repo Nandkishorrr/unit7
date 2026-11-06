@@ -405,6 +405,11 @@ if (!is_array(data_get($yaml, 'services.traefik.command'))) throw new Exception(
 App\Actions\Proxy\SaveProxyConfiguration::run($server, $next);
 if (!empty($in['restart'])) App\Jobs\RestartProxyJob::dispatch($server);
 unit7_out(['saved' => md5($next), 'restarting' => !empty($in['restart'])]);`,
+  // only a restart, with the job Coolify's Restart Proxy button queues: nothing in its settings changes
+  proxy_restart: String.raw`$server = unit7_server($in);
+if ($server->proxyType() !== 'TRAEFIK') throw new Exception('Coolify’s proxy on this server isn’t Traefik, so Unit7 changed nothing.');
+App\Jobs\RestartProxyJob::dispatch($server);
+unit7_out(['restarting' => true]);`,
   // the dashboard's own address (Settings → General → Instance's domain). Coolify's API has no route for instance
   // settings (4.3, 4.4), so this is its own Settings save: the fqdn saved, then the same proxy setup its Save runs
   // (Settings/Index.php submit(): $settings->save(); Server::find(0)->setupDynamicProxyConfiguration()).

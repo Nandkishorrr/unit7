@@ -150,6 +150,21 @@ export const route53 = {
     if (!r || tag(r, 'Name')?.replace(/\.$/, '').toLowerCase() !== fqdn || tag(r, 'Type') !== type) return undefined;
     return { name: fqdn, type, ttl: Number(tag(r, 'TTL') ?? 300), values: blocks(r, 'Value').map((v) => unxml(v)!), alias: tag(r, 'DNSName') };
   },
+  // every set in the zone, page by page (Route 53 writes a wildcard's * as \052); an alias shows as an ALIAS to its target
+  async list(ctx: Ctx, acc: string, zoneId: string) {
+    const out: { name: string; type: string; ttl?: number; values: string[] }[] = [];
+    let next: Record<string, string> = {};
+    for (let page = 0; page < 50; page++) {
+      const x = await awsCall(ctx, acc, { host: 'route53.amazonaws.com', region: 'us-east-1', service: 'route53', path: `/2013-04-01/hostedzone/${zoneId}/rrset`, query: { maxitems: '300', ...next } });
+      for (const r of blocks(x, 'ResourceRecordSet')) {
+        const alias = tag(r, 'DNSName');
+        out.push({ name: tag(r, 'Name')!.replace(/\\052/g, '*').replace(/\.$/, ''), type: alias ? 'ALIAS' : tag(r, 'Type')!, ttl: Number(tag(r, 'TTL') ?? 0) || undefined, values: alias ? [alias] : blocks(r, 'Value').map((v) => unxml(v)!) });
+      }
+      if (tag(x, 'IsTruncated') !== 'true') break;
+      next = { name: tag(x, 'NextRecordName')!, type: tag(x, 'NextRecordType')! };
+    }
+    return out;
+  },
   change: (ctx: Ctx, acc: string, zoneId: string, action: 'UPSERT' | 'DELETE', s: R53Set) => awsCall(ctx, acc, { host: 'route53.amazonaws.com', region: 'us-east-1', service: 'route53', path: `/2013-04-01/hostedzone/${zoneId}/rrset/`,
     xml: `<?xml version="1.0" encoding="UTF-8"?><ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/"><ChangeBatch><Comment>Unit7</Comment><Changes><Change><Action>${action}</Action><ResourceRecordSet><Name>${esc(s.name)}.</Name><Type>${s.type}</Type><TTL>${s.ttl}</TTL><ResourceRecords>${s.values.map((v) => `<ResourceRecord><Value>${esc(v)}</Value></ResourceRecord>`).join('')}</ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>` }),
 };

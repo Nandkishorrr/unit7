@@ -29,6 +29,7 @@ import { traefikAccess } from '../sentinel/traffic.ts';
 import { manageDirs } from './manage.ts';
 import { CHANGE_UNDO } from './manage.ts'; // ZD-SAFE: coolify.health_check's undo
 import { coolifyAccount, coolifyFor, inventoryOf, lastXray } from './xray.ts';
+import { proxyFor, putSite } from '../deploy/caddy.ts';
 import type { Inventory } from '../discovery/xray.ts';
 import type { ServerRow } from '../connectors/ssh.ts';
 
@@ -265,10 +266,10 @@ const ANSWERS = `for h in "$@"; do (
   c=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 --resolve "$h:443:127.0.0.1" "https://$h/" 2>/dev/null)
   case "$c" in ''|000) c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 --resolve "$h:80:127.0.0.1" "http://$h/" 2>/dev/null);; esac
   echo "$h \${c:-000}" ) & done; wait`;
-const answered = (code: string) => /^[1-4]\d\d$/.test(code);
+export const answered = (code: string) => /^[1-4]\d\d$/.test(code);
 
 interface ProxyRead { version: string; server: string; type: string; status?: string; config: string | null; path: string }
-async function readProxy(ctx: Ctx, s: ServerRow) {
+export async function readProxy(ctx: Ctx, s: ServerRow) {
   const p = await coolifyPhp<ProxyRead>(ctx.app, s, 'proxy_read', { host: s.host }, ctx.signal);
   if (p.type !== 'TRAEFIK') throw new Unit7Error('not_traefik', `Coolify’s proxy on ${s.name} is ${String(p.type ?? 'none').toLowerCase()}, not Traefik, so Unit7 leaves it alone.`, 409);
   const db = p.config ? Buffer.from(p.config, 'base64') : undefined;
@@ -309,6 +310,19 @@ async function stillAnswer(ctx: Ctx, s: ServerRow, hosts: string[]) {
     if (!missing.length || Date.now() > until) return missing;
     await sleep(proxyTiming.pollMs);
   }
+}
+
+// A restart with nothing changed (a certificate that should be tried again): the job Coolify's button queues, then every
+// site that answered before must answer again. There's nothing to put back, so it says what didn't come back.
+export async function restartProxy(ctx: Ctx, s: ServerRow) {
+  const inv = await inventoryOf(ctx, s);
+  const hosts = [...new Set(inv.parts.filter((p) => p.kind === 'domain').map((p) => p.name.toLowerCase()))].filter((h) => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(h)).slice(0, 40);
+  const before = await answers(ctx, s, hosts);
+  const live = hosts.filter((h) => answered(before.get(h) ?? '000'));
+  const started = (await proxyState(ctx, s)).startedAt;
+  await coolifyPhp(ctx.app, s, 'proxy_restart', { host: s.host }, ctx.signal);
+  const up = await waitRestart(ctx, s, started);
+  return { up, missing: up.ok ? await stillAnswer(ctx, s, live) : [] };
 }
 
 const OP_WORDS: Record<ProxyOp, string> = { access_log_on: 'Turned on the access log of Coolify’s proxy', access_log_off: 'Turned off the access log of Coolify’s proxy', close_dashboard: 'Closed the open dashboard of Coolify’s proxy' };
@@ -446,7 +460,7 @@ defineTool({
 
 // One action through Coolify, followed to its end: a deploy is watched until it finishes or fails (with the
 // end of its log when it fails), a service or database until its status says so.
-async function act(ctx: Ctx, api: Coolify, i: { uuid: string; kind: Kind; action: string; force?: boolean; deployment?: string; to?: string; wait?: boolean }) {
+export async function act(ctx: Ctx, api: Coolify, i: { uuid: string; kind: Kind; action: string; force?: boolean; deployment?: string; to?: string; wait?: boolean }) {
   const u = encodeURIComponent(i.uuid);
   let res: any;
   if (i.action === 'deploy') res = await api.call('POST', `/deploy?uuid=${u}&force=${i.force ? 'true' : 'false'}`);
@@ -608,6 +622,7 @@ const enc = encodeURIComponent;
 const NAME = z.string().trim().regex(/^\w[\w .-]{0,62}$/, 'letters, digits, spaces and . _ -');
 const ENV = z.string().trim().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/i, 'an environment name like production').default('production');
 const HOST = z.string().trim().toLowerCase().regex(/^(https?:\/\/)?(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+\/?$/, 'a domain like app.example.com');
+const DOMAIN = z.string().trim().toLowerCase().regex(/^(https?:\/\/)?(\*\.)?(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+\/?$/, 'a domain like app.example.com or *.example.com');
 const FREQ = z.string().trim().regex(/^(every_minute|hourly|daily|weekly|monthly|yearly|[\d*/,\- ]{9,60})$/, 'daily, hourly… or a cron like "0 3 * * *"');
 const hostOf = (h: string) => h.replace(/^https?:\/\//, '').replace(/[:/].*$/, '');
 const urlsOf = (fqdn: unknown) => String(fqdn ?? '').split(',').map((u) => u.trim()).filter(Boolean);
@@ -802,27 +817,48 @@ defineTool({
   },
 });
 
+// A wildcard: Coolify's domain field takes exact names, so (as its docs do with labels) a route of Unit7's own in the folder
+// Traefik watches sends every other subdomain to the service Coolify made for the app. Its name comes from the running
+// container's labels (read here, never guessed); new deploys keep that name, so the route keeps working.
+export const APP_LABELS = `for l in "$@"; do docker ps --filter "label=$l" --filter status=running --format '{{.Names}}|{{.Label "coolify.pullRequestId"}}'; done | awk -F'|' '$2 == "" || $2 == "0" { print $1 }' | sort -u | while read -r c; do docker inspect -f '{{json .Config.Labels}}' "$c"; done`;
+async function wildcardRoute(ctx: Ctx, s: ServerRow, uuid: string, host: string) {
+  if (proxyFor(s).kind !== 'coolify') throw new Unit7Error('not_traefik', `${s.name}’s web traffic doesn’t go through Coolify’s proxy, so Unit7 can’t add ${host} there.`, 409);
+  const out = await ssh(ctx.app).exec(s, asRoot(s) + script(APP_LABELS, `coolify.applicationUuid=${uuid}`, `com.docker.compose.project=${uuid}`), { timeoutMs: 30_000, signal: ctx.signal });
+  const names = out.stdout.split('\n').flatMap((l) => { try { return Object.keys(JSON.parse(l) as object); } catch { return []; } })
+    .map((k) => /^traefik\.http\.services\.((?:https|http)-[^.]+)\.loadbalancer\.server\.port$/.exec(k)?.[1]).filter(Boolean) as string[];
+  const service = names.find((n) => n.startsWith('https-')) ?? names[0];
+  if (!service) throw new Unit7Error('no_route', `Coolify has no route to that app yet, so there’s nothing for ${host} to reach. Give it a normal address first (like app.${host.slice(2)}), deploy it, then add the wildcard.`, 409);
+  await putSite(ctx.app, s, { hostname: host, upstream: '', service: `${service}@docker`, port: 0, tls: 'auto' });
+}
+
+// The domains of an app or a service part: added next to what it has unless replace. Returns what was there, for an undo.
+export async function setDomains(ctx: Ctx, api: Coolify, s: ServerRow, i: { uuid: string; kind: 'application' | 'service'; domains: string[]; part?: string; replace?: boolean; exact?: boolean }) {
+  const want = i.domains.map(hostOf), plain = want.filter((h) => !h.startsWith('*.')), wild = want.filter((h) => h.startsWith('*.'));
+  if (wild.length && i.kind !== 'application') throw new Unit7Error('unsupported', 'A wildcard works on a Coolify application, not on one part of a service.', 400);
+  const app = await api.call('GET', `/${plural(i.kind)}/${enc(i.uuid)}`).catch((e: Unit7Error) => { if (i.kind === 'application') throw e; }); // a service's domains are only for the undo
+  const before = i.kind === 'application' ? urlsOf(app?.fqdn) : urlsOf(items(app?.applications).find((a) => a?.name === i.part)?.fqdn);
+  // exact: an undo, the addresses as they were
+  const fresh = i.exact ? i.domains : plain.map((h) => `https://${h}`);
+  const after = i.kind === 'application' ? [...(i.replace ? [] : before.filter((u) => !plain.includes(hostOf(u)))), ...fresh] : fresh;
+  if (i.kind === 'service') await api.call('PATCH', `/services/${enc(i.uuid)}`, { urls: after.map((url) => ({ name: i.part, url })) });
+  else if (plain.length || i.replace) await api.call('PATCH', `/applications/${enc(i.uuid)}`, { domains: after.join(',') });
+  for (const h of wild) await wildcardRoute(ctx, s, i.uuid, h);
+  ctx.emit('coolify.domain', `${want.join(', ')} now goes to a Coolify ${i.kind} on ${s.name}`, { resource: s.id, data: { uuid: i.uuid, domains: want } });
+  const has = (u: string[], h: string) => u.some((x) => hostOf(x) === h);
+  return { before, after, want, wild, changed: plain.some((h) => !has(before, h)) || (!!i.replace && before.length !== after.length) };
+}
+
 defineTool({
   name: 'coolify.set_domain', title: 'Set a domain in Coolify', risk: 'write', action: 'service_write', timeoutMs: 20 * 60_000,
-  description: 'Give a Coolify application (or one part of a service, by part name like supabase-kong) its domain. Added next to the ones it has unless replace. Coolify gets the HTTPS certificate once the domain’s DNS points at this server: the result has the record to add (domain.point can add it). Coolify uses it from the next deploy: pass redeploy to deploy now. A domain another app already uses is refused.',
+  description: 'Give a Coolify application (or one part of a service, by part name like supabase-kong) its domain. Added next to the ones it has unless replace. Coolify gets the HTTPS certificate once the domain’s DNS points at this server: the result has the record to add (domain.point does all of it in one step). Coolify uses it from the next deploy: pass redeploy to deploy now. A domain another app already uses is refused. A wildcard (*.example.com) on an application goes through a route of Unit7’s own in Coolify’s proxy, and works at once; it needs a normal address on the app first, and its certificate needs the DNS-01 challenge (domain.point says exactly what).',
   input: z.object({
-    serverId: fid('srv'), uuid: UUID, kind: z.enum(['application', 'service']).default('application'), domains: z.array(HOST).min(1).max(10),
+    serverId: fid('srv'), uuid: UUID, kind: z.enum(['application', 'service']).default('application'), domains: z.array(DOMAIN).min(1).max(10),
     part: z.string().regex(/^[\w.-]{1,60}$/).optional(), replace: z.boolean().default(false), redeploy: z.boolean().default(false),
   }).refine((i) => i.kind === 'application' || !!i.part, 'A service needs part: which of its parts gets the domain.'),
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
     const { api } = need(ctx, s);
-    const want = i.domains.map(hostOf);
-    let before: string[] = [], after: string[];
-    if (i.kind === 'application') {
-      before = urlsOf((await api.call('GET', `/applications/${enc(i.uuid)}`))?.fqdn);
-      after = [...(i.replace ? [] : before.filter((u) => !want.includes(hostOf(u)))), ...want.map((h) => `https://${h}`)];
-      await api.call('PATCH', `/applications/${enc(i.uuid)}`, { domains: after.join(',') });
-    } else {
-      after = want.map((h) => `https://${h}`);
-      await api.call('PATCH', `/services/${enc(i.uuid)}`, { urls: after.map((url) => ({ name: i.part, url })) });
-    }
-    ctx.emit('coolify.domain', `${want.join(', ')} now goes to a Coolify ${i.kind} on ${s.name}`, { resource: s.id, data: { uuid: i.uuid, domains: want } });
+    const { before, after, want } = await setDomains(ctx, api, s, i);
     const out = { uuid: i.uuid, before, after, dns: want.map((h) => ({ type: 'A', name: h, value: s.host })), undo: before.length ? `coolify.set_domain replace with ${before.join(', ')} puts it back.` : 'coolify.set_domain replace with the domains to keep takes it off.' };
     if (!i.redeploy) return { ...out, next: 'Coolify uses it from the next deploy (coolify.control deploy).' };
     return { ...out, deploy: await act(ctx, api, { uuid: i.uuid, kind: i.kind, action: i.kind === 'application' ? 'deploy' : 'restart' }) };
@@ -1077,4 +1113,4 @@ CHANGE_UNDO['coolify.memory_cap'] = async (ctx, ch) => {
 };
 
 // for coolify-dashboard.ts: the same undo copy, change record and announcement as the proxy changes
-export { saveUndo, recordChange, changeMade, stamp };
+export { saveUndo, recordChange, changeMade, stamp, asRoot };

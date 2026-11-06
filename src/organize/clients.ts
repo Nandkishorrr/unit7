@@ -3,11 +3,13 @@
 // client's monthly cost comes from the providers' costs and each server's price split by the projects on it, with a CSV
 // to copy for invoicing. Its status page lives in status.ts.
 import { z } from 'zod';
-import { defineTool, execute, type Ctx } from '../tools/runtime.ts';
+import { defineTool, execute, getTool, type Ctx } from '../tools/runtime.ts';
 import { all, get, id, json, now, run, tx, type DB } from '../db.ts';
 import { Unit7Error, notFound } from '../errors.ts';
 import { assetIdOf } from '../archive.ts';
 import { lastXray } from '../tools/xray.ts';
+import { dnsDeps } from '../tools/clouds-dns.ts';
+import { assertHostname } from '../deploy/caddy.ts';
 import type { Inventory, Usage } from '../discovery/xray.ts';
 import { index, healthOf, logoOf, ownerKey, worst, type Health, type Index } from './groups.ts';
 
@@ -240,6 +242,53 @@ defineTool({
     const from = before ? get<{ name: string }>(ctx.db, 'SELECT name FROM clients WHERE id = ?', before)?.name : undefined;
     return { key, name, client: to?.name ?? null, ...(from && from !== to?.name && { from }), ...(key !== i.key && { note: `${name} moved as a whole, so it stays together.` }),
       undo: { tool: 'client.assign', input: { clientId: before ?? null, key }, label: from ? `Give it back to ${from}` : 'Make it yours again' } };
+  },
+});
+
+// A subdomain per client: one name, one call. It's domain.point underneath (one approval for the whole thing), so a Coolify
+// app, an app of Unit7's own or one on a hosted platform all work; a name that already goes somewhere is never taken over.
+const clientApps = async (ctx: Ctx, clientId: string) => {
+  const { sourceOptions } = await import('../agent/asks.ts');
+  const own = ownership(ctx.db, ctx.orgId), mine = own.ids.get(clientId) ?? new Set<string>();
+  return { own, all: sourceOptions(ctx.app, ctx.orgId, 'apps').filter((o) => o.use.pointWith), mine: (o: { id: string }) => mine.has(o.id) };
+};
+const subdomainInput = z.object({
+  clientId: CLIENT_ID,
+  name: z.string().trim().toLowerCase().regex(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, 'one part of a name, like acme'),
+  domain: z.string().trim().toLowerCase().regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/, 'a domain, like example.com'),
+  target: z.record(z.string(), z.unknown()).optional().describe('The app: what domain.point takes (a pointWith from ui_choose or a dry run). Left out, the client’s only app.'),
+});
+defineTool({
+  name: 'client.subdomain', title: 'Give a client their own address',
+  risk: (i) => (i.target && !i.target.serviceId && !i.target.coolify && !i.target.server ? 'destructive' : 'write'), action: 'dns_write', timeoutMs: 20 * 60_000,
+  description: 'Give a client’s app its own address, like acme.example.com, in one call: the app (the client’s only app, or target) gets the name, DNS is written, HTTPS follows, the way domain.point does it, on a Coolify app, an app here or a hosted one. A dry run lists the client’s apps with their target. A name that already goes somewhere is refused, and so is another client’s app.',
+  input: subdomainInput,
+  async dryRun(ctx, i) {
+    const c = clientRow(ctx.db, ctx.orgId, i.clientId), apps = await clientApps(ctx, c.id);
+    return { client: c.name, hostname: `${i.name}.${i.domain}`, apps: apps.all.filter(apps.mine).map((o) => ({ id: o.id, label: o.label, target: o.use.pointWith })) };
+  },
+  async run(ctx, i) {
+    const c = clientRow(ctx.db, ctx.orgId, i.clientId), hostname = `${i.name}.${i.domain}`;
+    assertHostname(hostname);
+    const apps = await clientApps(ctx, c.id);
+    let target = i.target;
+    if (!target) {
+      const mine = apps.all.filter(apps.mine);
+      if (mine.length !== 1) throw new Unit7Error('which_app', mine.length ? `${c.name} has ${mine.length} apps (${mine.map((o) => o.label).join(', ')}). Say which one with target.` : `${c.name} has no app Unit7 can give an address yet. Give target, or assign the app to them first.`, 400);
+      target = mine[0]!.use.pointWith as Record<string, unknown>;
+    }
+    const app = apps.all.find((o) => JSON.stringify(o.use.pointWith) === JSON.stringify(target));
+    const owner = app && apps.own.clientOf(app.id);
+    if (owner && owner !== c.id) throw new Unit7Error('other_client', `${app!.label} belongs to another client.`, 409);
+    const point = getTool('domain.point')!;
+    const input = point.input.safeParse({ hostname, ...target });
+    if (!input.success) throw new Unit7Error('invalid_input', 'Say which app this address should open: target is what domain.point takes.', 400);
+    if (get(ctx.db, 'SELECT 1 FROM domains WHERE hostname = ?', hostname)) throw new Unit7Error('domain_taken', `${hostname} already goes somewhere. Pick another name.`, 409);
+    const [a, cname] = await Promise.all([dnsDeps.answers(hostname, 'A'), dnsDeps.answers(hostname, 'CNAME')]);
+    if (cname.length || a.length) throw new Unit7Error('domain_taken', `${hostname} already points at ${[...cname, ...a].join(', ')}. Pick another name.`, 409);
+    const out = await point.run(ctx, input.data) as Record<string, unknown>;
+    ctx.emit('client.subdomain', `${c.name} now has ${hostname}`, { severity: 'success', resource: c.id });
+    return { client: c.name, ...out };
   },
 });
 

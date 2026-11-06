@@ -18,7 +18,7 @@ export const hetzner = {
   // a refused token fails here, before anything else is asked
   servers: (ctx: Ctx, acc: string) => hz<{ id: number; name: string; status: string; public_net?: { ipv4?: { ip?: string } | null; ipv6?: { ip?: string } | null } }>(ctx, acc, '/servers', 'servers'),
   zones: (ctx: Ctx, acc: string) => hz<{ id: number; name: string }>(ctx, acc, '/zones', 'zones'),
-  records: (ctx: Ctx, acc: string, zone: number) => hz<{ name: string; type: string; records: { value: string }[] }>(ctx, acc, `/zones/${zone}/rrsets`, 'rrsets'),
+  records: (ctx: Ctx, acc: string, zone: number | string) => hz<{ name: string; type: string; ttl?: number | null; records: { value: string }[] }>(ctx, acc, `/zones/${encodeURIComponent(zone)}/rrsets`, 'rrsets'),
 };
 
 // --- changes (Phase 2+): only ever called by Unit7's tools, each through the gate -------------------------------------

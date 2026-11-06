@@ -61,6 +61,7 @@ import '../ops/report.ts';
 import '../ops/contract.ts';
 import './routines.ts';
 import './launch.ts';
+import './redirects.ts';
 import './story.ts';
 import '../organize/groups.ts';
 import '../organize/clients.ts';

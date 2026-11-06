@@ -283,8 +283,12 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
   const app = name(i.serviceId) ?? 'the app';
   const server = name(i.serverId) ?? 'the server';
   switch (tool) {
-    case 'domain.point': return `${i.hostname ?? 'The domain'} will open ${name(i.serviceId) ?? 'your app'}, with HTTPS.`;
+    case 'domain.point': return `${i.hostname ?? 'The domain'} will open ${name(i.serviceId) ?? 'your app'}${String(i.hostname ?? '').startsWith('*.') ? '. Its certificate needs one more step from you' : ', with HTTPS'}.`;
     case 'domain.remove': return `${i.hostname ?? 'The domain'} stops pointing at your app.`;
+    case 'domain.redirect': return i.remove ? `${i.from ?? 'It'} stops sending visitors elsewhere.` : `${i.from ?? 'The domain'} sends visitors to ${i.to ?? 'the new address'}.`;
+    case 'dns.set': return `${i.name ?? 'The name'} gets a ${i.type ?? 'DNS'} record: ${i.value ?? ''}. Undo puts the old one back.`;
+    case 'dns.remove': return `The ${i.type ?? 'DNS'} record at ${i.name ?? 'that name'} goes. Undo puts it back.`;
+    case 'client.subdomain': return `${i.name ?? 'The client'}.${i.domain ?? 'your domain'} opens the client’s app, with HTTPS.`;
     case 'domain.protect_email': return `${i.domain ?? 'The domain'} gets records that stop strangers sending email as it.`;
     case 'domain.move_dns': return `${i.domain ?? 'The domain'}’s DNS moves to Cloudflare. The site stays up.`;
     case 'domain.canonical': { const d = String(i.domain ?? 'the domain').replace(/^www\./, ''); return i.prefer === 'www' ? `${d} sends visitors to www.${d}, keeping the page they asked for.` : `www.${d} sends visitors to ${d}, keeping the page they asked for.`; }
@@ -320,7 +324,7 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
     case 'server.protect_sites': return `Every site on ${server} answers “not found” for secret files like .env and .git.`;
     case 'server.reboot': return `${cap(server)} restarts: offline for a minute or two. Unit7 backs up its databases first and checks every site comes back.`;
     case 'server.bootstrap': return `${cap(server)} gets Docker, automatic HTTPS and security updates${i.firewall === false ? '' : ', and a firewall unless other apps there need their own ports'}.`;
-    case 'domain.renew_https': return 'The web proxy renews the HTTPS certificate now. No visitor is cut off.';
+    case 'domain.renew_https': return i.restartProxy ? 'Coolify’s proxy restarts so it tries the certificate again: every site pauses for a few seconds.' : 'The web proxy renews the HTTPS certificate now. No visitor is cut off.';
     case 'server.close_port': return i.open ? `Port ${i.port} on ${server} answers the internet again.` : `Nobody on the internet can reach port ${i.port} on ${server} any more. Your apps still reach it inside the server.`;
     case 'part.backup_schedule': return i.off ? `${partName(i.part)} isn’t backed up by Unit7 any more. Copies already made stay.` : `${partName(i.part)} is copied every day (the first copy now), the last ${i.keep ?? 7} kept, encrypted off the server. Nothing in the database changes.`;
     case 'part.restore': return i.into === 'live' ? `${partName(i.part)} goes back to the backup. Newer changes are lost; Unit7 backs it up as it is now first.` : `A test copy of ${partName(i.part)} starts next to it from the backup. The live one doesn’t change.`;
@@ -393,6 +397,11 @@ export function verbAsks(typed: string, subject?: string): { id: string; text: s
   return ASK_VERBS.filter((v) => v.words.some((w) => w.startsWith(q) || q.includes(w))).map((v) => ({ id: v.id, text: v.say(subject) }));
 }
 
+// DNS records of any kind, redirects, a client's own address (tools/clouds-dns.ts, tools/redirects.ts, organize/clients.ts)
+Object.assign(TOOL_WORDS, {
+  'dns.list': 'See DNS records', 'dns.set': 'Add or change a DNS record', 'dns.remove': 'Remove a DNS record',
+  'domain.redirect': 'Send a domain or a page somewhere else', 'client.subdomain': 'Give a client their own address',
+});
 // the big clouds (src/tools/clouds-*.ts): DNS records, redeploys, spending alerts and the cost-spike stopper
 Object.assign(TOOL_WORDS, {
   'domain.remove_record': 'Remove a DNS record', 'cloud.redeploy': 'Redeploy, restart or roll back a cloud app', 'cloud.app_actions': 'See what a cloud app can do',

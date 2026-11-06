@@ -148,6 +148,7 @@ export function DomainPointCard({ input, output: o }: { input: any; output: any 
   const w = useWorld();
   const app = w.svcLabel(w.svc(input?.serviceId)) ?? (input?.vercel ? 'your Vercel project' : 'your app');
   const needs = o.dns === 'needs you';
+  const cert = o.certificate as { state: string; why?: string; note?: string; steps?: string[] } | undefined; // a wildcard: what its certificate still needs
   return (
     <Frame icon={<Globe size={17} />} tone={needs ? 'warn' : 'ok'} title={o.hostname} sub={needs ? `Almost there: add ${plural(o.addThese?.length ?? 1, 'record')} at ${o.at}` : `Now opens ${app}`}
       right={<Pill tone={needs ? 'warn' : 'ok'} glow={!needs}>{needs ? 'Needs you' : 'Connected'}</Pill>}>
@@ -169,7 +170,13 @@ export function DomainPointCard({ input, output: o }: { input: any; output: any 
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           {o.url && <Button size="sm" variant="primary" icon={<ArrowUpRight size={13} />} onClick={() => window.open(o.url, '_blank', 'noopener')}>Open {host(o.url)}</Button>}
-          <span className="text-[12.5px] text-muted">{typeof o.dns === 'string' ? 'DNS is set. HTTPS turns on by itself within minutes.' : 'DNS is set. HTTPS follows once it’s live.'}</span>
+          <span className="text-[12.5px] text-muted">{cert ? 'DNS is set.' : o.https ? 'DNS is set and HTTPS works.' : typeof o.dns === 'string' ? 'DNS is set. HTTPS turns on by itself within minutes.' : 'DNS is set. HTTPS follows once it’s live.'}</span>
+        </div>
+      )}
+      {cert && (
+        <div className="mt-2 text-[12.5px] text-muted">
+          <p>{cert.why ?? cert.note}</p>
+          {cert.steps && <ol className="mt-1 list-decimal space-y-1 pl-5">{cert.steps.map((s) => <li key={s} className="break-words">{s}</li>)}</ol>}
         </div>
       )}
     </Frame>
