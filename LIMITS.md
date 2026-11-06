@@ -63,6 +63,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - A dropped site: 100 MB sent, 90 MB packed, 1 GB unpacked, 20,000 files. No ZIP64 or password-protected ZIPs.
 
+## Databases
+
+- Hiding personal columns is best effort: a filter can reveal a value slowly. Switching to a new major version works for Postgres on Coolify or Compose only. part.query needs psql 12 or newer. Restoring to a moment in time isn’t built: the best case is the last copy.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.
