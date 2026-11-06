@@ -109,7 +109,7 @@ test('your Claude subscription answers the box: request on stdin, only Unit7’s
     // the same thread the web shows: narration, the step, the final answer marked final
     const said = thread.filter((m) => m.role !== 'user').map((m) => m.role === 'tool' ? `tool:${m.content.tool}:${m.content.status}` : `${m.role}:${m.content.text}${m.content.final ? ' (final)' : ''}`);
     assert.deepEqual(said, ['assistant:Checking your servers…', 'tool:graph.get:ok', 'assistant:You have no servers yet. (final)']);
-    assert.deepEqual(thread.find((m) => m.role === 'tool')!.content.output, { servers: [], projects: [], accounts: [] });
+    assert.deepEqual(thread.find((m) => m.role === 'tool')!.content.output, { servers: [], projects: [], foundProjects: [], accounts: [] });
     // the tool ran through Unit7's gate as an agent acting for Sam
     assert.deepEqual(rows(app, `SELECT tool, agent, user_id IS NOT NULL AS person FROM audit WHERE tool = 'graph.get'`), [{ tool: 'graph.get', agent: 'Unit7 brain · Claude', person: 1 }]);
   } finally { close(); }

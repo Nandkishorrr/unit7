@@ -52,11 +52,12 @@ test('a sudo user joins the docker group, owns /var/lib/unit7, and gets a fresh 
     ok(await o.h('server.bootstrap', { serverId: srv, firewall: false, swap: false, securityUpdates: false }));
     const all = seen.map((x) => x.command).join('\n');
     if (user === 'root') {
-      assert.ok(!/usermod|chown -R/.test(all), 'root needs neither');
+      assert.ok(!/usermod/.test(all), 'root needs neither');
       assert.deepEqual(closed, []);
     } else {
       assert.match(all, /sudo -n usermod -aG docker/);
-      assert.match(all, /sudo -n chown -R "\$\(id -un\)": \/var\/lib\/unit7/);
+      assert.match(all, /\$1 chown -R "\$\(id -un\)": \/var\/lib\/unit7/);
+      assert.match(all, /sudo -n/);
       assert.ok(all.indexOf('usermod') < all.indexOf('docker network'), 'in the group before the first docker command');
       assert.deepEqual(closed, [srv], 'the pooled login is dropped so the new group applies');
     }
