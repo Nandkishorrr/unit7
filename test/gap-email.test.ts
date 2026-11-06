@@ -295,7 +295,8 @@ test('email.setup by an AI: every mail record waits for a person, once, and a ru
 
 test('email.setup on a domain that already has mail: SPF joins, the bare domain stays as it was, and an MX in the way asks first', async () => {
   const mail = [{ id: 'mx', type: 'MX', name: 'example.com', content: 'mx1.mailhost.example', priority: 10, ttl: 1 }, { id: 'spf', type: 'TXT', name: 'example.com', content: 'v=spf1 include:_spf.mailhost.example ~all', ttl: 1 },
-    { id: 's1', type: 'TXT', name: 'send.example.com', content: 'v=spf1 include:_spf.oldsender.example -all', ttl: 1 }, { id: 's2', type: 'MX', name: 'send.example.com', content: 'bounce.oldsender.example', priority: 5, ttl: 1 }];
+    // Cloudflare can hand a TXT back in quotes: it's still the record that's there
+    { id: 's1', type: 'TXT', name: 'send.example.com', content: '"v=spf1 include:_spf.oldsender.example -all"', ttl: 1 }, { id: 's2', type: 'MX', name: 'send.example.com', content: 'bounce.oldsender.example', priority: 5, ttl: 1 }];
   const f = await sendable(mail);
   try {
     assert.equal(failed(await f.o.h('email.setup', { domain: 'example.com' })).code, 'confirm_email', 'the first run stops at the MX');
@@ -385,6 +386,19 @@ test('email.setup: a subdomain’s records land under it, Resend taking time or 
     assert.match(e.message, /Full access key/);
     assert.equal(all<{ status: string }>(only.app.db, `SELECT status FROM accounts WHERE provider = 'resend'`)[0]!.status, 'verified', 'a key that sends is still a good key');
   } finally { only.close(); }
+
+  const typo = await sendable();
+  try {
+    run(typo.app.db, 'DELETE FROM accounts WHERE id = ?', typo.resendAcc);
+    account(typo.app, typo.o.orgId, 'resend', `${FULL_KEY}’`);
+    assert.match(failed(await typo.o.h('email.setup', { domain: 'example.com' })).message, /stray character/);
+  } finally { typo.close(); }
+  const quota = await sendable([], { refuse: [403, { name: 'validation_error', message: 'You have reached your domain limit.' }] });
+  try {
+    const e = failed(await quota.o.h('email.setup', { domain: 'example.com' }));
+    assert.match(e.message, /Resend: You have reached your domain limit/);
+    assert.equal(all<{ status: string }>(quota.app.db, `SELECT status FROM accounts WHERE provider = 'resend'`)[0]!.status, 'verified', 'a plan limit isn’t a dead key');
+  } finally { quota.close(); }
 });
 
 test('email.setup with no sender says which free one to connect, and how', async () => {
@@ -462,6 +476,17 @@ test('bringing your own SMTP host: the password goes straight into the vault, an
     assert.deepEqual(zoneOf(cf.st.recs, 'example.com', 'TXT').map((x) => x.content), ['v=spf1 include:_spf.google.com include:_spf.mailhost.example ~all'], 'joined to what was there');
     assert.match(r.next, /Unit7 didn’t try the login/);
 
+    // a login someone brought stays, Resend connected or not
+    const rs = await resendFake();
+    try {
+      account(app, o.orgId, 'resend', FULL_KEY);
+      const kept = ok(await o.h('email.setup', { domain: 'example.com' }));
+      assert.equal(kept.sender.host, 'smtp.mailhost.example');
+      assert.match(kept.next, /replaceMail moves it to Resend/);
+      assert.equal(rs.st.domains.length, 0);
+      run(app.db, `DELETE FROM accounts WHERE provider = 'resend'`);
+    } finally { rs.close(); }
+
     // what an AI can read of it: the host, never the password
     dns['TXT example.com'] = ['v=spf1 include:_spf.google.com include:_spf.mailhost.example ~all'];
     const seen = JSON.stringify([ok(await o.a('email.check', { domain: 'example.com' })), ok(await o.a('vault.list', {}))]);
@@ -537,6 +562,17 @@ function onServer(host = COOLIFY_HOST, change?: (inv: Inventory) => void) {
 
 test('email.connect_app into a Coolify app: the password comes from the vault, a redeploy once, and Undo takes it out', async () => {
   const { app, o, srv } = await onServer(), c = standIn(app);
+  run(app.db, 'UPDATE orgs SET autonomy = 4 WHERE id = ?', o.orgId);
+  const asked = await o.a('email.connect_app', { domain: 'example.com', serverId: srv, uuid: 'shopapp01' });
+  assert.equal(asked.status, 'approval_required', 'an AI asks first, even at full autopilot');
+  assert.match((asked as any).why, /can send as the domain/);
+  assert.equal(c.envs.shopapp01!.size, 0);
+  const viaAi = await decideApproval(app, o.orgId, o.human, (asked as any).approvalId, true);
+  assert.equal(viaAi.status, 'ok', JSON.stringify(viaAi));
+  assert.ok(!JSON.stringify(viaAi).includes(PASSWORD));
+  assert.equal(c.envs.shopapp01!.get('SMTP_PASS')!.value, PASSWORD);
+  c.envs.shopapp01!.clear(); c.seen.deploys = 0;
+
   const r = ok(await o.h('email.connect_app', { domain: 'example.com', serverId: srv, uuid: 'shopapp01' }));
   assert.equal(r.connected, true);
   assert.deepEqual(r.set, ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']);

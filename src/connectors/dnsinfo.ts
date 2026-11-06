@@ -77,8 +77,10 @@ export async function resolvesTo(hostname: string, want: { a?: string[]; cname?:
 }
 
 // --- SPF: a name has one record, so a new sender joins what's there ---------------------------------------------------
-export const isSpf = (t: string) => /^v=spf1(\s|$)/i.test(t.trim());
-const spfTerms = (t: string) => (isSpf(t) ? t.trim().split(/\s+/).slice(1) : t.trim().split(/\s+/));
+// a TXT value as DNS means it: some hosts hand it back in quotes, a long one in several
+export const bareTxt = (t: string) => t.trim().replace(/^"|"$/g, '').replace(/"\s+"/g, '');
+export const isSpf = (t: string) => /^v=spf1(\s|$)/i.test(bareTxt(t));
+const spfTerms = (t: string) => (isSpf(t) ? bareTxt(t).split(/\s+/).slice(1) : t.trim().split(/\s+/));
 const closing = (t: string) => /^[-~?+]?all$/i.test(t) || /^redirect=/i.test(t);
 // every sender in the old record(s) stays, new ones go before the closing term, and that term is never loosened
 export function mergeSpf(existing: string[], add = '') {

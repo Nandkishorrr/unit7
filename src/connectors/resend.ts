@@ -13,6 +13,8 @@ export interface ResendDomain { id: string; name: string; status: string; record
 
 async function rs<T = any>(ctx: Ctx, acc: string, path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const token = await bearerFor(ctx, 'resend', acc);
+  // fetch refuses a header with anything else in it, and that would read as "no answer"
+  if (/[^\x21-\x7e]/.test(token)) throw new Unit7Error('resend_auth', 'The Resend key has a stray character in it, like a space or a curly quote. Paste it again in Connections → Resend.', 400);
   await assertReachable(new URL(RESEND_API()).hostname);
   const res = await fetch(`${RESEND_API()}${path}`, { method: init.method ?? (init.body !== undefined ? 'POST' : 'GET'), headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: init.body === undefined ? undefined : JSON.stringify(init.body), signal: AbortSignal.timeout(30_000) })
     .catch((e: Error) => { throw new Unit7Error('resend_unreachable', `Unit7 couldn’t reach Resend (${e.name === 'TimeoutError' ? 'it took too long' : 'no answer'}). Check the internet connection and try again.`, 502); });

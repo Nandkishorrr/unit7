@@ -8,7 +8,7 @@ import { all, get, json, now } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { isRef, makeRef } from '../vault.ts';
 import { cf, cloudflare } from '../connectors/cloudflare.ts';
-import { isSpf, mailHost, mergeSpf, spfAdvice, spfLookups } from '../connectors/dnsinfo.ts';
+import { bareTxt, isSpf, mailHost, mergeSpf, spfAdvice, spfLookups } from '../connectors/dnsinfo.ts';
 import { normValue } from '../connectors/dnswrite.ts';
 import { isOAuthAccount } from '../connectors/mcp-oauth.ts';
 import { resend, type ResendDomain } from '../connectors/resend.ts';
@@ -82,7 +82,7 @@ defineTool({
 // --- DNS records, each through dns.set's own gate ---------------------------------------------------------------------------
 export interface Want { type: string; name: string; value: string; priority?: number; mode?: 'replace' }
 const said = (w: Want) => `${w.type} ${w.name} → ${w.priority !== undefined ? `${w.priority} ` : ''}${w.value}`;
-const alike = (type: string, a: string, b: string) => (type === 'TXT' ? a.replace(/^"|"$/g, '') === b : normValue(a) === normValue(b));
+const alike = (type: string, a: string, b: string) => (type === 'TXT' ? bareTxt(a) === b : normValue(a) === normValue(b));
 const CANT_WRITE = new Set(['no_account', 'unsupported', 'not_found']);
 // a person's OK already waiting: asking again would only file the same one
 const asked = (ctx: Ctx, w: Want) => !!get(ctx.db, `SELECT 1 FROM approvals WHERE org_id = ? AND tool = 'dns.set' AND status = 'pending' AND expires_at > ? AND json_extract(input, '$.name') = ? AND json_extract(input, '$.value') = ?`, ctx.orgId, now(), w.name, w.value);
@@ -146,7 +146,7 @@ function fullName(raw: string, domain: string, zone: string) {
   if (n === zone || n.endsWith(`.${zone}`)) return n;
   return sub && (n === sub || n.endsWith(`.${sub}`)) ? `${n}.${zone}` : `${n}.${domain}`;
 }
-const resendRecords = (d: ResendDomain, domain: string, zone: string): Want[] => d.records.map((r) => ({ type: r.type.toUpperCase(), name: fullName(r.name, domain, zone), value: r.value, ...(r.priority !== undefined && { priority: r.priority }) }));
+const resendRecords = (d: ResendDomain, domain: string, zone: string): Want[] => (d.records ?? []).map((r) => ({ type: r.type.toUpperCase(), name: fullName(r.name, domain, zone), value: r.value, ...(r.priority !== undefined && { priority: r.priority }) }));
 
 const SetupInput = z.object({
   domain: DOMAIN.describe('The domain to send from'),
@@ -195,7 +195,9 @@ defineTool({
     const domain = i.domain;
     if (i.smtpHost) return ownSmtp(ctx, i);
     const acc = resendAccount(ctx, i.accountId), had = smtpLogin(ctx, domain);
-    if (!acc) return had ? { domain, ready: true, sender: senderView(had), next: NEXT } : noSender(domain);
+    // a login the person brought stays until they say otherwise, even with Resend connected
+    if (had && (!acc || (had.via !== 'Resend' && !i.replaceMail))) return { domain, ready: true, sender: senderView(had), next: `${NEXT}${acc ? ' It keeps the login you brought; replaceMail moves it to Resend.' : ''}` };
+    if (!acc) return noSender(domain);
     const { zone } = await dnsDeps.host(domain);
     if (!zone) throw new Unit7Error('not_found', `${domain} isn’t in public DNS. Is the domain registered?`, 404);
     ctx.progress(`Adding ${domain} at Resend…`);
@@ -294,9 +296,9 @@ async function intoSupabase(ctx: Ctx, i: ConnectIn, l: SmtpLogin, from: string) 
 }
 
 defineTool({
-  // an app holding the login can send as the domain, so that's a change a person hears about; Supabase's own tool asks by itself
+  // an app holding the login can send as the domain, so an AI asks first; Supabase's own tool does that by itself
   name: 'email.connect_app', title: 'Put email sending into an app', risk: 'write', action: 'env_write', timeoutMs: 20 * 60_000,
-  assess: (_c, i) => (i.uuid ? { tier: 2, impact: `Puts ${i.domain}’s email login into a Coolify ${i.kind}${i.redeploy ? ' and redeploys it' : ''}. The app can then send as that domain.` } : { tier: 1 }),
+  assess: (_c, i) => (i.uuid ? { tier: 2, ask: 'An app holding this login can send as the domain, so a person says yes first.', impact: `Puts ${i.domain}’s email login into a Coolify ${i.kind}${i.redeploy ? ' and redeploys it' : ''}.` } : { tier: 1 }),
   description: 'Put a domain’s sender (from email.setup) into an app, so it can send: a Coolify app’s settings (uuid and serverId: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and SMTP_FROM, or the names it already uses like MAIL_HOST, then a redeploy); self-hosted Supabase (serverId and part: its GOTRUE_SMTP_ settings); or a hosted Supabase project (ref), both through supabase.auth. The password comes from the vault by reference and never passes through an AI. Settings already there aren’t changed unless a person or their AI says replace. Undo takes out what it added. On hosted Supabase this also lifts the built-in sender’s limit of 2 emails an hour.',
   input: ConnectInput,
   async run(ctx, i) {

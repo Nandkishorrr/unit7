@@ -214,7 +214,7 @@ export function recheck(ctx: Ctx, t: Targets, o: { traffic?: boolean; usage?: bo
 const KINDS: Record<string, string[]> = {
   'domain.protect_email': ['email'], 'domain.remove_record': ['takeover', 'dns', 'dup', 'down', 'tls'], 'domain.point': ['dns', 'dup', 'down', 'takeover', 'tls'],
   'domain.remove': ['dns', 'dup', 'down', 'slow', 'tls'], 'domain.canonical': ['dns', 'dup', 'down', 'tls'], 'domain.renew_https': ['tls'], 'domain.move_dns': ['dns', 'takeover'],
-  'dns.set': ['takeover', 'dns', 'dup', 'down', 'tls', 'email'], 'dns.remove': ['takeover', 'dns', 'dup', 'down', 'tls', 'email'], 'domain.redirect': ['dns', 'dup', 'down', 'tls'],
+  'dns.set': ['takeover', 'dns', 'dup', 'down', 'tls', 'email'], 'dns.remove': ['takeover', 'dns', 'dup', 'down', 'tls', 'email'], 'email.setup': ['email'], 'email.forward': ['email'], 'domain.redirect': ['dns', 'dup', 'down', 'tls'],
   'coolify.set_domain': ['dns', 'dup', 'down', 'tls'], 'coolify.remove': ['dns', 'dup', 'down', 'paused'], 'service.remove': ['dns', 'dup', 'down', 'paused'],
   'link.create': ['ext-supabase', 'paused'], 'link.remove': ['ext-supabase', 'paused'], 'account.verify': ['scan'], 'account.connect': ['scan'],
 };

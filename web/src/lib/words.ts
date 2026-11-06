@@ -302,6 +302,8 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
     case 'dns.remove': return `The ${i.type ?? 'DNS'} record at ${i.name ?? 'that name'} goes. Undo puts it back.`;
     case 'client.subdomain': return `${i.name ?? 'The client'}.${i.domain ?? 'your domain'} opens the client’s app, with HTTPS.`;
     case 'domain.protect_email': return `${i.domain ?? 'The domain'} gets records that stop strangers sending email as it.`;
+    case 'email.forward': return `Email to ${i.from ?? 'that address'} goes to ${i.to ?? 'the inbox'}.`;
+    case 'email.connect_app': return `This app can send email as ${i.domain ?? 'your domain'}.`;
     case 'domain.move_dns': return `${i.domain ?? 'The domain'}’s DNS moves to Cloudflare. The site stays up.`;
     case 'domain.canonical': { const d = String(i.domain ?? 'the domain').replace(/^www\./, ''); return i.prefer === 'www' ? `${d} sends visitors to www.${d}, keeping the page they asked for.` : `www.${d} sends visitors to ${d}, keeping the page they asked for.`; }
     case 'uptime.sync': return `Uptime Kuma on ${server} checks each of your sites every minute. Your own monitors stay as they are.`;
@@ -418,6 +420,10 @@ export function verbAsks(typed: string, subject?: string): { id: string; text: s
 Object.assign(TOOL_WORDS, {
   'dns.list': 'See DNS records', 'dns.set': 'Add or change a DNS record', 'dns.remove': 'Remove a DNS record',
   'domain.redirect': 'Send a domain or a page somewhere else', 'client.subdomain': 'Give a client their own address',
+});
+// email (tools/email.ts) and login on a real domain (tools/supabase.ts)
+Object.assign(TOOL_WORDS, {
+  'email.check': 'Check a domain’s email', 'email.setup': 'Send email from a domain', 'email.connect_app': 'Put email sending into an app', 'email.forward': 'Forward an address to an inbox', 'auth.urls': 'Make login work on a domain',
 });
 // the big clouds (src/tools/clouds-*.ts): DNS records, redeploys, spending alerts and the cost-spike stopper
 Object.assign(TOOL_WORDS, {

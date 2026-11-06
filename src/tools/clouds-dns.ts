@@ -11,7 +11,7 @@ import { all, get, id, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid } from './helpers.ts';
 import { EDITORS, DNS_ACCOUNT, LISTERS, SAME_SIGNIN, caaOf, fqName, matches, normValue, srvOf, swapRecords, type FullRec } from '../connectors/dnswrite.ts';
-import { dnsHost, spfKeeps } from '../connectors/dnsinfo.ts';
+import { bareTxt, dnsHost, isSpf, spfKeeps } from '../connectors/dnsinfo.ts';
 import { CHANGE_UNDO, keepChange } from './manage.ts';
 
 // what public DNS answers for a name (asked of public resolvers, like dnsinfo); tests swap these
@@ -93,7 +93,7 @@ function consequences(ctx: Ctx, name: string, zone: string, type: string, going:
     if (!stops.length) stops.push(`Anything visiting ${name} stops reaching where it points now`);
   }
   if (type === 'MX') { email = true; stops.push(`Email to addresses @${name} stops arriving`); }
-  if (type === 'TXT') for (const r of going) {
+  if (type === 'TXT') for (const r of going.map((x) => ({ ...x, content: bareTxt(x.content) }))) {
     if (/^v=spf1/i.test(r.content)) { email = true; stops.push(`Email sent as ${name} may land in spam or be refused (its SPF goes)`); }
     else if (/^v=dmarc1/i.test(r.content)) { email = true; stops.push(`Receivers stop being told to reject fake email from ${name.replace(/^_dmarc\./, '')}`); }
     else if (/^v=dkim1/i.test(r.content) || name.includes('._domainkey.')) { email = true; stops.push('Email signed with this key starts failing checks'); }
@@ -205,7 +205,7 @@ const SetInput = Input.omit({ type: true, value: true }).extend({
 type SetIn = z.infer<typeof SetInput>;
 
 // the TXT records that may only appear once at a name: a second SPF or DMARC breaks both, so a new one takes the old one's place
-const oneOnly = (content: string) => /^v=spf1(\s|$)/i.exec(content) ? 'spf' : /^v=dmarc1/i.exec(content) ? 'dmarc' : undefined;
+const oneOnly = (content: string) => (isSpf(content) ? 'spf' : /^v=dmarc1/i.test(bareTxt(content)) ? 'dmarc' : undefined);
 // mail by its name or value, seen from the input alone: the gate has nothing else to go on
 const mailLooking = (i: { type: string; name: string; value?: string }) => i.type === 'MX' || /(^|\.)(_dmarc|[\w-]+\._domainkey)(\.|$)/i.test(i.name) || (i.type === 'TXT' && /^"?v=(spf1|dmarc1|dkim1)/i.test(i.value ?? ''));
 

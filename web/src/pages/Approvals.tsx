@@ -35,6 +35,8 @@ const UNDO: Record<string, string> = {
   'dns.remove': 'To undo, use Undo in Activity: it puts the record back.',
   'domain.redirect': 'To undo, use Undo in Activity: it puts things back as they were.',
   'domain.protect_email': 'To undo, ask Unit7 to remove the records it added.',
+  'email.forward': 'To undo, use Undo in Activity: the forward goes, and mail goes where it went before.',
+  'email.connect_app': 'To undo, use Undo in Activity: it takes out what it added.',
   'domain.move_dns': 'To undo, switch the nameservers back. The old records stay where they are.',
   'service.stop': 'To undo, deploy it again.',
   'deployment.create': 'To undo, go back to the version before. One click on the app’s page.',
