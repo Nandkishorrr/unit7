@@ -89,3 +89,4 @@ import './coolify-dashboard.ts';
 import './promote.ts';
 import './supabase.ts';
 import '../seven/index.ts';
+import './files.ts';

@@ -134,7 +134,7 @@ const worst = (a: Res, b: Res) => (b.tier > a.tier ? b : a);
 
 // Files whose contents are secrets, and places an AI may never write to
 export const SECRET_FILE = /(^|\/)(\.env(\.(?!(example|sample|template|dist|defaults?)$)[\w.-]+)?|\.envrc|id_(rsa|dsa|ecdsa|ed25519)|[^/]+\.(key|p12|pfx|jks|keystore|kdbx|pem)|\.pgpass|\.netrc|\.git-credentials|\.npmrc|\.pypirc|\.my\.cnf|\.s3cfg|wp-config\.php|master\.key|credentials(\.json)?|secrets?\.(ya?ml|json|env|txt))$|^\/etc\/(shadow|gshadow|sudoers)|\/proc\/[^/]+\/environ$|(^|\/)\.(aws|docker|kube|gnupg)\/|(^|\/)\.ssh\/(?!known_hosts$|authorized_keys$|[^/]*\.pub$)|(^|\/)(secrets?|private)\//i;
-const PROTECTED = /(^|\/)(sshd_config(\.d\/.*)?|authorized_keys2?)$|^\/etc\/(sudoers|passwd|shadow|group|gshadow|pam\.d\/)|^\/etc\/ssh\/|^\/dev\/(sd|hd|vd|xvd|nvme|mmcblk|md|dm-|mapper\/|disk\/|loop)|^\/boot\//;
+export const PROTECTED = /(^|\/)(sshd_config(\.d\/.*)?|authorized_keys2?)$|^\/etc\/(sudoers|passwd|shadow|group|gshadow|pam\.d\/)|^\/etc\/ssh\/|^\/dev\/(sd|hd|vd|xvd|nvme|mmcblk|md|dm-|mapper\/|disk\/|loop)|^\/boot\//;
 const protectedWhy = (p: string) => (/^\/dev\//.test(p) ? 'would overwrite a disk' : 'changes who can sign in to the server');
 const TRASH = /^\/var\/(lib\/unit7\/trash|backups\/unit7\/trash)\//;
 const SAFE_ENV = /^(LC_\w+|LANG|LANGUAGE|TZ|COLUMNS|LINES|NO_COLOR|TERM|SYSTEMD_COLORS|SYSTEMD_PAGER|DOCKER_CLI_HINTS)$/;

@@ -48,7 +48,8 @@ import { ClientsPage, ProductsPage } from './pages/organize';
 import { ServerAppsPage } from './pages/serverapps/Page';
 import { AddPage } from './pages/make/AddPage';
 import { GuidePage } from './pages/guide/Guide';
-import { PiggyBank } from 'lucide-react';
+import { FolderOpen, PiggyBank } from 'lucide-react';
+import { FilesPage } from './pages/files/Files';
 
 export { Logo };
 export interface Me { user: { id: string; name: string; email: string }; org: { id: string; name: string; slug: string }; role: string; orgs: { id: string; name: string; role: string }[]; passkeys: any[] }
@@ -95,6 +96,7 @@ const MORE = [
   { href: '/seven', label: 'Seven', icon: Bot, key: 'e', group: 'Looking after things' },
   { href: '/checkup', label: 'Check-up', icon: Stethoscope, key: 'k', group: 'Looking after things' },
   { href: '/jobs', label: 'Jobs', icon: ListChecks, key: 'z', group: 'Looking after things' },
+  { href: '/files', label: 'Files', icon: FolderOpen, key: 'i', group: 'Looking after things' },
   { href: '/protect', label: 'Safety Net', icon: ShieldHalf, key: 'f', group: 'Looking after things' },
   { href: '/calls', label: 'Call Inspector', icon: Radar, key: 'w', group: 'Looking after things' },
   { href: '/always-on', label: 'Always on', icon: Satellite, key: 'j', group: 'Looking after things' },
@@ -200,6 +202,7 @@ function Shell({ me, reloadMe, path }: { me: Me; reloadMe: () => void; path: str
   else if (path === '/deep') page = <DeepPage />;
   else if (path === '/report-card') page = <ReportCardPage />;
   else if (path === '/jobs') page = <JobsPage />;
+  else if (path === '/files') page = <FilesPage me={me} />;
   else if (path === '/changes') page = <ChangesPage />;
   else if (path === '/routines') page = <RoutinesPage />;
   else if (path === '/clients') page = <ClientsPage />;

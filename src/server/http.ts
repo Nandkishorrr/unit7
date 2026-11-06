@@ -182,6 +182,14 @@ export function createHttp(app: App) {
     return c.json({ uploadId, size: buf.length });
   });
 
+  // a file off a server, straight through to the browser: file.download is the gate, and nothing is kept on this computer
+  http.get('/api/files/download', async (c) => {
+    const p = me(c);
+    rateLimit(`tools:${p.org.id}`, 600);
+    const { downloadFile } = await import('../tools/files.ts');
+    return downloadFile(app, p.org.id, auth.actorOf(p), c.req.query());
+  });
+
   // --- MCP endpoint for external AI agents (Claude Code, Cursor). Bearer token only. ---
   http.post('/mcp', async (c) => {
     const bearer = c.req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];

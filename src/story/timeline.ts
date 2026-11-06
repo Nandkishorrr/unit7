@@ -217,7 +217,7 @@ function changes(db: DB, orgId: string, r: Resolved, n: Names, since: string, un
 const SKIP = new Set(['deployment.create', 'service.sync_git', 'service.sync_previews', 'env.set', 'env.unset', 'env.import', 'env.restore', 'env.copy', 'change.undo',
   'memory.remember', 'memory.forget', 'errors.resolve', 'backup.create', 'backup.prune', 'backup.offsite_copy', 'backup.verify', 'backup.offsite_set', 'backup.folder_set',
   'sync.schedule', 'security.note', 'watch.settings', 'server.price', 'job.run', 'alerts.phone_approvals', 'asset.archive', 'security.fix_settings', 'security.weekly', 'alerts.phone_confirm']);
-const isPart = (t: string) => t.startsWith('part.') && t !== 'part.adopt';
+const isPart = (t: string) => (t.startsWith('part.') && t !== 'part.adopt') || /^file\.(write|upload|move|remove)$/.test(t); // their changes rows say it, with the undo
 const KIND_OF: [RegExp, Kind][] = [
   [/^deployment\.rollback$/, 'rollback'], [/^(domain|coolify\.set_domain)/, 'dns'], [/^link\./, 'link'], [/^(security\.|server\.(harden|close_port|protect_sites)|shield\.)/, 'security'],
   [/^(service\.restart|docker\.restart)$/, 'restart'], [/^(server\.|docker\.prune|hostinger\.)/, 'server'], [/^coolify\.control$/, 'deploy'],

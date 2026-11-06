@@ -25,7 +25,7 @@ import { lastXray, saveXray } from './xray.ts';
 import { redact as redactText } from '../redact.ts';
 
 // Logs from a server may print any secret of anything running on it
-const learnServerSecrets = (ctx: Ctx, serverId: string) => { for (const s of all<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE server_id = ? AND org_id = ?', serverId, ctx.orgId)) learnSecrets(ctx, s.id); };
+export const learnServerSecrets = (ctx: Ctx, serverId: string) => { for (const s of all<{ id: string }>(ctx.db, 'SELECT id FROM services WHERE server_id = ? AND org_id = ?', serverId, ctx.orgId)) learnSecrets(ctx, s.id); };
 
 export const CADDY_IMAGE = 'caddy:2.11.7-alpine';
 

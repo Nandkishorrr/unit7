@@ -104,8 +104,9 @@ export interface Tool<I = any, O = any> {
   timeoutMs?: number;
   retries?: number;      // only honoured for idempotent tools
   idempotent?: boolean;
-  sensitive?: string[];  // input fields never written to audit
-  peopleOnly?: boolean | ((input: I) => boolean); // an AI is denied outright, never queued for an approval it couldn't use
+  sensitive?: string[];  // fields never written to audit, in the input and in what it returns
+  view?: (field: string, input: I, actor: Actor) => string | undefined; // what an approver sees of a sensitive field, when the plain mask would hide what they're deciding on
+  peopleOnly?: boolean | ((input: I) => boolean | string); // an AI is denied outright, never queued for an approval it couldn't use (a string says why)
   dryRun?: (ctx: Ctx, input: I) => unknown | Promise<unknown>;
   // A machine's run that changed nothing (Warden's hourly "connect what belongs together" with nothing to connect) isn't an
   // action: no audit row, no event, and it never shows as work done. A person's run always counts.
@@ -215,12 +216,12 @@ const stable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
 // An approval waits up to a day with its input on disk, and people and AIs list approvals. A tool's sensitive
 // fields (a value, a token) are kept sealed with the vault, shown as [sensitive], and opened only to run it.
 const b64 = (b: Uint8Array) => Buffer.from(b).toString('base64');
-function sealInput(app: App, orgId: string, approvalId: string, tool: Tool, input: Record<string, unknown>) {
+function sealInput(app: App, orgId: string, approvalId: string, tool: Tool, input: Record<string, unknown>, actor: Actor) {
   const out = { ...input };
   for (const f of tool.sensitive ?? []) {
     if (typeof out[f] !== 'string') continue;
     const s = app.vault.sealValue(orgId, `approval:${approvalId}:${f}`, out[f] as string);
-    out[f] = { __sealed: `${b64(s.ciphertext)}.${b64(s.wrapped)}`, view: viewOf(out[f] as string, String(input.key ?? f)) };
+    out[f] = { __sealed: `${b64(s.ciphertext)}.${b64(s.wrapped)}`, view: tool.view?.(f, input, actor) ?? viewOf(out[f] as string, String(input.key ?? f)) };
   }
   return stable(out);
 }
@@ -350,8 +351,9 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
     .reduce((a, b) => (STRICTNESS[b.d.decision] > STRICTNESS[a.d.decision] || (STRICTNESS[b.d.decision] === STRICTNESS[a.d.decision] && b.e?.kind === 'production' && a.e?.kind !== 'production') ? b : a));
   let approvalId: string | undefined;
   // people-only means a person in the web app (or on their phone): a token could be any program on the computer
-  if (actor.kind !== 'user' && (typeof tool.peopleOnly === 'function' ? tool.peopleOnly(input as never) : tool.peopleOnly)) {
-    const why = `Only a person can ${tool.title.toLowerCase()}. An AI can't do this, even with approval.`;
+  const peopleOnly = typeof tool.peopleOnly === 'function' ? tool.peopleOnly(input as never) : tool.peopleOnly;
+  if (actor.kind !== 'user' && peopleOnly) {
+    const why = typeof peopleOnly === 'string' ? peopleOnly : `Only a person can ${tool.title.toLowerCase()}. An AI can't do this, even with approval.`;
     return { status: 'denied', why, auditId: audit('denied', { error: why }) };
   }
   // a person's rule in plain words binds every AI and Warden (care/rules.ts). Green steps only create, so they pass.
@@ -392,7 +394,7 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
       if (o.onlyIfAllowed) return { status: 'approval_required', approvalId: '', why: d.why };
       approvalId = id('apr');
       run(db, `INSERT INTO approvals (id, org_id, tool, input, reason, why, actor, environment_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        approvalId, orgId, name, sealInput(app, orgId, approvalId, tool, input), o.reason ?? null, d.why, JSON.stringify(actor), where?.id ?? null,
+        approvalId, orgId, name, sealInput(app, orgId, approvalId, tool, input, actor), o.reason ?? null, d.why, JSON.stringify(actor), where?.id ?? null,
         new Date(Date.now() + 24 * 3600_000).toISOString());
       audit('pending_approval', { approvalId });
       if (fix) run(db, 'UPDATE care_fixes SET approval_id = ? WHERE id = ?', approvalId, fix.id);
@@ -491,8 +493,9 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
       const durationMs = Date.now() - started;
       const safe = shape(output, redactor, false);
       const idle = actor.kind !== 'user' && !!tool.idle?.(output as never);
+      const kept = tool.sensitive && safe && typeof safe === 'object' && !Array.isArray(safe) ? { ...safe, ...Object.fromEntries(tool.sensitive.filter((f) => f in safe).map((f) => [f, '[sensitive]'])) } : safe;
       // Warden reads the same things every minute: the row says it happened, the output would only fill the database
-      const auditId = idle ? '' : audit('success', { output: risk === 'read' && actor.id === 'warden' ? undefined : safe, durationMs, resources, approvalId });
+      const auditId = idle ? '' : audit('success', { output: risk === 'read' && actor.id === 'warden' ? undefined : kept, durationMs, resources, approvalId });
       if (approvalId) run(db, `UPDATE approvals SET status = 'done', result = 'success' WHERE id = ?`, approvalId);
       if (risk !== 'read' && !idle) {
         app.events.emit(orgId, 'action.completed', `${actor.name}: ${tool.title}`, {

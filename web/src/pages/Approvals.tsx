@@ -42,6 +42,9 @@ const UNDO: Record<string, string> = {
   'part.backup_schedule': 'To undo, stop the backups from Activity. Copies already made stay.',
   'part.restore': 'Unit7 backs up what’s there now first, so you can go back to it.',
   'server.reboot': 'Nothing to undo: the server comes back by itself in a minute or two.',
+  'file.remove': 'To undo, use Undo in Activity. It stays in the trash for 7 days.',
+  'file.write': 'To undo, use Undo in Activity. The old copy is kept.',
+  'file.upload': 'To undo, use Undo in Activity. The old copy is kept.',
 };
 // "Unit7 wants to: … It will: … To undo: …"
 export const explainOf = (a: any, w: ReturnType<typeof approvalWords>, change: string) => approvalExplain({ title: w.title, change, undo: UNDO[a.tool], tier: a.tier, why: w.why, raw: w.raw });

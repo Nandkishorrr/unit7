@@ -199,3 +199,9 @@ DEFAULT_RULES.production.fresh_prepare = 'allowed';
 // "Production autonomy" or higher with the main server down 5+ minutes; any other AI asks, a person does it in one tap.
 Object.assign(ACTION_TIER, { server_label: 1, dr_failover: 2 } satisfies Record<string, Tier>);
 DEFAULT_RULES.production.server_label = 'allowed';
+
+// Files on a server (tools/files.ts): saving or moving one is a change with an undo. Removing one moves it to a 7-day trash,
+// and an AI always asks first. A write to a system path (/etc, /boot, an SSH folder) has its own key, restricted, so even a
+// person's own click waits on Approvals, and its assess makes an AI ask at any autonomy.
+Object.assign(ACTION_TIER, { file_write: 2, file_remove: 3, system_file_write: 2 } satisfies Record<string, Tier>);
+DEFAULT_RULES.production.system_file_write = 'restricted';

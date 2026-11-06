@@ -33,6 +33,24 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
   return data as T;
 }
 
+const refused = async (res: Response) => { const data = await res.json().catch(() => null); return new ApiError(data?.error?.code ?? 'http_error', data?.error?.message ?? `Request failed (${res.status}).`, res.status); };
+// a file off a server, saved by the browser: a plain link can't carry the session's header
+export async function saveDownload(path: string, name: string) {
+  const res = await fetch(path, { headers: { 'x-unit7-bind': bind() }, credentials: 'same-origin' });
+  if (!res.ok) throw await refused(res);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+}
+// a file's bytes to Unit7 first (100 MB at most): file.upload then puts them on the server
+export async function sendFile(file: File): Promise<string> {
+  const res = await fetch('/api/uploads', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-unit7-bind': bind() }, body: file, credentials: 'same-origin' });
+  if (!res.ok) throw await refused(res);
+  return (await res.json()).uploadId;
+}
+
 // --- live events: one SSE connection, many listeners ---
 export interface LiveEvent { id: string; type: string; severity: 'info' | 'success' | 'warning' | 'critical'; message: string; data: any; created_at: string; live?: boolean; project_id?: string | null; environment_id?: string | null; resource?: string | null
   explain?: { what: string; why: string; next: string; advanced?: string } } // plain words, from /api/events (src/explain.ts)

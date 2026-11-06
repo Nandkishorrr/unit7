@@ -150,7 +150,7 @@ export function approvalWords(a: { tool: string; input?: any; actor?: any; envir
     : NAMED[a.tool] && thing ? NAMED[a.tool]!(thing, i)
     : toolWords(a.tool);
   const why = a.environment ? `${a.environment} is protected, so this waits for your OK.` : 'This touches your whole account, so it waits for your OK.';
-  return { title, who: whoWords(a.actor), why, raw: [a.why, a.reason, i.command].filter(Boolean).join(' · ') };
+  return { title, who: whoWords(a.actor), why, raw: [a.why, a.reason, i.command, i.content].filter(Boolean).join(' · ') };
 }
 
 // approval titles that say which thing ("Remove preview-web", "Restart api")
@@ -272,6 +272,12 @@ Object.assign(NAMED, {
   'part.backup': (x: string) => `Back up ${x} now`,
   'part.restore': (x: string, i: any) => (i.into === 'live' ? `Restore ${x} from a backup` : `Make a test copy of ${x} from a backup`),
 });
+// files on a server (tools/files.ts)
+Object.assign(TOOL_WORDS, { 'file.list': 'See the files on a server', 'file.read': 'Read a file on a server', 'file.write': 'Save a file on a server', 'file.upload': 'Upload a file to a server', 'file.download': 'Download a file from a server', 'file.move': 'Move a file on a server', 'file.remove': 'Move a file to the trash' });
+Object.assign(NAMED, {
+  'file.write': (x: string, i: any) => `Save ${i.path} on ${x}`, 'file.upload': (x: string, i: any) => `Upload ${i.path} to ${x}`,
+  'file.move': (x: string, i: any) => `Move ${i.path} on ${x}`, 'file.remove': (x: string, i: any) => `Move ${i.path} on ${x} to the trash`,
+});
 export function changeWords(tool: string, input: any = {}, name: (id?: string) => string | undefined = () => undefined): string {
   const i = input ?? {};
   const app = name(i.serviceId) ?? 'the app';
@@ -305,6 +311,9 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
     case 'part.limits': return `${partName(i.part)} gets a cap${i.memoryMb ? ` of ${i.memoryMb} MB of memory` : ''}${i.memoryMb && i.cpus ? ' and' : ''}${i.cpus ? ` of ${i.cpus} CPU${i.cpus === 1 ? '' : 's'}` : ''}.`;
     case 'part.remove': return `${partName(i.part)} moves to a 7-day trash on ${server}. Undo brings it back.`;
     case 'change.undo': return 'A change Unit7 made goes back to how it was.';
+    case 'file.write': case 'file.upload': return `${i.path ?? 'The file'} on ${server} gets new content. The old copy is kept to undo.`;
+    case 'file.move': return `${i.path ?? 'The file'} moves to ${i.to ?? 'a new place'} on ${server}. Undo moves it back.`;
+    case 'file.remove': return `${i.path ?? 'The file'} moves to a 7-day trash on ${server}. Undo brings it back.`;
     case 'server.swap': return i.off ? `${cap(server)} loses Unit7’s swap. Apps keep running.` : `${cap(server)} gets up to 2 GB of swap, so a memory spike slows it down instead of stopping apps.`;
     case 'server.tidy_logs': return `Old system log lines and downloaded package files are cleared off ${server}. Apps keep running.`;
     case 'server.time_sync': return `${cap(server)}’s clock is kept right by itself from now on.`;

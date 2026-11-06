@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { connect as tcpConnect } from 'node:net';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import { StringDecoder } from 'node:string_decoder';
 import type { App } from '../app.ts';
 import { get, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
@@ -182,12 +183,15 @@ export class SshPool {
           }, o.timeoutMs ?? 120_000);
           const onAbort = () => { stream.close(); finish(() => reject(o.signal!.reason ?? new Unit7Error('aborted', 'Stopped.', 499))); };
           o.signal?.addEventListener('abort', onAbort, { once: true });
-          const take = (which: 'out' | 'err') => (d: Buffer) => {
-            const chunk = d.toString('utf8');
-            o.onData?.(chunk, which);
-            if (size + d.length > max) { truncated = true; return; }
-            size += d.length;
-            if (which === 'out') stdout += chunk; else stderr += chunk;
+          const take = (which: 'out' | 'err') => {
+            const text = new StringDecoder('utf8'); // a packet can end in the middle of a character
+            return (d: Buffer) => {
+              const chunk = text.write(d);
+              o.onData?.(chunk, which);
+              if (size + d.length > max) { truncated = true; return; }
+              size += d.length;
+              if (which === 'out') stdout += chunk; else stderr += chunk;
+            };
           };
           stream.on('data', take('out'));
           stream.stderr.on('data', take('err'));
@@ -246,6 +250,10 @@ export class SshPool {
     // written next to the target, then renamed: a cut connection never leaves half a file under the real name.
     // (the channel's output is drained, or pipeline() waits forever for it to end)
     await this.transfer(s, script('umask 077; cat > "$1.part" && mv "$1.part" "$1"', remote), (ch) => { ch.resume(); return pipeline(createReadStream(local), ch); }, o.timeoutMs);
+  }
+  // One command's output, byte for byte, into a stream (a file going to a browser). Nothing is kept on this computer.
+  async pipeOut(s: ServerRow, command: string, to: NodeJS.WritableStream, o: { timeoutMs?: number } = {}) {
+    await this.transfer(s, command, (ch) => { ch.end(); return pipeline(ch, to); }, o.timeoutMs);
   }
   // One command's output poured into another command on a second server, through Unit7 (a fleet's image: docker save on
   // the server that built it, docker load on the next). Streamed: nothing is buffered in memory or written to disk here.
