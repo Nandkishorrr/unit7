@@ -49,6 +49,10 @@ Unit7 can use an AI you connect: an API key, a local model, or your own signed-i
 - Seven's routine shifts use fixed rules until you connect one. A Claude Code you left on `/unit7 watch` takes a shift only when something goes wrong, and while it holds one its Unit7 tools can only look.
 - This project is built with heavy use of AI coding tools. A person reviews and owns what ships.
 
+## What an AI can read
+
+- supabase.sql denies an AI vault, key and sign-in tables by name. An app’s own table under a plain name is only column-masked.
+
 ## Licence promise
 
 Unit7 is open source under the licence in [LICENSE](LICENSE). What's open today stays open: if a paid version ever exists, it's for things that are extra, and nothing here gets moved behind it.

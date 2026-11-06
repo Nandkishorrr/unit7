@@ -35,6 +35,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 - Door rules are a shorter set than Supabase's own splinter lints.
 - The brake table is what each provider's docs said in November 2026. It doesn't read your live setting yet.
 
+## Hosted Supabase and Neon
+
+- Self-hosted Supabase: auth changes need Coolify, there are no sign-in providers or email templates, realtime off lasts until the next deploy, and functions have no history.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

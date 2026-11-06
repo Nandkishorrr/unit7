@@ -117,7 +117,10 @@ export function holdDelete(app: App, orgId: string, a: { id: string; tool: strin
   return until;
 }
 // a routine is a person's own saved step, not an AI deciding, so it runs when they say yes
-setHoldHook((app, orgId, a) => (HELD_TOOLS.has(a.tool) && a.actor.agent !== ROUTINE_AGENT ? holdDelete(app, orgId, a) : undefined));
+// tools that do many things hold only their delete
+export const HELD_OPS: Record<string, string> = { 'supabase.functions': 'delete', 'supabase.storage': 'delete', 'neon.branch': 'delete' };
+const held = (app: App, orgId: string, a: { id: string; tool: string }) => HELD_TOOLS.has(a.tool) || (!!HELD_OPS[a.tool] && openInput(app, orgId, a.id, get<{ input: string }>(app.db, 'SELECT input FROM approvals WHERE id = ?', a.id)?.input ?? '{}').op === HELD_OPS[a.tool]);
+setHoldHook((app, orgId, a) => (held(app, orgId, a) && a.actor.agent !== ROUTINE_AGENT ? holdDelete(app, orgId, a) : undefined));
 export async function runHeld(app: App, nowMs = Date.now()) {
   const done: string[] = [];
   for (const h of all<{ id: string; org_id: string; approval_id: string; tool: string; actor: string; by: string }>(app.db, `SELECT id, org_id, approval_id, tool, actor, by FROM held_deletes WHERE status = 'held' AND run_at <= ?`, new Date(nowMs).toISOString())) {
