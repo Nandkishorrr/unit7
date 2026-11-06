@@ -179,3 +179,14 @@ export async function pushFolder(files: { path: string; abs: string }[], repo: R
     return (await git('rev-parse', 'HEAD')).stdout.trim();
   } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
+
+// GitHub's code search skips repos it hasn't indexed and says nothing, so an empty answer proves nothing: look in the code itself
+export async function grepRepo(repo: Repo, term: string, token: string | undefined, limit = 5): Promise<string[]> {
+  const exec = promisify(execFile), tmp = mkdtempSync(join(tmpdir(), 'unit7-grep-'));
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(token && GH().startsWith('https://') ? githubAuthEnv(token) : {}) };
+  try {
+    await exec(sysBin('git'), ['clone', '-q', '--depth', '1', '--', cloneUrl(repo), tmp], { env, timeout: 60_000, maxBuffer: 1 << 24 });
+    const out = await exec(sysBin('git'), ['grep', '-l', '-I', '-F', '--', term], { cwd: tmp, env, timeout: 20_000, maxBuffer: 1 << 24 }).then((r) => r.stdout, () => ''); // git grep exits 1 when nothing matches
+    return out.split('\n').filter(Boolean).slice(0, limit);
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+}

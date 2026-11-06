@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { all, get, json, type DB } from '../db.ts';
 import { defineTool, type Ctx } from '../tools/runtime.ts';
 import { Unit7Error } from '../errors.ts';
-import { fileText, githubToken, parseRepo, searchCode, type Repo } from '../connectors/github.ts';
+import { fileText, githubToken, parseRepo, grepRepo, searchCode, type Repo } from '../connectors/github.ts';
 import { lastXray } from '../tools/xray.ts';
 import { cleanText } from '../handoff/record.ts';
 import { PLAYBOOKS, TOPICS } from './playbooks.ts';
@@ -98,10 +98,14 @@ async function repoOf(ctx: Ctx, ref: string) {
 const REPO = z.string().min(3).max(200).describe('owner/name, from the briefing');
 
 defineTool({
-  name: 'code.search', title: 'Search the app’s code', risk: 'read', action: 'read', timeoutMs: 30_000,
+  name: 'code.search', title: 'Search the app’s code', risk: 'read', action: 'read', timeoutMs: 100_000,
   description: 'Find which files mention a term (a route, a function, a setting name) in an app’s GitHub repo. Read-only.',
   input: z.object({ repo: REPO, term: z.string().min(2).max(120) }),
-  async run(ctx, i) { const { r, token } = await repoOf(ctx, i.repo); return { files: await searchCode(r, i.term.replace(/\b(repo|org|user):\S*/gi, ''), token) }; },
+  async run(ctx, i) {
+    const { r, token } = await repoOf(ctx, i.repo), term = i.term.replace(/\b(repo|org|user):\S*/gi, '').trim();
+    const found = await searchCode(r, term, token).catch(() => []);
+    return { files: found.length ? found : await grepRepo(r, term, token) };
+  },
 });
 
 defineTool({

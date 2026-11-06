@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { fakeApi, account, type Req } from './clouds-fakes.ts';
 import { liveTiming } from '../src/live/vercel.ts';
-import { pushFolder } from '../src/connectors/github.ts';
+import { grepRepo, pushFolder } from '../src/connectors/github.ts';
 import { secretsIn, walk } from '../src/live/source.ts';
 import { verdictsOf } from '../src/care/checkup.ts';
 import { findTools } from '../src/ops/index.ts';
@@ -180,4 +180,16 @@ test('nothing found says so plainly, so an AI can’t quietly stop at a dead end
   assert.equal(findTools('xyzzy plover').length, 0);
   const r = ok<any>(await org.h('tools.find', { query: 'xyzzy plover' }));
   assert.match(r.none, /Say so plainly/);
+});
+
+test('code search looks in the code itself when GitHub’s search comes back empty', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'remote-')), remote = join(root, 'demo', 'crm.git'), dir = site({ 'db/001.sql': 'create table carriers (id int);', 'README.md': 'nothing here' });
+  mkdirSync(remote, { recursive: true });
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote]);
+  process.env.UNIT7_GITHUB_URL = `file://${root}`;
+  try {
+    await pushFolder(walk(dir), { owner: 'demo', name: 'crm' }, undefined, { branch: 'main', message: 'First', existing: false });
+    assert.deepEqual(await grepRepo({ owner: 'demo', name: 'crm' }, 'create table carriers', undefined), ['db/001.sql']);
+    assert.deepEqual(await grepRepo({ owner: 'demo', name: 'crm' }, 'not in the code', undefined), [], 'nothing found is an answer, not a failure');
+  } finally { delete process.env.UNIT7_GITHUB_URL; }
 });
