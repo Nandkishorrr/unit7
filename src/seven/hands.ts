@@ -15,7 +15,7 @@ export const SEVEN_TOOLS: readonly string[] = [...EYES, 'seven.finish'];
 export interface Hand { safe: boolean; copyFirst?: boolean; allow?: (i: Record<string, unknown>) => boolean; word: string }
 export const HANDS: Record<string, Hand> = {
   // these only create or copy
-  'safety.protect': { safe: true, word: 'protect a database' }, 'safety.copy': { safe: true, word: 'take a fresh copy' }, 'backup.create': { safe: true, word: 'back up' }, 'backup.verify': { safe: true, word: 'test a backup' },
+  'safety.protect': { safe: true, word: 'protect' }, 'safety.copy': { safe: true, word: 'take a fresh copy' }, 'backup.create': { safe: true, word: 'back up' }, 'backup.verify': { safe: true, word: 'test a backup' },
   'part.backup': { safe: true, word: 'back up' }, 'part.backup_schedule': { safe: true, word: 'schedule backups for', allow: (i) => !i.off }, 'part.verify': { safe: true, word: 'test a backup of' }, 'part.copy_extras': { safe: true, word: 'copy files and settings of' }, 'part.scan_images': { safe: true, word: 'scan images of' },
   'server.swap': { safe: true, word: 'add swap' }, 'domain.renew_https': { safe: true, word: 'renew the certificate for' },
   // always a question: these change what's running. Old images and logs are gone for good, and a rollback may need them

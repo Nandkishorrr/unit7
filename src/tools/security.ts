@@ -15,7 +15,7 @@ import { script } from '../connectors/shell.ts';
 import { proxyOf } from '../deploy/caddy.ts';
 import { assertReachable, classify } from '../netguard.ts';
 import { pool } from '../discovery/scanners.ts';
-import { checkDaily, targets, watchRows } from '../sentinel/watch.ts';
+import { askPath, checkDaily, serverOf, targets, watchRows } from '../sentinel/watch.ts';
 import { isPublicKey, learnSecrets } from './env.ts';
 import { leakPlan } from './autopilot.ts';
 import { serverRow, type Facts } from './servers.ts';
@@ -290,15 +290,6 @@ function appFindings(db: DB, orgId: string, serverId?: string): Finding[] {
 
 // .env and .git/config served over the web: a small read of each, never more than the first few KB
 const ENV_FILE = /^\s*(?:export\s+)?[A-Z_][A-Z0-9_]*=\S/m, GIT_CONFIG = /\[core\][\s\S]*repositoryformatversion/;
-async function peek(url: string): Promise<string | undefined> {
-  const r = await fetch(url, { redirect: 'manual', headers: { range: 'bytes=0-2047', 'user-agent': 'Unit7 security check' }, signal: AbortSignal.timeout(6000) }).catch(() => undefined);
-  if (!r || (r.status !== 200 && r.status !== 206) || !r.body) { void r?.body?.cancel(); return undefined; }
-  const reader = r.body.getReader(), dec = new TextDecoder();
-  let text = '';
-  while (text.length < 4096) { const { done, value } = await reader.read().catch(() => ({ done: true, value: undefined })); if (done || !value) break; text += dec.decode(value, { stream: true }); }
-  void reader.cancel().catch(() => undefined);
-  return text;
-}
 export function exposedFiles(path: string, text: string) {
   if (/<(html|!doctype|head|body)\b/i.test(text)) return undefined; // a page (a single-page app answers every path)
   if (path === '/.env' && ENV_FILE.test(text)) return { first: /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=/m.exec(text)?.[1] };
@@ -312,9 +303,10 @@ async function siteFindings(ctx: Ctx): Promise<Finding[]> {
   const out: Finding[] = [];
   await pool(list, 8, async (t) => {
     try { await assertReachable(t.host); } catch { return; }
+    const s = await serverOf(ctx.app, ctx.orgId, t.host);
     for (const path of ['/.env', '/.git/config']) {
-      const text = await peek(`https://${t.host}${path}`);
-      const hit = text && exposedFiles(path, text);
+      const r = await askPath(ctx.app, s, t.host, path);
+      const hit = r?.status === 200 && exposedFiles(path, r.text);
       if (!hit) continue;
       const env = path === '/.env';
       out.push({ id: `app:exposed:${t.host}:${path}`, severity: env ? 'critical' : 'high', area: 'app', by: 'unit7', about: { kind: 'app', id: t.asset, name: t.name },

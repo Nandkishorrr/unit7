@@ -13,8 +13,9 @@ import { FINISH_SCHEMA, SYSTEM } from '../src/seven/prompt.ts';
 import { claudeFeatures, mindFor, priceOf, type Mind, type Step, type Talk } from '../src/seven/brain.ts';
 import { PLAYBOOKS, TOPICS } from '../src/seven/playbooks.ts';
 import { cycleOf, fileAllowed, knownRepos, versionsOf, vulnLine } from '../src/seven/knowledge.ts';
-import { SEVEN, answered, briefingOf, citeOf, shorten, dueTrigger, expireAsks, factsOf, forgetWakes, questionOf, rulePlans, runShift, settingsOf, settle, spentToday, wakeOn, type Fact } from '../src/seven/shift.ts';
+import { SEVEN, answered, briefingOf, citeOf, shorten, dueTrigger, expireAsks, factsOf, forgetWakes, questionOf, rulePlans, runShift, sceneOf, settingsOf, settle, spentToday, wakeOn, type Fact } from '../src/seven/shift.ts';
 import { statusOf, sevenTick } from '../src/seven/index.ts';
+import { checkSites } from '../src/sentinel/watch.ts';
 import { EYES, SEVEN_TOOLS } from '../src/seven/hands.ts';
 import { createToken, fromToken } from '../src/auth.ts';
 import { handleMcp, toolList } from '../src/mcp/server.ts';
@@ -605,4 +606,59 @@ test('Seven’s copies obey the same brakes as every automatic copy', async () =
   app.services.sevenMind = scripted([finish({ proposals: [{ kind: 'do', tool: 'test.copy', input: { what: 'x' }, why: 'A copy.' }] })]).mind;
   const r = (await runShift(app, o.orgId, { kind: 'look' }))!;
   assert.deepEqual(ran, [], 'the Safety Net is off'); assert.match(r.dropped[0]?.why ?? '', /a brake is on/);
+});
+
+// --- what a real first day found ------------------------------------------------------------------------------------------------
+const watchRow = (app: ReturnType<typeof testApp>, orgId: string, host: string, status: string, detail: string) => run(app.db, `INSERT INTO watch (org_id, host, kind, status, detail, streak, checked_at) VALUES (?, ?, 'site', ?, ?, 3, ?)`, orgId, host, status, detail, new Date().toISOString());
+
+test('a site that’s down right now reaches Seven, however fresh the check-up that says all is well', async () => {
+  const { app, o } = await world([]);
+  watchRow(app, o.orgId, 'crm.example.com', 'down', 'no answer in 10 seconds');
+  const b = briefingOf(app.db, o.orgId, checkup([]));
+  assert.equal(b.facts.get('down:crm.example.com')?.severity, 'critical');
+  assert.match(b.text, /crm\.example\.com is down/);
+  const r = await runShift(app, o.orgId, { kind: 'round' });
+  assert.match(r!.line, /crm\.example\.com is down/, 'fixed rules say so, not the check-up’s old line');
+  assert.equal(r!.level, 'act');
+  run(app.db, `UPDATE watch SET status = 'up' WHERE host = 'crm.example.com'`);
+  assert.equal(briefingOf(app.db, o.orgId, checkup([])).facts.has('down:crm.example.com'), false, 'and it goes when the site is back');
+});
+
+test('a ban on this computer reaches Seven too, and goes when it’s lifted', async () => {
+  const { app, o } = await world([]);
+  run(app.db, 'INSERT INTO assets (id, org_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', id('ast'), o.orgId, 'vercel', 'app', 'x', 'crm', 'https://127.0.0.2', '{}', new Date().toISOString());
+  const real = globalThis.fetch; let banned = true;
+  globalThis.fetch = (async () => { if (banned) throw Object.assign(new Error('fetch failed'), { cause: { code: 'ETIMEDOUT' } }); return new Response('ok'); }) as typeof fetch;
+  process.env.UNIT7_ALLOW_PRIVATE_FOR_TESTS = '1';
+  const v = { neutral: async () => true, inside: async (hosts: string[]) => new Set(hosts), blocked: async (hosts: string[]) => new Map(hosts.map((h) => [h, { server: 'vps', ip: '198.51.100.7', by: 'a firewall rule' }])) };
+  try {
+    await checkSites(app, o.orgId, v);
+    assert.match(briefingOf(app.db, o.orgId, checkup([])).facts.get('blocked')!.text, /banned this computer/);
+    banned = false; await checkSites(app, o.orgId, v);
+    assert.equal(briefingOf(app.db, o.orgId, checkup([])).facts.has('blocked'), false);
+  } finally { globalThis.fetch = real; delete process.env.UNIT7_ALLOW_PRIVATE_FOR_TESTS; }
+});
+
+test('trouble that arrives during a Look now waits for it, and isn’t lost', async () => {
+  const { app, o } = await world([]);
+  let finish: (() => void) | undefined;
+  const look = runShift(app, o.orgId, { kind: 'look' }, { cli: () => new Promise((r) => { finish = () => r(undefined); }) });
+  while (!finish) await new Promise((r) => setTimeout(r, 5));
+  try {
+    wakeOn({ type: 'site.down', org_id: o.orgId, message: 'crm isn’t answering' }, Date.now() - 4 * 60_000);
+    assert.equal(dueTrigger(app.db, o.orgId), undefined, 'one shift at a time');
+  } finally { finish(); await look; }
+  assert.equal(dueTrigger(app.db, o.orgId)?.kind, 'event', 'it runs right after');
+});
+
+test('Seven names the database it would protect, and a busy server holds that copy back like any other', async () => {
+  const { app, o } = await world([]);
+  assert.equal(questionOf(app.db, o.orgId, 'safety.protect', { key: `${SRV}:coolify:nope` }), 'Should I protect a database?', 'it can’t name what it can’t find, and says so plainly');
+  saveXray(app.db, o.orgId, SRV, 'fast', { version: 1, at: new Date().toISOString(), server: {}, paas: [], projects: [], parts: [{ id: 'coolify:shopdb', kind: 'database', name: 'shop-supabase', owner: 'coolify', trust: 'understood', engine: 'postgres', image: 'supabase/postgres:15', containers: ['supabase-db-shopdb'] }], loose: [], ports: [], repos: [], summary: '', notes: [] } as never);
+  const key = `${SRV}:coolify:shopdb`;
+  assert.equal(questionOf(app.db, o.orgId, 'safety.protect', { key }), 'Should I protect shop-supabase?');
+  const s = sceneOf(app, o.orgId, settingsOf(app.db, o.orgId), briefingOf(app.db, o.orgId, checkup([])));
+  assert.equal(s.mayCopy({ key }), true);
+  run(app.db, 'UPDATE metrics SET cpu = 95 WHERE server_id = ?', SRV);
+  assert.equal(s.mayCopy({ key }), false, 'the server in the key is busy');
 });

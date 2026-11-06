@@ -18,7 +18,8 @@ import { EYES, HANDS, LIMITS, handOf, hashOf, judge, type Plan, type Scene } fro
 import { knownRepos } from './knowledge.ts';
 import { lastXray } from '../tools/xray.ts';
 import { distrusted, playbookFor, toldWrong } from '../care/judge.ts';
-import { mayCopy } from '../care/safetynet.ts';
+import { mayCopy, protectionOf } from '../care/safetynet.ts';
+import { watchIssues } from '../sentinel/watch.ts';
 import { FINISH_DESCRIPTION, FINISH_SCHEMA, SYSTEM } from './prompt.ts';
 import { mindFor, type Effort, type Mind, type Spec, type Step, type Usage } from './brain.ts';
 
@@ -48,9 +49,12 @@ export function factsOf(c: Checkup | undefined): Fact[] {
   return out;
 }
 const fingerprintOf = (facts: Fact[]) => createHash('sha1').update(facts.filter((f) => f.severity !== 'info').map((f) => `${f.id}:${f.severity}`).sort().join('|')).digest('hex').slice(0, 16);
+// what's wrong this minute. A check-up can be hours old, and its "all fine" mustn't outlive it.
+const OPEN = /^(down:|blocked$)/;
+export const openFacts = (db: DB, orgId: string): Fact[] => watchIssues({ db }, orgId).filter((w) => OPEN.test(w.key)).map((w) => ({ id: w.key, severity: w.severity === 'critical' ? 'critical' : 'medium', measured: true, text: w.text }));
 
 export function briefingOf(db: DB, orgId: string, c: Checkup | undefined, nowMs = Date.now()): Briefing {
-  const list = factsOf(c), facts = new Map(list.map((f) => [f.id, f]));
+  const list = [...openFacts(db, orgId), ...factsOf(c)], facts = new Map(list.map((f) => [f.id, f]));
   const line = (f: Fact, show: boolean) => `- [${f.id}] ${f.severity}${f.measured ? '' : ' (from logs or traffic)'}: ${show ? f.text : 'kept out of this message, because strangers can write into it'}${f.fix ? ` Unit7's fix: ${f.fix.tool} ${JSON.stringify(f.fix.input)}` : ''}`;
   const deploys = lastDeploys(db, orgId, 12).filter((d) => nowMs - Date.parse(d.at) < DAY).map((d) => `- ${d.at.slice(11, 16)} ${d.name}: ${d.status}`);
   const told = all<{ tool: string; why: string; status: string }>(db, `SELECT tool, why, status FROM seven_actions WHERE org_id = ? AND status IN ('no', 'still') AND updated_at > ? ORDER BY updated_at DESC LIMIT 8`, orgId, new Date(nowMs - NO_FOR).toISOString());
@@ -143,13 +147,13 @@ export function sceneOf(app: App, orgId: string, s: Settings, b: Briefing, nowMs
   const asked = get<{ n: number }>(app.db, `SELECT count(*) n FROM seven_actions WHERE org_id = ? AND status IN ('asked', 'approved', 'no') AND created_at > ?`, orgId, new Date(nowMs - DAY).toISOString())!.n;
   // what a person said counts: a kind they called wrong stops being a reason to act alone, and a fix they taught it becomes one
   return { measured: new Map([...b.facts].filter(([k, f]) => f.measured && f.fix && !distrusted(app.db, orgId, k)).map(([k, f]) => [k, hashOf(f.fix!.tool, normal(f.fix!.tool, f.fix!.input))])), learned: new Set([...b.facts].filter(([k, f]) => f.fix && !distrusted(app.db, orgId, k) && playbookFor(app.db, orgId, k, f.fix.tool)).map(([, f]) => hashOf(f.fix!.tool, normal(f.fix!.tool, f.fix!.input)))), toldNo: pick((r) => r.status === 'no' || (['expired', 'refused'].includes(r.status) && nowMs - Date.parse(r.updated_at) < SILENT_FOR) || (r.status === 'failed' && nowMs - Date.parse(r.updated_at) < DAY)), done: pick((r) => ['done', 'approved', 'fixed', 'still'].includes(r.status)), waiting: pick((r) => r.status === 'asked'),
-    green: (tool, input) => { const g = getTool(tool)?.green; return typeof g === 'function' ? g(input as never) : !!g; }, valid: (tool, input) => !!getTool(tool)?.input.safeParse(input).success, mayCopy: (input) => mayCopy(app.db, orgId, typeof input.serverId === 'string' ? input.serverId : undefined, nowMs), acts: LIMITS.actsPerShift, asks: Math.max(0, s.asks - asked), canAct: s.on && !org?.paused_at && (org?.autonomy ?? 3) >= 1, quiet: quietNow(app.db, orgId, nowMs) };
+    green: (tool, input) => { const g = getTool(tool)?.green; return typeof g === 'function' ? g(input as never) : !!g; }, valid: (tool, input) => !!getTool(tool)?.input.safeParse(input).success, mayCopy: (input) => mayCopy(app.db, orgId, typeof input.serverId === 'string' ? input.serverId : typeof input.key === 'string' ? /^srv_[^:]+/.exec(input.key)?.[0] : undefined, nowMs), acts: LIMITS.actsPerShift, asks: Math.max(0, s.asks - asked), canAct: s.on && !org?.paused_at && (org?.autonomy ?? 3) >= 1, quiet: quietNow(app.db, orgId, nowMs) };
 }
 // What a question names comes from the action itself. The AI's reason can be wrong; this is what a yes will really touch.
 function actionOf(db: DB, orgId: string, tool: string, i: Record<string, unknown>) {
   const name = (table: 'servers' | 'services', v: unknown) => (v ? get<{ name: string }>(db, `SELECT name FROM ${table} WHERE id = ? AND org_id = ?`, String(v), orgId)?.name ?? String(v) : undefined);
   const part = i.uuid ? lastXray(db, orgId, String(i.serverId))?.data.parts.find((p) => p.coolify?.uuid === i.uuid)?.name ?? i.uuid : i.part;
-  const what = [part, name('services', i.serviceId), i.port, i.ip, i.domain, i.memoryMb && `to ${i.memoryMb} MB`, i.cpus && `and ${i.cpus} CPUs`, i.path && `at ${i.path}`].filter(Boolean), on = name('servers', i.serverId);
+  const what = [i.key ? protectionOf(db, orgId).find((g) => g.key === i.key)?.name ?? 'a database' : undefined, part, name('services', i.serviceId), i.port, i.ip, i.domain, i.memoryMb && `to ${i.memoryMb} MB`, i.cpus && `and ${i.cpus} CPUs`, i.path && `at ${i.path}`].filter(Boolean), on = name('servers', i.serverId);
   return `${[handOf(tool, i)?.word ?? getTool(tool)?.title.toLowerCase() ?? tool, ...what].join(' ')}${on ? ` on ${on}` : ''}`;
 }
 export const questionOf = (db: DB, orgId: string, tool: string, i: Record<string, unknown>) => `Should I ${actionOf(db, orgId, tool, i)}?`;
@@ -268,8 +272,9 @@ export async function runShift(app: App, orgId: string, t: Trigger, o: { cli?: (
     }
     for (const h of f?.handoffs ?? []) handOver(app, orgId, shiftId, c, h);
     const did = acted.filter((a) => a.status === 'done'), asked = acted.filter((a) => a.status === 'asked');
-    const line = f ? sentence(f.line, 160) : asked.length ? `${asked.length === 1 ? 'One question' : `${asked.length} questions`} for you.` : did.length ? `I did ${did.length} thing${did.length === 1 ? '' : 's'}. Nothing else changed.` : c?.line ?? 'I couldn’t read anything yet.';
-    const level = f?.level ?? (c?.level === 'good' ? 'calm' : c?.level ?? 'look');
+    const open = [...b.facts.values()].filter((x) => OPEN.test(x.id));
+    const line = f ? sentence(f.line, 160) : open.length ? sentence(open.length === 1 ? open[0]!.text : `${open.length} problems right now. ${open[0]!.text}`, 160) : asked.length ? `${asked.length === 1 ? 'One question' : `${asked.length} questions`} for you.` : did.length ? `I did ${did.length} thing${did.length === 1 ? '' : 's'}. Nothing else changed.` : c?.line ?? 'I couldn’t read anything yet.';
+    const level = f?.level ?? (open.length ? 'act' : c?.level === 'good' ? 'calm' : c?.level ?? 'look');
     const notes = [...(f?.notes.map((n) => sentence(n, 300)) ?? []), ...(packages.length ? [`${packages.length} known hole${packages.length === 1 ? '' : 's'} in your app’s packages, ready for your AI.`] : []), ...settled.filter((x) => !x.worked).map((x) => `This didn’t help: ${x.why}`), ...acted.filter((a) => a.status === 'failed' || a.status === 'refused').map((a) => `I couldn’t ${a.word}${a.note ? `: ${sentence(a.note, 160)}` : '.'}`), ...wouldDo, ...(note ? [note] : [])];
     run(db, `UPDATE seven_shifts SET status = 'done', brain = ?, line = ?, level = ?, notes = ?, thoughts = ?, fingerprint = ?, tokens_in = ?, tokens_out = ?, cost = ?, turns = ?, finished_at = ? WHERE id = ?`, brain, line, level, JSON.stringify(notes), JSON.stringify(thought?.thoughts ?? []), f ? b.fingerprint : null, (thought?.usage.input ?? 0) + (thought?.usage.cached ?? 0) + (thought?.usage.written ?? 0), thought?.usage.output ?? 0, thought?.usage.cost ?? 0, thought?.turns ?? 0, now(), shiftId);
     if (did.length) app.events.emit(orgId, 'seven.did', `${did.map((d) => d.why).slice(0, 2).join(' ')}${did.length > 2 ? ` And ${did.length - 2} more.` : ''}`.slice(0, 400), { severity: 'success', data: { shiftId } });
@@ -288,6 +293,7 @@ export function wakeOn(e: { type: string; org_id: string; message?: string }, no
   if (WAKES.test(e.type) && !soon.has(e.org_id)) soon.set(e.org_id, { why: `${e.type}: ${(e.message ?? '').slice(0, 160)}`, at: nowMs + 3 * 60_000 });
 }
 export function dueTrigger(db: DB, orgId: string, nowMs = Date.now(), calm = true): Trigger | undefined {
+  if (running.has(orgId)) return undefined; // a shift can't start, so nothing is taken off the list for it
   const s = settingsOf(db, orgId);
   if (!s.on || !get(db, `SELECT 1 FROM servers WHERE org_id = ? AND status NOT IN ('new', 'bootstrapping')`, orgId) || get<{ p: string | null }>(db, 'SELECT paused_at p FROM orgs WHERE id = ?', orgId)?.p) return undefined;
   const ago = (kind: string) => { const r = get<{ a: string | null }>(db, 'SELECT max(started_at) a FROM seven_shifts WHERE org_id = ? AND (? = \'any\' OR trigger = ?)', orgId, kind, kind)?.a; return r ? nowMs - Date.parse(r) : Infinity; };

@@ -1,12 +1,13 @@
 // What can a stranger do? Unit7 looks at your own sites the way nobody-in-particular would: what's in the JavaScript you ship, what
 // that public key can read, and which files answer. It only ever asks how many rows there are, never for one. It only looks at
-// addresses it can tie to you, and it asks gently: a few requests, one at a time.
+// addresses it can tie to you, and it asks gently: a few requests, one at a time. Files that shouldn't download are asked for from
+// inside a connected server, because asking from here gets you banned (see askPath).
 import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, type Ctx } from '../tools/runtime.ts';
 import { assertReachable } from '../netguard.ts';
 import { pool } from '../discovery/scanners.ts';
-import { targets } from '../sentinel/watch.ts';
+import { askPath, serverOf, targets } from '../sentinel/watch.ts';
 import { lastXray } from '../tools/xray.ts';
 import { all } from '../db.ts';
 import { isTestHost } from '../care/readiness.ts';
@@ -114,8 +115,9 @@ export async function strangerLook(ctx: Ctx, host: string) {
   // these addresses come from the page, so each is checked like any other before Unit7 sends it a key
   if (sb.anon) for (const url of sb.urls.slice(0, 2)) { if (await blocked(new URL(url).hostname)) continue; const f = tableFinding(host, await countTables(url, sb.anon)); if (f) findings.push(f); }
   if (badRandom(js)) findings.push({ id: `stranger:random:${host}`, severity: 'low', area: 'app', by: 'unit7', title: `${host} makes something secret with Math.random()`, detail: 'Math.random() can be predicted. Likely, not proven: Unit7 read this in the shipped code.', fix: { ask: `${host} seems to make a token with Math.random(). Find it and use a secure random source.`, manual: ['Use crypto.randomUUID() or crypto.getRandomValues().'] } });
+  const name = new URL(base).hostname, server = await serverOf(ctx.app, ctx.orgId, name);
   for (const path of OPEN_PATHS) {
-    const r = await get(`${base}${path}`, { max: 4096 }); looked++;
+    const r = await askPath(ctx.app, server, name, path); looked++;
     if (r?.status !== 200 || /<(html|!doctype|head|body)\b/i.test(r.text)) continue;
     const env = path.includes('.env'), hit = env ? exposedFiles('/.env', r.text) : /^(--|\/\*|CREATE |INSERT |PK)/m.test(r.text);
     if (hit) findings.push({ id: `stranger:file:${host}:${path}`, severity: 'critical', area: 'app', by: 'unit7', title: `${host} gives ${path} to anyone`, detail: env ? 'Passwords and keys download from the web. Assume everything in it is known.' : 'A copy of your data downloads from the web.', evidence: `https://${host}${path} answered`, fix: { label: 'Ask Unit7 to help', ask: `https://${host}${path} downloads from the web. Help me remove it and change what it exposed.`, manual: ['Remove the file from what’s served.', 'Change anything it held.'] } });
@@ -131,7 +133,7 @@ export function ownHosts(ctx: Ctx) {
 }
 defineTool({
   name: 'security.stranger', title: 'What can a stranger do?', risk: 'read', action: 'read', timeoutMs: 8 * 60_000,
-  description: 'Look at your own sites from outside, as nobody: keys in the JavaScript you ship (labelled meant to be public or can spend your money), a service_role key, a signing secret still at its published default, which tables the public key can read (a count only, never a row), source maps, and files that shouldn’t download. Only addresses tied to you.',
+  description: 'Look at your own sites from outside, as nobody: keys in the JavaScript you ship (labelled meant to be public or can spend your money), a service_role key, a signing secret still at its published default, which tables the public key can read (a count only, never a row), source maps, and files that shouldn’t download (asked for from inside a connected server, so its defences don’t ban this computer). Only addresses tied to you.',
   input: z.object({ host: z.string().max(253).optional() }),
   async run(ctx, i) {
     const mine = ownHosts(ctx);

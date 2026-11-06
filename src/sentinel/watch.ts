@@ -5,7 +5,7 @@
 import { connect as tlsConnect } from 'node:tls';
 import type { App } from '../app.ts';
 import { all, get, json, now, run } from '../db.ts';
-import { Resolver } from 'node:dns/promises';
+import { Resolver, lookup } from 'node:dns/promises';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
 import { script } from '../connectors/shell.ts';
 import { assertReachable } from '../netguard.ts';
@@ -81,9 +81,47 @@ export async function certificate(host: string): Promise<{ validTo?: string; why
 // "Is it me or them?" A failed check says something about this computer's connection before it says anything about a
 // site. Every site failing at once was, on a real install, a sleeping Mac or a dropped connection 128 times out of 131.
 // neutral: can this computer reach the internet at all? inside: which of these sites answer from inside their own server?
-export interface Vantage { neutral(): Promise<boolean>; inside(hosts: string[]): Promise<Set<string>> }
+// blocked: has their server banned this computer? Then every site on it looks down from here, and only from here.
+export interface Blocked { server: string; ip: string; by: string }
+export interface Vantage { neutral(): Promise<boolean>; inside(hosts: string[]): Promise<Set<string>>; blocked?(hosts: string[]): Promise<Map<string, Blocked>> }
 const NEUTRAL = ['https://www.cloudflare.com/cdn-cgi/trace', 'https://dns.google/resolve?name=example.com'];
 export const INSIDE_CHECK = 'for h in "$@"; do c=$(curl -sk -o /dev/null -m 6 -w "%{http_code}" --resolve "$h:443:127.0.0.1" "https://$h/" 2>/dev/null); echo "$h $c"; done';
+// The address the server sees this computer on, then the rule that bans it, if one does. fail2ban and firewall rules show in iptables, CrowdSec in ipset.
+// ponytail: a ban held only in nftables isn't seen, so those sites read as down, as they did before
+export const BLOCK_CHECK = 'ip=${SSH_CLIENT%% *}; [ -n "$ip" ] || exit 0; s=; [ "$(id -u)" = 0 ] || s="sudo -n"; echo "$ip"; $s iptables-save 2>/dev/null | grep -F -- "-s $ip/32" | grep -E -- "-j (DROP|REJECT)" | head -n 1; $s ipset list 2>/dev/null | grep -qE "^$ip( |$)" && echo "-A ipset"; true';
+// (pure) what BLOCK_CHECK printed
+export function banOf(stdout: string, server: string): Blocked | undefined {
+  const [ip, rule] = stdout.trim().split('\n'), chain = /^-A ([\w-]+)/.exec(rule ?? '')?.[1];
+  return ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip) && chain ? { server, ip, by: chain.startsWith('f2b-') ? `fail2ban’s ${chain.slice(4)} rule` : chain === 'ipset' ? 'a block list' : 'a firewall rule' } : undefined;
+}
+// the connected server each of these names really points at
+async function serversOf(app: App, orgId: string, hosts: string[]) {
+  const ready = all<ServerRow>(app.db, `SELECT * FROM servers WHERE org_id = ? AND status = 'ready'`, orgId), out = new Map<ServerRow, string[]>();
+  if (ready.length) await pool(hosts, 6, async (h) => { const ip = await lookup(h, { family: 4 }).then((a) => a.address, () => undefined), s = ready.find((x) => x.host === ip); if (s) out.set(s, [...(out.get(s) ?? []), h]); });
+  return out;
+}
+export const serverOf = async (app: App, orgId: string, host: string) => [...(await serversOf(app, orgId, [host])).keys()][0];
+
+// Asking for /.env is what attackers do, so a server's own defence (fail2ban, CrowdSec) bans whoever asks. From this computer that's
+// you: every site on that server stops answering you for days. So a path like that goes to a connected server from inside it, where
+// the proxy sees its own address. ponytail: a site behind a CDN doesn't point at the server, so it's still asked from here.
+export const INSIDE_PATH = 'curl -sk -m 6 -D - -A "Unit7 security check" --resolve "$1:443:127.0.0.1" "https://$1$2" 2>/dev/null | head -c 8192';
+export async function askPath(app: App, s: ServerRow | undefined, host: string, path: string, max = 4096): Promise<{ status: number; text: string } | undefined> {
+  if (s) {
+    const out = (await ssh(app).exec(s, script(INSIDE_PATH, host, path), { timeoutMs: 15_000 }).catch(() => undefined))?.stdout ?? '';
+    const status = Number(/^HTTP\/\S+ (\d{3})/.exec(out)?.[1]), body = out.indexOf('\r\n\r\n');
+    return status ? { status, text: body < 0 ? '' : out.slice(body + 4, body + 4 + max) } : undefined;
+  }
+  const r = await fetch(`https://${host}${path}`, { redirect: 'manual', headers: { 'user-agent': 'Unit7 security check' }, signal: AbortSignal.timeout(6000) }).catch(() => undefined);
+  if (!r) return undefined;
+  if (!r.body) return { status: r.status, text: '' };
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let text = '';
+  while (text.length < max) { const { done, value } = await reader.read().catch(() => ({ done: true, value: undefined })); if (done || !value) break; text += dec.decode(value, { stream: true }); }
+  void reader.cancel().catch(() => undefined);
+  return { status: r.status, text };
+}
+
 export function vantageOf(app: App, orgId: string): Vantage {
   return {
     async neutral() {
@@ -94,15 +132,20 @@ export function vantageOf(app: App, orgId: string): Vantage {
     async inside(hosts) {
       const up = new Set<string>();
       if (process.env.UNIT7_SKIP_NET_PROBE) return up;
-      const byIp = new Map<string, string[]>();
-      await pool(hosts, 6, async (h) => { const ip = await resolver().resolve4(h).then((a) => a[0], () => undefined); if (ip) byIp.set(ip, [...(byIp.get(ip) ?? []), h]); });
-      for (const [ip, names] of byIp) {
-        const s = get<ServerRow>(app.db, `SELECT * FROM servers WHERE org_id = ? AND host = ? AND status = 'ready'`, orgId, ip);
-        if (!s) continue;
-        const r = await ssh(app).exec(s, script(INSIDE_CHECK, ...names.slice(0, 12)), { timeoutMs: 45_000 }).catch(() => undefined);
+      for (const [s, names] of await serversOf(app, orgId, hosts)) {
+        const r = await ssh(app).exec(s, script(INSIDE_CHECK, ...names.slice(0, 40)), { timeoutMs: 90_000 }).catch(() => undefined);
         for (const line of (r?.stdout ?? '').split('\n')) { const [h, code] = line.trim().split(' '); if (h && Number(code) >= 200 && Number(code) < 500) up.add(h); }
       }
       return up;
+    },
+    async blocked(hosts) {
+      const out = new Map<string, Blocked>();
+      if (process.env.UNIT7_SKIP_NET_PROBE) return out;
+      for (const [s, names] of await serversOf(app, orgId, hosts)) {
+        const ban = banOf((await ssh(app).exec(s, script(BLOCK_CHECK), { timeoutMs: 20_000 }).catch(() => undefined))?.stdout ?? '', s.name);
+        if (ban) for (const h of names) out.set(h, ban);
+      }
+      return out;
     },
   };
 }
@@ -116,20 +159,35 @@ export function roundVerdict(total: number, failed: number, neutralOk: boolean |
 
 const onceEvery = (app: App, orgId: string, type: string, ms: number) => !get(app.db, 'SELECT 1 FROM events WHERE org_id = ? AND type = ? AND created_at > ?', orgId, type, new Date(Date.now() - ms).toISOString());
 
+// what the last round found about this computer being banned. In memory, because the next round asks again.
+const blockedNow = new Map<string, string>();
+
 // every 5 minutes: is each site answering?
 export async function checkSites(app: App, orgId: string, v: Vantage = vantageOf(app, orgId)) {
   const list = targets(app, orgId);
   const seen = await pool(list, 10, async (t) => ({ t, r: await probe(t.host) }));
-  const failed = seen.filter((x) => !x.r.ok);
+  const failed = seen.filter((x) => !x.r.ok), names = failed.map((x) => x.t.host);
   const verdict = roundVerdict(list.length, failed.length, failed.length ? await v.neutral() : undefined);
-  const answers = verdict === 'many' ? await v.inside(failed.map((x) => x.t.host)).catch(() => new Set<string>()) : new Set<string>();
+  // one server's sites can be a small part of the map, so this is asked whenever anything failed. Only a ban found here clears a site
+  // in a small round: answering inside doesn't prove strangers can reach it, and a certificate can be broken only from outside.
+  const block = (failed.length && verdict !== 'offline' ? await v.blocked?.(names).catch(() => undefined) : undefined) ?? new Map<string, Blocked>();
+  const ask = verdict === 'many' ? names : [...block.keys()];
+  const answers = ask.length ? await v.inside(ask).catch(() => new Set<string>()) : new Set<string>();
   for (const { t, r } of seen) {
     if (r.ok) { checkSite(app, orgId, t, r); continue; }
     if (verdict === 'offline') { save(app, orgId, t.host, 'site', { ...prev(app, orgId, t.host, 'site'), detail: 'Not checked: this computer lost its connection' }); continue; }
-    checkSite(app, orgId, t, answers.has(t.host) ? { ok: true, ms: r.ms, why: undefined, code: 200 } : r);
+    checkSite(app, orgId, t, answers.has(t.host) ? { ok: true, ms: 0, why: undefined, code: 200 } : r); // ms: how long it failed for isn't how fast it is
   }
   if (verdict === 'offline' && onceEvery(app, orgId, 'watch.offline', 3600_000)) app.events.emit(orgId, 'watch.offline', 'Unit7 lost its own connection, so it couldn’t check your sites. This says nothing about your sites.', { severity: 'info' });
-  if (answers.size && onceEvery(app, orgId, 'watch.route', 6 * 3600_000)) app.events.emit(orgId, 'watch.route', `${answers.size} site${answers.size === 1 ? '' : 's'} didn’t answer this computer, but answer on the server itself. It’s most likely this computer’s network. If visitors complain, check the server’s firewall.`, { severity: 'warning' });
+  const ban = [...block.values()][0];
+  if (ban) {
+    const text = `${ban.server} has banned this computer’s address (${ban.ip}), through ${ban.by}. Its sites can’t be reached from here, but anyone else can still reach them.`;
+    blockedNow.set(orgId, text);
+    if (onceEvery(app, orgId, 'watch.blocked', 6 * 3600_000)) app.events.emit(orgId, 'watch.blocked', `${text} Ask Unit7 to lift it.`, { severity: 'warning', resource: ban.server });
+  } else {
+    if (verdict !== 'offline') blockedNow.delete(orgId);
+    if (answers.size && onceEvery(app, orgId, 'watch.route', 6 * 3600_000)) app.events.emit(orgId, 'watch.route', `${answers.size} site${answers.size === 1 ? '' : 's'} didn’t answer this computer, but answer on the server itself. It’s most likely this computer’s network. If visitors complain, check the server’s firewall.`, { severity: 'warning' });
+  }
   pruneWatch(app, orgId, list);
   return list.length;
 }
@@ -159,7 +217,7 @@ export function checkSite(app: App, orgId: string, t: { host: string; asset: str
   const status = !r.ok ? (streak >= DOWN_AFTER || p?.status === 'down' ? 'down' : 'flaky') : slow ? 'slow' : 'up';
   save(app, orgId, t.host, 'site', { status, streak, ms: r.ms, detail: r.ok ? (r.ms > SLOW_MS ? `slow: ${r.ms} ms` : `HTTP ${r.code}`) : r.why, last_ok: r.ok ? now() : undefined, asset: t.asset });
   if (status === 'down' && p?.status !== 'down') app.events.emit(orgId, 'site.down', `${t.host} (${t.name}) isn’t answering: ${r.why}`, { severity: 'critical', resource: t.host });
-  if (status === 'up' && p?.status === 'down') app.events.emit(orgId, 'site.recovered', `${t.host} (${t.name}) is answering again (${r.ms} ms)`, { severity: 'success', resource: t.host });
+  if (status === 'up' && p?.status === 'down') app.events.emit(orgId, 'site.recovered', `${t.host} (${t.name}) is answering again${r.ms ? ` (${r.ms} ms)` : ''}`, { severity: 'success', resource: t.host });
   if (status === 'slow' && p?.status !== 'slow') app.events.emit(orgId, 'site.slow', `${t.host} (${t.name}) is slow: ${r.ms} ms to answer`, { severity: 'warning', resource: t.host });
   return status;
 }
@@ -205,20 +263,26 @@ export function checkRegistration(app: App, orgId: string, d: { name: string; me
   else rearm(app, orgId, d.name, 'registration');
 }
 
-// can others send email as this domain? (SPF and DMARC, asked of public resolvers)
+// (pure) can others send email as this domain? A domain that sends no email only needs DMARC to say reject: fakes fail it with or without SPF.
+export function emailStatus(hasMx: boolean, root: string[], dmarc: string[]) {
+  const spf = root.some((t) => /^v=spf1/i.test(t)), dm = dmarc.some((t) => /^v=DMARC1/i.test(t)), rejects = dmarc.some((t) => /^v=DMARC1/i.test(t) && /;\s*p=(reject|quarantine)\b/i.test(t));
+  const missing = [!spf && (hasMx || !rejects) && 'SPF', !dm && 'DMARC'].filter(Boolean) as string[];
+  return { status: missing.length ? (hasMx ? 'unprotected' : 'spoofable') : 'ok',
+    detail: missing.length ? `${missing.join(' and ')} missing${hasMx ? ': your email may land in spam, and others can send as you' : ': this domain sends no email, but anyone can pretend it does'}` : spf ? 'SPF and DMARC set' : 'DMARC rejects anything sent in this name' };
+}
+// (SPF and DMARC, asked of public resolvers)
 export async function checkEmail(app: App, orgId: string, apex: string) {
   const [hasMx, root, dmarc] = await Promise.all([mx(apex), txt(apex), txt(`_dmarc.${apex}`)]);
-  const spf = root.some((t) => /^v=spf1/i.test(t)), dm = dmarc.some((t) => /^v=DMARC1/i.test(t));
-  const missing = [!spf && 'SPF', !dm && 'DMARC'].filter(Boolean) as string[];
-  save(app, orgId, apex, 'email', { status: missing.length ? (hasMx ? 'unprotected' : 'spoofable') : 'ok',
-    detail: missing.length ? `${missing.join(' and ')} missing${hasMx ? ': your email may land in spam, and others can send as you' : ': this domain sends no email, but anyone can pretend it does'}` : 'SPF and DMARC set' });
+  save(app, orgId, apex, 'email', emailStatus(hasMx, root, dmarc));
 }
 
-export const watchRows = (app: App, orgId: string) => all<WatchRow>(app.db, 'SELECT host, kind, status, detail, streak, ms, last_ok, checked_at, value, asset FROM watch WHERE org_id = ? ORDER BY kind, host', orgId);
+export const watchRows = (app: Pick<App, 'db'>, orgId: string) => all<WatchRow>(app.db, 'SELECT host, kind, status, detail, streak, ms, last_ok, checked_at, value, asset FROM watch WHERE org_id = ? ORDER BY kind, host', orgId);
 
 // what needs a look, worst first, for the map
-export function watchIssues(app: App, orgId: string) {
+export function watchIssues(app: Pick<App, 'db'>, orgId: string) {
   const out: { severity: 'critical' | 'warning' | 'info'; key: string; text: string; about?: string }[] = [];
+  const ban = blockedNow.get(orgId);
+  if (ban) out.push({ severity: 'warning', key: 'blocked', text: ban });
   const off = archivedAssets(app.db, orgId);
   for (const w of watchRows(app, orgId)) {
     if (w.asset && off.has(w.asset)) continue; // archived: no alerts

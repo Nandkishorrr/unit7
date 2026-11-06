@@ -91,6 +91,7 @@ Object.assign(ALERTS, {
   'finding.still': { title: 'Still happening', priority: 3, tag: 'warning' },
   'finding.back': { title: 'It came back', priority: 4, tag: 'warning' },
   'watch.route': { title: 'Can’t reach your sites from here', priority: 3, tag: 'satellite' },
+  'watch.blocked': { title: 'Your server banned this computer', priority: 4, tag: 'no_entry' },
 });
 // the watch after a deploy (src/deploy/release.ts): it rolled back by itself, or it got worse and couldn't
 Object.assign(ALERTS, {

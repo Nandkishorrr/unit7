@@ -52,7 +52,8 @@ test('S2: a stranger’s look from outside: counts, never rows', async () => {
     return new Response('nope', { status: 404 });
   }) as typeof fetch;
   try {
-    const r = await strangerLook({} as never, 'shop.example.com');
+    const app = testApp(), o = await testOrg(app);
+    const r = await strangerLook({ app, orgId: o.orgId } as never, 'shop.example.com');
     assert.ok(r.findings.some((f) => f.id === 'stranger:sourcemap:shop.example.com'));
     const t = r.findings.find((f) => f.id.startsWith('stranger:tables:'))!;
     assert.equal(t.severity, 'critical'); assert.match(t.title, /Anyone can read 1,842 rows/); assert.match(t.evidence!, /profiles: 1,842 rows/); assert.ok(!/secrets/.test(t.evidence!), 'a table that shows no rows isn’t on the list');

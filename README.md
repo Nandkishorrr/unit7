@@ -73,7 +73,7 @@ One button, or `unit7 checkup`. No AI needed, free, and it only reads. You get f
 - **Give this to my AI.** A finding becomes a prompt for Cursor, Claude Code or Codex. After your next deploy, Unit7 reads the same numbers and says Fixed or Still happening.
 - **Call Inspector.** Polling, duplicate calls, one page making 40 calls, retry storms, from your proxy log, with nothing to install.
 - **Outpost.** One small script on the server, so it's still watched while your Mac sleeps. No open port.
-- **What can a stranger do?** Your own sites from outside. It counts rows and reads none.
+- **What can a stranger do?** Your own sites from outside. It counts rows and reads none. It looks for files that shouldn't download from inside your server, so your server's own defences don't ban you.
 
 Unit7 runs on your computer. **When your Mac sleeps, nobody is watching**, unless you add an Outpost. The Always on page shows the hours it missed. See [LIMITS.md](LIMITS.md), [TRUST.md](TRUST.md) and [ACCIDENTS.md](ACCIDENTS.md).
 

@@ -144,6 +144,7 @@ export const EVENT_WORDS: Record<string, [what: string, why: string, next: strin
   'catchup.done': ['This is what happened while Unit7 wasn’t watching.', 'Unit7 can’t see anything while this computer sleeps, so it read the server’s own record.', 'If this happens often, an Outpost keeps watch from the server.'],
   'checkup.found': ['A check that ran by itself found something new and serious.', 'It’s new since the last check, so it may need you soon.', 'Open the Check-up to see what it is and who can fix it.'],
   'watch.route': ['This computer lost its way to one of your sites, but the site itself is fine.', 'Visitors aren’t affected. Places outside could still reach it.', 'There’s nothing to do unless it stays like this.'],
+  'watch.blocked': ['Your server’s own defence banned the internet address this computer uses.', 'Your sites are fine, but they won’t open from this network until the ban ends.', 'Ask Unit7 to lift it.'],
   'finding.fixed': ['The fix worked, and production proves it.', 'Unit7 read the same numbers again after your deploy, so this isn’t a guess.', 'There’s nothing to do. Unit7 keeps watching for a week in case it returns.'],
   'finding.still': ['The problem is still happening after your deploy.', 'The change didn’t fix it, or didn’t reach this part of the app.', 'Give the new numbers to your AI: it now knows what didn’t work.'],
   'finding.back': ['A problem that was fixed has come back.', 'Something undid the fix, or the real cause was never removed.', 'Open it and give it to your AI again, with the history.'],

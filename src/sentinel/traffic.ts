@@ -194,7 +194,7 @@ export function analyze(hits: Hit[], o: { now?: number; minutes: number; anonKno
     ip.n++; if (c === 's4xx') ip.s4xx++;
     const isAnon = o.anonKnown ? h.anon !== false : h.status === 401 || h.status === 403;
     if (isAnon) { ip.anon++; anon++; }
-    if (SCANNER.test(h.path)) { ip.scans++; scans++; }
+    if (SCANNER.test(h.path) && !(/unit7/i.test(h.ua ?? '') && fromInside(h.ip, o.self))) { ip.scans++; scans++; } // Unit7's own file checks, from inside, aren't bots looking for a way in
     if (LOGIN.test(h.path) && (h.method === 'POST' || /wp-login|xmlrpc/i.test(h.path))) { ip.logins++; logins++; if (h.status >= 400) failed++; }
     ips.set(h.ip, ip);
     if (typeof h.ms === 'number') ms.push(h.ms);
