@@ -189,11 +189,12 @@ export const ADDONS: Addon[] = [
   // invite_user, accounts.rs). Browsers only give the web vault its crypto over HTTPS.
   { id: 'vaultwarden', name: 'Vaultwarden', logo: 'vaultwarden', category: 'Password manager', group: 'Team', line: 'Your team’s passwords in your own Bitwarden-compatible vault', memoryMb: 128, sub: 'vault', template: 'vaultwarden', part: 'vaultwarden',
     domainOnly: 'Vaultwarden only works over HTTPS, and a free test address has none.', claim: { extra: { SIGNUP_ALLOWED: 'false' } }, creds: [{ key: 'SERVICE_PASSWORD_64_ADMIN', label: 'Admin token' }],
-    firstVisit: 'Sign-ups are off, so strangers can’t make accounts. Open your address plus /admin, sign in with the admin token (Show), and invite your own email under Users. Then create your account with that email on the main page.' },
+    firstVisit: 'Sign-ups are off, so strangers can’t make accounts. Open your address plus /admin, sign in with the admin token (Show), and invite your own email under Users. Then create your account with that email on the main page.',
+    wire: { note: 'Use the Bitwarden apps and browser extensions: set their server address to this address.' } },
   // The template runs LinuxServer's image, which has no admin settings: its web setup goes to whoever opens it first, so it
   // stays behind the extra password. It answers plain http on 80 inside, as the template's health check does.
   { id: 'nextcloud', name: 'Nextcloud', logo: 'nextcloud', category: 'Files and sharing', group: 'Storage', line: 'Your own Dropbox: files, calendars and sharing', memoryMb: 1024, sub: 'cloud', template: 'nextcloud', part: 'nextcloud',
-    claim: { gate: 80 }, firstVisit: GATE('create the admin account on its setup page') },
+    claim: { gate: 80 }, firstVisit: GATE('create the admin account on its setup page'), wire: { note: 'Install the Nextcloud desktop and phone apps and point them at this address.' } },
   // Portainer holds the Docker socket, so its admin is root on the server. POST /api/users/admin/init makes the admin once
   // (409 after), with the X-Setup-Token its log prints on current versions (api/http/security/setuptoken); GET
   // /api/users/admin/check says 404 until then. It also shuts itself after 5 minutes with no admin. The extra password

@@ -123,7 +123,7 @@ const env = (t: any, k: string) => t.envs.find((e: any) => e.key === k)?.value;
 test('the catalogue: every installable tool says what it’s for, what it needs and how its first run is safe', () => {
   const ids = ADDONS.map((a) => a.id);
   assert.equal(new Set(ids).size, ids.length);
-  for (const want of ['ghost', 'grafana', 'metabase', 'directus', 'strapi', 'nocodb', 'forgejo', 'vaultwarden', 'nextcloud', 'portainer', 'typesense', 'open-webui', 'flowise', 'pocketbase', 'appwrite', 'garage']) assert.ok(ids.includes(want), want);
+  for (const want of ['ghost', 'grafana', 'metabase', 'directus', 'strapi', 'nocodb', 'forgejo', 'vaultwarden', 'nextcloud', 'portainer', 'typesense', 'open-webui', 'flowise', 'pocketbase', 'appwrite', 'garage']) assert.ok(ADDONS.find((a) => a.id === want)?.wire?.note, `${want}: its wiring note`);
   for (const a of ADDONS) {
     assert.ok(a.line.length > 10 && !a.line.includes('—'), `${a.id}: a plain line`);
     assert.ok(a.memoryMb > 0, `${a.id}: its memory`);
