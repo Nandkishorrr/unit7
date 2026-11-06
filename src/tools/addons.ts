@@ -1,7 +1,7 @@
-// Add a tool to my server: a dozen self-hosted tools a vibe coder wants (visitor stats, an uptime monitor, automation,
-// an email list, a database browser, file storage, search, error tracking, a status page, a backups dashboard, feature
-// flags), each one click. Where the server's Coolify is connected it's Coolify's own one-click service; elsewhere Unit7
-// deploys it itself when it's one container and a database. Then its domain (the DNS record written where the domain
+// Add a tool to my server: the self-hosted tools a vibe coder wants (visitor stats, an uptime monitor, automation, a blog,
+// a CMS, dashboards, an AI chat, a password vault, file storage, search, a backend…), each one click, and any other
+// template Coolify has, with a plain warning. Where the server's Coolify is connected it's Coolify's own one-click service;
+// elsewhere Unit7 deploys it itself when it's one container and a database. Then its domain (the DNS record written where the domain
 // lives), a check that it's healthy, its admin keys into the vault (shown only to a person who asks), and the wiring
 // where it helps (a tracking snippet, settings for an app). The install is ONE action through the gate: one approval
 // card says all of it, and its parts don't each ask again.
@@ -9,7 +9,8 @@
 // Template keys, the part that gets the domain, and the variables Coolify generates are from coollabsio/coolify
 // templates/compose/<key>.yaml at 1abcd3da (main, 2026-10-07). POST /api/v1/services resolves `type` against the
 // published templates and takes `urls` as { name, url } (app/Http/Controllers/Api/ServicesController.php).
-// plausible.yaml and minio.yaml carry `# ignore: true` there, so Coolify doesn't offer them as one-click right now.
+// plausible.yaml, minio.yaml and dify.yaml carry `# ignore: true` there, so Coolify doesn't offer them as one-click right now.
+// The tools from Ghost on were read from templates/service-templates.json at 927e3f0b (2026-11-03): 353 templates.
 import { z } from 'zod';
 import { createHash, randomBytes } from 'node:crypto';
 import { defineTool, getTool, type Ctx } from './runtime.ts';
@@ -32,7 +33,7 @@ import { knownSites, runKuma, syncKuma } from './uptime.ts';
 import { kumaWhy } from '../serverapps/uptimekuma.ts';
 import type { ServerRow } from '../connectors/ssh.ts';
 
-type Wire = { note: string; snippet?: string; env?: { key: string; from: string }[] }; // from: url, url:/path, or cred:<KEY>
+type Wire = { note: string; snippet?: string; env?: { key: string; from: string }[] }; // from: url, url:/path, part:<a part's own address>, or cred:<KEY>
 // How a tool's admin login is made before anyone else can claim it (it's never public before then):
 //   env:  settings the tool reads at its first start (the login Unit7 makes, set before it starts)
 //   api:  the tool's own setup call or command, run from inside the server right after it starts (before its domain's
@@ -41,16 +42,23 @@ type Wire = { note: string; snippet?: string; env?: { key: string; from: string 
 //   extra: plain settings set before the first start (no open sign-up, no setup wizard for a database)
 //   socket: its own first-run setup over its socket.io API, from inside its container, while the extra password still
 //         stands in front of it (so nobody else can reach it first); once that worked the extra password goes
-export interface Claim { env?: (pw: string) => Record<string, string>; user?: string; api?: 'umami' | 'n8n' | 'glitchtip' | 'wordpress'; port?: number; gate?: number; extra?: Record<string, string>; socket?: boolean }
+//   label: what env's value is, when it isn't an admin password · part: the part the setup talks to, when it isn't the one with the address
+export type ClaimKind = 'umami' | 'n8n' | 'glitchtip' | 'wordpress' | 'ghost' | 'metabase' | 'strapi' | 'nocodb' | 'portainer' | 'openwebui' | 'flowise' | 'pocketbase' | 'appwrite';
+export interface Claim { env?: (pw: string) => Record<string, string>; user?: string; label?: string; api?: ClaimKind; part?: string; port?: number; gate?: number; extra?: Record<string, string>; socket?: boolean }
 export interface Addon {
   id: string; name: string; logo: string; category: string; line: string; memoryMb: number; sub: string;
+  group?: string;                             // its shelf on the Add page (else its category)
   template?: string; part?: string;           // Coolify's one-click key, and the part of it that gets the domain
+  urls?: Record<string, string>;              // every part that takes the domain, each with what follows it (a path, or a port the template doesn't say)
   compose?: string;                           // Unit7's own compose for it instead of the template (where the template isn't safe)
   off?: string; instead?: string;             // why it can't be added right now, and what does the same job
   creds?: { key: string; label: string }[];   // what Coolify generates for it that a person signs in with
   claim?: Claim;
   firstVisit?: string;                        // what's left for the person on their first visit
   wire?: Wire;
+  domainOnly?: string;                        // why a free test address won't do for it
+  warn?: string;                              // what a person should know before adding it
+  unknown?: boolean;                          // a Coolify template outside this catalog: Unit7 knows nothing about its first run
   unit7?: { image: string; port: number; db?: 'postgres'; env?: Record<string, string>; secrets?: { key: string; cred: string }[] }; // one container + Postgres
 }
 const SIGNED = 'Unit7 set its admin login before it went live: sign in with the keys here (Show).';
@@ -108,51 +116,131 @@ export const ADDONS: Addon[] = [
   // its container (serverapps/uptimekuma.ts); then the extra password goes and Unit7 adds a monitor for each site it
   // knows (uptime.sync). If the setup doesn't work, the extra password stays and the person sets it up.
   // UPTIME_KUMA_DB_TYPE=sqlite skips v2's open database wizard (server/setup-database.js 2.5.5 lines 98-111).
-  { id: 'uptime-kuma', name: 'Uptime Kuma', logo: 'uptimekuma', category: 'Uptime monitor', line: 'Know the moment a site goes down', memoryMb: 256, sub: 'uptime', template: 'uptime-kuma', part: 'uptime-kuma',
+  { id: 'uptime-kuma', name: 'Uptime Kuma', logo: 'uptimekuma', category: 'Uptime monitor', group: 'Monitoring', line: 'Know the moment a site goes down', memoryMb: 256, sub: 'uptime', template: 'uptime-kuma', part: 'uptime-kuma',
     claim: { gate: 3001, socket: true, user: 'admin', extra: { UPTIME_KUMA_DB_TYPE: 'sqlite' } }, firstVisit: GATE('create the admin account'), wire: { note: 'Add a monitor for each of your sites (Add New Monitor → HTTP(s)).' } },
   // n8n's own owner setup (POST /rest/owner/setup, no sign-in until an owner exists: packages/cli/src/controllers/
   // owner.controller.ts, tag n8n@2.10.2); the template pins 2.10.2, older than the owner settings of n8n 2.17.
-  { id: 'n8n', name: 'n8n', logo: 'n8n', category: 'Automation', line: 'Connect your apps and automate the boring parts', memoryMb: 768, sub: 'automate', template: 'n8n', part: 'n8n',
+  { id: 'n8n', name: 'n8n', logo: 'n8n', category: 'Automation', group: 'AI & automation', line: 'Connect your apps and automate the boring parts', memoryMb: 768, sub: 'automate', template: 'n8n', part: 'n8n',
     claim: { api: 'n8n', port: 5678 }, firstVisit: SIGNED, wire: { note: 'Your app can start a workflow with a webhook: n8n shows the address on each Webhook node.' } },
   // Listmonk makes its admin at install from LISTMONK_ADMIN_USER / LISTMONK_ADMIN_PASSWORD (v4.0.0+; cmd/install.go
   // v6.0.0 lines 80-113); the template's install part runs --install on the fresh database.
-  { id: 'listmonk', name: 'Listmonk', logo: 'listmonk', category: 'Email list', line: 'Newsletters and mailing lists you own', memoryMb: 384, sub: 'newsletter', template: 'listmonk', part: 'listmonk',
+  { id: 'listmonk', name: 'Listmonk', logo: 'listmonk', category: 'Email list', group: 'Content', line: 'Newsletters and mailing lists you own', memoryMb: 384, sub: 'newsletter', template: 'listmonk', part: 'listmonk',
     claim: { env: (pw) => ({ LISTMONK_ADMIN_USER: 'admin', LISTMONK_ADMIN_PASSWORD: pw }), user: 'admin' }, firstVisit: SIGNED,
     wire: { note: 'Set where email is sent from (Settings → SMTP) before your first campaign.' } },
   // CloudBeaver configures itself (no setup wizard) from CB_SERVER_NAME, CB_ADMIN_NAME and CB_ADMIN_PASSWORD
   // (CBApplication.java performAutoConfiguration; dbeaver.com/docs/cloudbeaver/Server-configuration), and the
   // anonymous access its base config allows is turned off.
-  { id: 'cloudbeaver', name: 'CloudBeaver', logo: 'dbeaver', category: 'Database admin', line: 'Browse and edit your databases in the browser', memoryMb: 768, sub: 'db', template: 'cloudbeaver', part: 'cloudbeaver',
+  { id: 'cloudbeaver', name: 'CloudBeaver', logo: 'dbeaver', category: 'Database admin', group: 'Data & search', line: 'Browse and edit your databases in the browser', memoryMb: 768, sub: 'db', template: 'cloudbeaver', part: 'cloudbeaver',
     claim: { env: (pw) => ({ CB_SERVER_NAME: 'CloudBeaver', CB_ADMIN_NAME: 'cbadmin', CB_ADMIN_PASSWORD: pw }), user: 'cbadmin', extra: { CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED: 'false' } }, firstVisit: SIGNED },
-  { id: 'seaweedfs', name: 'SeaweedFS', logo: 'seaweedfs', category: 'File storage (S3)', line: 'S3-style storage for uploads, with a web admin (Coolify’s one-click MinIO is off)', memoryMb: 512, sub: 'files', template: 'seaweedfs', part: 'seaweedfs-admin',
+  { id: 'seaweedfs', name: 'SeaweedFS', logo: 'seaweedfs', category: 'File storage (S3)', group: 'Storage', line: 'S3-style storage for uploads, with a web admin (Coolify’s one-click MinIO is off)', memoryMb: 512, sub: 'files', template: 'seaweedfs', part: 'seaweedfs-admin',
     creds: [{ key: 'SERVICE_USER_ADMIN', label: 'Admin user' }, { key: 'SERVICE_PASSWORD_ADMIN', label: 'Admin password' }, { key: 'SERVICE_USER_S3', label: 'S3 access key' }, { key: 'SERVICE_PASSWORD_S3', label: 'S3 secret key' }],
-    wire: { note: 'Your app uploads with any S3 library, using the S3 keys.', env: [{ key: 'S3_ACCESS_KEY_ID', from: 'cred:SERVICE_USER_S3' }, { key: 'S3_SECRET_ACCESS_KEY', from: 'cred:SERVICE_PASSWORD_S3' }] } },
-  { id: 'meilisearch', name: 'Meilisearch', logo: 'meilisearch', category: 'Search', line: 'Fast, typo-friendly search for your app', memoryMb: 512, sub: 'search', template: 'meilisearch', part: 'meilisearch',
+    wire: { note: 'Your app uploads with any S3 library, using the S3 keys and the S3 address. Open the address given here to manage buckets.', env: [{ key: 'S3_ENDPOINT', from: 'part:seaweedfs-master' }, { key: 'S3_ACCESS_KEY_ID', from: 'cred:SERVICE_USER_S3' }, { key: 'S3_SECRET_ACCESS_KEY', from: 'cred:SERVICE_PASSWORD_S3' }] } },
+  { id: 'meilisearch', name: 'Meilisearch', logo: 'meilisearch', category: 'Search', group: 'Data & search', line: 'Fast, typo-friendly search for your app', memoryMb: 512, sub: 'search', template: 'meilisearch', part: 'meilisearch',
     creds: [{ key: 'SERVICE_PASSWORD_MEILISEARCH', label: 'Master key' }],
     wire: { note: 'Your app talks to it with the address and the key (make a search-only key in Meilisearch for the browser).', env: [{ key: 'MEILISEARCH_HOST', from: 'url' }, { key: 'MEILISEARCH_API_KEY', from: 'cred:SERVICE_PASSWORD_MEILISEARCH' }] } },
   // GlitchTip lets the first visitor register whatever ENABLE_USER_REGISTRATION says (apps/users/utils.py v6.0.11:
   // registration is open while no user exists), so Unit7 makes the superuser first with Django's own command
   // (manage.py createsuperuser --noinput, DJANGO_SUPERUSER_PASSWORD) and turns sign-ups off before it starts.
-  { id: 'glitchtip', name: 'GlitchTip', logo: 'glitchtip', category: 'Error tracking', line: 'See your app’s errors as they happen (works with Sentry’s tools)', memoryMb: 1024, sub: 'errors', template: 'glitchtip', part: 'web',
+  { id: 'glitchtip', name: 'GlitchTip', logo: 'glitchtip', category: 'Error tracking', group: 'Monitoring', line: 'See your app’s errors as they happen (works with Sentry’s tools)', memoryMb: 1024, sub: 'errors', template: 'glitchtip', part: 'web',
     claim: { api: 'glitchtip', extra: { ENABLE_USER_REGISTRATION: 'False' } }, firstVisit: SIGNED, wire: { note: 'Make a project in GlitchTip and put its DSN in your app as SENTRY_DSN.' } },
   // Statusnook has only its web setup (main.go lines 3846-3917), so it stays behind an extra password until it's done.
-  { id: 'statusnook', name: 'Statusnook', logo: 'statusnook', category: 'Status page', line: 'A public page that says if your service is up', memoryMb: 128, sub: 'status', template: 'statusnook', part: 'statusnook',
+  { id: 'statusnook', name: 'Statusnook', logo: 'statusnook', category: 'Status page', group: 'Monitoring', line: 'A public page that says if your service is up', memoryMb: 128, sub: 'status', template: 'statusnook', part: 'statusnook',
     claim: { gate: 8000 }, firstVisit: GATE('set it up') },
   // Databasus (v3.16.2 in the template) seeds an admin with no password that anyone can claim, and anyone can sign up
   // to it afterwards (is_allow_external_registrations defaults to true, with no setting): it holds database backups.
-  { id: 'databasus', name: 'Databasus', logo: 'databasus', category: 'Backups dashboard', line: 'Scheduled database backups you can see (Postgres, MySQL, MongoDB)', memoryMb: 512, sub: 'backups', template: 'databasus', part: 'databasus',
+  { id: 'databasus', name: 'Databasus', logo: 'databasus', category: 'Backups dashboard', group: 'Data & search', line: 'Scheduled database backups you can see (Postgres, MySQL, MongoDB)', memoryMb: 512, sub: 'backups', template: 'databasus', part: 'databasus',
     off: 'Coming soon: Databasus lets the first visitor become its admin and anyone sign up after that, so Unit7 can’t add it safely yet. Unit7 already backs up the databases it runs.' },
   // WordPress hands its admin to whoever opens /wp-admin/install.php first, so it starts behind the extra password, Unit7
   // runs its install through wp-cli from inside the server (CLAIM.wordpress), and only then does the extra password go.
   // templates/compose/wordpress-with-mariadb.yaml: parts wordpress and mariadb, volume wordpress-files on /var/www/html.
-  { id: 'wordpress', name: 'WordPress', logo: 'wordpress', category: 'Website', line: 'A blog or business site you run yourself', memoryMb: 768, sub: 'blog', template: 'wordpress-with-mariadb', part: 'wordpress',
+  { id: 'wordpress', name: 'WordPress', logo: 'wordpress', category: 'Website', group: 'Content', line: 'A blog or business site you run yourself', memoryMb: 768, sub: 'blog', template: 'wordpress-with-mariadb', part: 'wordpress',
     claim: { api: 'wordpress', gate: 80, port: 80, user: 'siteadmin' }, firstVisit: SIGNED },
-  { id: 'unleash', name: 'Unleash', logo: 'unleash', category: 'Feature flags', line: 'Turn features on and off without a deploy', memoryMb: 512, sub: 'flags', template: 'unleash-with-postgresql', part: 'unleash', compose: UNLEASH_COMPOSE,
+  // Ghost's first visitor to /ghost makes its owner (POST /ghost/api/admin/authentication/setup, open until an owner exists:
+  // routes.js and authentication.js at v5.130.6; the template pins ghost:5), so Unit7 makes it first. A site on https
+  // answers plain http with a redirect unless the proxy's header says https (url-redirects.js): the setup sends it.
+  { id: 'ghost', name: 'Ghost', logo: 'ghost', category: 'Blog', group: 'Content', line: 'A blog and newsletter for your readers', memoryMb: 1024, sub: 'blog', template: 'ghost', part: 'ghost',
+    claim: { api: 'ghost', port: 2368 }, firstVisit: SIGNED, wire: { note: 'Sign in at your address plus /ghost. Add a mail provider there before you send a newsletter.' } },
+  // The template sets GF_SECURITY_ADMIN_PASSWORD to a password Coolify makes, read at Grafana's first start for user admin;
+  // sign-ups are off by default (allow_sign_up=false).
+  { id: 'grafana', name: 'Grafana', logo: 'grafana', category: 'Dashboards', group: 'Monitoring', line: 'Charts and dashboards for your servers and apps', memoryMb: 512, sub: 'grafana', template: 'grafana', part: 'grafana',
+    creds: [{ key: 'SERVICE_PASSWORD_GRAFANA', label: 'Admin password (user admin)' }], firstVisit: SIGNED, wire: { note: 'Add a data source (Prometheus, Postgres…) under Connections, then build a dashboard.' } },
+  // Metabase's setup page goes to whoever opens it first: its token is public until then (GET /api/session/properties), and
+  // POST /api/setup takes it once (src/metabase/setup_rest/api.clj), so Unit7 makes the first user. The token gone means someone else did.
+  { id: 'metabase', name: 'Metabase', logo: 'metabase', category: 'Business reports', group: 'Analytics', line: 'Ask your database questions and share the charts', memoryMb: 2048, sub: 'reports', template: 'metabase', part: 'metabase',
+    claim: { api: 'metabase', port: 3000 }, firstVisit: SIGNED, wire: { note: 'Add your database under Admin settings → Databases, with a read-only user.' } },
+  // The template sets ADMIN_EMAIL (default admin@example.com) and ADMIN_PASSWORD, which Directus's bootstrap reads at its first start.
+  { id: 'directus', name: 'Directus', logo: 'directus', category: 'Headless CMS', group: 'Content', line: 'Edit your app’s content in a clean admin, read it from an API', memoryMb: 512, sub: 'cms', template: 'directus', part: 'directus',
+    creds: [{ key: 'SERVICE_PASSWORD_ADMIN', label: 'Admin password (admin@example.com)' }], firstVisit: SIGNED,
+    wire: { note: 'Make a static token for your app under Users in Directus, then read content from its API.', env: [{ key: 'DIRECTUS_URL', from: 'url' }] } },
+  // Strapi's first visitor to /admin registers as its super admin (POST /admin/register-admin, refused once GET /admin/init
+  // says hasAdmin: controllers/authentication.ts at v5.33.4, the template's version), so Unit7 registers first.
+  { id: 'strapi', name: 'Strapi', logo: 'strapi', category: 'Headless CMS', group: 'Content', line: 'A headless CMS where you shape your own content types', memoryMb: 2048, sub: 'strapi', template: 'strapi', part: 'strapi',
+    claim: { api: 'strapi', port: 1337 }, firstVisit: SIGNED, wire: { note: 'Sign in at your address plus /admin. Make an API token under Settings for your app.', env: [{ key: 'STRAPI_URL', from: 'url' }] } },
+  // NocoDB's first sign-up is its super admin and later ones join its default workspace (users.service.ts registerNewUserIfAllowed,
+  // develop), so Unit7 signs up first and turns on invite-only (POST /api/v1/app-settings). firstUser in /meta/nocodb/info says it's free.
+  { id: 'nocodb', name: 'NocoDB', logo: 'nocodb', category: 'Spreadsheet database', group: 'Backend', line: 'Your database as a spreadsheet your whole team can use', memoryMb: 512, sub: 'tables', template: 'nocodb', part: 'nocodb',
+    claim: { api: 'nocodb', port: 8080 }, firstVisit: SIGNED, wire: { note: 'Connect your Postgres or MySQL under Data Sources. Sign-ups are off: invite people from its Team settings.' } },
+  // Forgejo starts on an open install page (INSTALL_LOCK is false until it's done) where anyone can make the admin, and its
+  // admin command only takes a password on a command line, so it stays behind the extra password while the person fills that page in.
+  { id: 'forgejo', name: 'Forgejo', logo: 'forgejo', category: 'Code hosting', group: 'Team', line: 'Your own GitHub: repos, issues and pull requests (the community fork of Gitea)', memoryMb: 512, sub: 'code', template: 'forgejo', part: 'forgejo',
+    claim: { gate: 3000, extra: { FORGEJO__service__DISABLE_REGISTRATION: 'true' } }, firstVisit: GATE('fill in its setup page, with an administrator account'), wire: { note: 'Pushing over SSH uses port 22222 on this server.' } },
+  // The template leaves sign-ups open (SIGNUPS_ALLOWED=${SIGNUP_ALLOWED:-true}) on a password vault, so Unit7 closes them. Its admin
+  // page takes the ADMIN_TOKEN Coolify makes, and an invite made there lets that email sign up with no mail set up (admin.rs
+  // invite_user, accounts.rs). Browsers only give the web vault its crypto over HTTPS.
+  { id: 'vaultwarden', name: 'Vaultwarden', logo: 'vaultwarden', category: 'Password manager', group: 'Team', line: 'Your team’s passwords in your own Bitwarden-compatible vault', memoryMb: 128, sub: 'vault', template: 'vaultwarden', part: 'vaultwarden',
+    domainOnly: 'Vaultwarden only works over HTTPS, and a free test address has none.', claim: { extra: { SIGNUP_ALLOWED: 'false' } }, creds: [{ key: 'SERVICE_PASSWORD_64_ADMIN', label: 'Admin token' }],
+    firstVisit: 'Sign-ups are off, so strangers can’t make accounts. Open your address plus /admin, sign in with the admin token (Show), and invite your own email under Users. Then create your account with that email on the main page.' },
+  // The template runs LinuxServer's image, which has no admin settings: its web setup goes to whoever opens it first, so it
+  // stays behind the extra password. It answers plain http on 80 inside, as the template's health check does.
+  { id: 'nextcloud', name: 'Nextcloud', logo: 'nextcloud', category: 'Files and sharing', group: 'Storage', line: 'Your own Dropbox: files, calendars and sharing', memoryMb: 1024, sub: 'cloud', template: 'nextcloud', part: 'nextcloud',
+    claim: { gate: 80 }, firstVisit: GATE('create the admin account on its setup page') },
+  // Portainer holds the Docker socket, so its admin is root on the server. POST /api/users/admin/init makes the admin once
+  // (409 after), with the X-Setup-Token its log prints on current versions (api/http/security/setuptoken); GET
+  // /api/users/admin/check says 404 until then. It also shuts itself after 5 minutes with no admin. The extra password
+  // stands in front until the claim worked.
+  { id: 'portainer', name: 'Portainer', logo: 'portainer', category: 'Docker manager', group: 'Team', line: 'See and manage your Docker containers in a browser', memoryMb: 256, sub: 'docker', template: 'portainer', part: 'portainer',
+    warn: 'Portainer can control every container on this server, Coolify included. Its admin password is as strong a key as root.',
+    claim: { api: 'portainer', gate: 9000, port: 9000, user: 'admin' }, firstVisit: SIGNED, wire: { note: 'Change what Coolify runs in Coolify, not here: Coolify puts its own settings back.' } },
+  // The template refuses to start without TYPESENSE_API_KEY (${TYPESENSE_API_KEY:?}) and Coolify doesn't make one, so Unit7 does.
+  { id: 'typesense', name: 'Typesense', logo: 'typesense', category: 'Search', group: 'Data & search', line: 'Fast, typo-friendly search with a simple API', memoryMb: 512, sub: 'typesense', template: 'typesense', part: 'typesense',
+    claim: { env: (pw) => ({ TYPESENSE_API_KEY: pw }), label: 'API key' },
+    wire: { note: 'Your app talks to it with the address and the key (make a search-only key in Typesense for the browser).', env: [{ key: 'TYPESENSE_HOST', from: 'url' }, { key: 'TYPESENSE_API_KEY', from: 'cred:UNIT7_ADMIN_PASSWORD' }] } },
+  // Open WebUI's first sign-up is its admin and turns sign-ups off (routers/auths.py signup_handler), so Unit7 signs up first.
+  { id: 'open-webui', name: 'Open WebUI', logo: 'openwebui', category: 'AI chat', group: 'AI & automation', line: 'A private ChatGPT-style chat for any AI model', memoryMb: 1024, sub: 'chat', template: 'open-webui', part: 'open-webui',
+    claim: { api: 'openwebui', port: 8080 }, firstVisit: SIGNED, wire: { note: 'Add your AI provider’s key under Admin Panel → Settings → Connections.' } },
+  // Flowise 3 signs people in with an owner account, and the first register call makes it (POST /api/v1/account/register, open
+  // to anyone, one organization only: account.service.ts), whatever the template's old FLOWISE_USERNAME says. Unit7 registers first; its passwords need a symbol.
+  { id: 'flowise', name: 'Flowise', logo: 'flowise', category: 'AI builder', group: 'AI & automation', line: 'Build AI agents and chat flows by dragging boxes', memoryMb: 1024, sub: 'flows', template: 'flowise', part: 'flowise',
+    claim: { api: 'flowise', port: 3001 }, firstVisit: SIGNED, wire: { note: 'Add your AI provider’s key under Credentials, then build a flow. Your app calls a flow at this address.', env: [{ key: 'FLOWISE_URL', from: 'url' }] } },
+  // dify.yaml carries `# ignore: true`, so it isn't in Coolify's published templates.
+  { id: 'dify', name: 'Dify', logo: 'dify', category: 'AI builder', group: 'AI & automation', line: 'Build AI apps with workflows and your own documents', memoryMb: 4096, sub: 'dify',
+    off: 'Coolify has switched off its one-click Dify for now, so Unit7 can’t add it safely.', instead: 'flowise' },
+  // PocketBase's installer is a link with a token in its log, not an open page, so the first visitor gets nothing: Unit7 reads
+  // the token and makes the superuser with it (apis/installer.go, the Records API), so nobody has to read logs. 0.41.1 in the template's image.
+  { id: 'pocketbase', name: 'PocketBase', logo: 'pocketbase', category: 'Backend', group: 'Backend', line: 'A database, sign-in and file storage in one small backend', memoryMb: 128, sub: 'pb', template: 'pocketbase', part: 'pocketbase',
+    claim: { api: 'pocketbase', port: 8080 }, firstVisit: SIGNED, wire: { note: 'Its admin panel is at your address plus /_/. Your app talks to it with PocketBase’s SDK.', env: [{ key: 'POCKETBASE_URL', from: 'url' }] } },
+  // Appwrite's console takes one sign-up, the first (_APP_CONSOLE_WHITELIST_ROOT is on in the template), and POST /v1/account with
+  // project console is that sign-up (501 after: Account/Http/Account/Create.php), so Unit7 makes it. Three parts share the address by path,
+  // which also rules out the extra password in front. Its docs ask for 2 CPUs and 4 GB.
+  { id: 'appwrite', name: 'Appwrite', logo: 'appwrite', category: 'Backend', group: 'Backend', line: 'A full backend: sign-in, databases, storage and functions', memoryMb: 4096, sub: 'appwrite', template: 'appwrite', part: 'appwrite-console',
+    urls: { 'appwrite-console': '', appwrite: '/v1', 'appwrite-realtime': '/v1/realtime' }, claim: { api: 'appwrite', part: 'appwrite', port: 80 }, firstVisit: SIGNED,
+    wire: { note: 'Make a project in its console, then point Appwrite’s SDK at this address.', env: [{ key: 'APPWRITE_ENDPOINT', from: 'url:/v1' }] } },
+  // Garage has no admin page: its keys are what protect it, Coolify makes them, and the bucket `default` comes with them. The
+  // template names no address of its own, so it needs a domain, and that domain says its S3 port.
+  { id: 'garage', name: 'Garage', logo: 'garage', category: 'File storage (S3)', group: 'Storage', line: 'Light S3-style storage for uploads', memoryMb: 1024, sub: 's3', template: 'garage', part: 'garage', urls: { garage: ':3900' },
+    domainOnly: 'Coolify’s Garage template has no test address of its own.',
+    creds: [{ key: 'SERVICE_USER_GARAGE', label: 'S3 access key' }, { key: 'SERVICE_PASSWORD_64_GARAGE', label: 'S3 secret key' }, { key: 'SERVICE_PASSWORD_GARAGE', label: 'Admin token' }],
+    wire: { note: 'Your app uploads with any S3 library: region garage, bucket default, path-style addresses, using the S3 keys.', env: [{ key: 'S3_ENDPOINT', from: 'url' }, { key: 'S3_ACCESS_KEY_ID', from: 'cred:SERVICE_USER_GARAGE' }, { key: 'S3_SECRET_ACCESS_KEY', from: 'cred:SERVICE_PASSWORD_64_GARAGE' }] } },
+  { id: 'minio', name: 'MinIO', logo: 'minio', category: 'File storage (S3)', group: 'Storage', line: 'S3-style storage for uploads', memoryMb: 512, sub: 'minio',
+    off: 'Coolify has switched off its one-click MinIO for now, so Unit7 can’t add it safely.', instead: 'seaweedfs' },
+  { id: 'unleash', name: 'Unleash', logo: 'unleash', category: 'Feature flags', group: 'Backend', line: 'Turn features on and off without a deploy', memoryMb: 512, sub: 'flags', template: 'unleash-with-postgresql', part: 'unleash', compose: UNLEASH_COMPOSE,
     creds: [{ key: 'SERVICE_PASSWORD_UNLEASH', label: 'Admin password (user admin)' }],
     wire: { note: 'Make an API token in Unleash for your app, and point its SDK at the address.', env: [{ key: 'UNLEASH_URL', from: 'url:/api' }] },
     unit7: { image: 'unleashorg/unleash-server:latest', port: 4242, db: 'postgres', env: { DATABASE_SSL: 'false', UNLEASH_DEFAULT_ADMIN_USERNAME: 'admin' }, secrets: [{ key: 'UNLEASH_DEFAULT_ADMIN_PASSWORD', cred: 'SERVICE_PASSWORD_UNLEASH' }] } },
 ];
-const IDS = ADDONS.map((a) => a.id) as [string, ...string[]];
+// a tool from the list, or any other key of Coolify's template list: Unit7 knows nothing about those, and says so
+const ADDON = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{1,60}$/, 'a tool from addon.catalog, or a Coolify template key').describe('A tool’s id from addon.catalog, or any other Coolify template key.');
+const anyTemplate = (key: string): Addon => ({ id: key, name: key, logo: key, category: 'Coolify template', group: 'Other', line: 'A Coolify template Unit7 doesn’t know', memoryMb: 0, sub: key, template: key, unknown: true });
 // A server holds many WordPress sites: past the catalogue's one, each is the same add-on under its own id (wordpress.install,
 // .staging, .import), with its own record and keys, and addon.remove, .credentials and .unlock work on it like any other.
 const SITE_ID = /^wordpress-[a-z0-9-]{1,36}$/;
@@ -160,9 +248,8 @@ const SITE_ID = /^wordpress-[a-z0-9-]{1,36}$/;
 export const wordpressSite = (hostname: string): Addon => {
   const slug = hostname.replace(/[^a-z0-9]+/g, '-');
   return { ...ADDONS.find((a) => a.id === 'wordpress')!, id: `wordpress-${slug.length > 36 ? `${slug.slice(0, 28).replace(/-+$/, '')}-${createHash('sha256').update(hostname).digest('hex').slice(0, 7)}` : slug}` };
-};
-const ADDON_ID = z.union([z.enum(IDS), z.string().regex(SITE_ID)]);
-const byId = (x: string): Addon => ADDONS.find((a) => a.id === x) ?? { ...ADDONS.find((a) => a.id === 'wordpress')!, id: x };
+const byId = (x: string): Addon => ADDONS.find((a) => a.id === x || a.template === x) ?? (SITE_ID.test(x) ? { ...ADDONS.find((a) => a.id === 'wordpress')!, id: x } : anyTemplate(x));
+const UNKNOWN = (name: string) => `Unit7 doesn’t know how ${name} handles its first run: whoever opens it first may become its admin, or it may have a default password. Open it as soon as it’s up, make your own admin login, and check its docs.`;
 const credRef = (serverId: string, addon: string, key: string) => makeRef('addon', `${serverId}-${addon}`, key);
 export interface AddonMade { via: 'coolify' | 'unit7'; uuid?: string; project?: string; serviceId?: string; dbId?: string; domain?: string; url?: string; healthy?: boolean; creds: { label: string; ref: string }[]; gate?: { file: string; ref: string } }
 
@@ -194,10 +281,12 @@ const CLAIM = {
   head: `c=$1; port=$2; who=$3
 ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{println}}{{end}}' "$c" 2>/dev/null | grep -m1 .)
 [ -n "$ip" ] || { echo "it isn't running" >&2; exit 7; }
-pw="U7a$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-[ \${#pw} -eq 39 ] || { echo "the server couldn't make a random password" >&2; exit 7; }
+pw="U7a$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')$4"
+[ \${#pw} -ge 39 ] || { echo "the server couldn't make a random password" >&2; exit 7; }
 printf '\n@@unit7:secret\n%s\n' "$pw"
-printf '\n@@unit7:reply\n'`,
+printf '\n@@unit7:reply\n'
+ready() { i=0; until [ "$(curl -s -o /dev/null -m 5 -H 'X-Forwarded-Proto: https' -w '%{http_code}' "http://$ip:$port$1")" = 200 ]; do i=$((i+1)); [ $i -ge 240 ] && { echo "it didn't answer" >&2; exit 7; }; sleep 2; done; }
+post() { p=$1; gone=$2; f=$3; shift 3; r=$(printf "$f\\n" "$@" | curl -s -m 30 -K - -H 'Content-Type: application/json' -H 'X-Forwarded-Proto: https' -o /dev/null -w '%{http_code}' -X POST "http://$ip:$port$p"); if [ "$r" = "$gone" ]; then echo unit7-taken; else echo "unit7-http=$r"; fi; }`,
   // Umami: sign in with its seeded admin / umami, then set the new password on that user
   umami: `i=0; while :; do
   r=$(curl -s -m 8 -w '\n%{http_code}' -H 'Content-Type: application/json' -d '{"username":"admin","password":"umami"}' "http://$ip:$port/api/auth/login")
@@ -222,12 +311,48 @@ wp core is-installed >/dev/null 2>&1 && { echo unit7-taken; exit 0; }
 i=0; until printf '%s\\n' "$pw" | wp core install --url="$4" --title='My site' --admin_user=siteadmin --admin_email="$who" --skip-email --prompt=admin_password >/dev/null 2>&1; do i=$((i+1)); [ $i -ge 40 ] && { echo "it couldn't make the admin" >&2; exit 7; }; sleep 3; done
 [ "$(wp user list --field=user_login 2>/dev/null)" = siteadmin ] && echo unit7-users=1 || echo unit7-taken
 echo unit7-http=200`,
+  // Ghost: its own setup call, once it answers (403 once an owner exists)
+  ghost: `ready /ghost/api/admin/authentication/setup
+case "$(curl -s -m 8 -H 'X-Forwarded-Proto: https' "http://$ip:$port/ghost/api/admin/authentication/setup")" in *'"status":true'*) echo unit7-taken; exit 0;; esac
+post /ghost/api/admin/authentication/setup 403 'data = "{\\\\"setup\\\\":[{\\\\"name\\\\":\\\\"Owner\\\\",\\\\"email\\\\":\\\\"%s\\\\",\\\\"password\\\\":\\\\"%s\\\\",\\\\"blogTitle\\\\":\\\\"My site\\\\"}]}"' "$who" "$pw"`,
+  // Metabase: its setup call with the one-time token it shows until someone has used it
+  metabase: `ready /api/health
+t=$(curl -s -m 10 "http://$ip:$port/api/session/properties" | grep -o '"setup-token": *"[^"]*"' | head -1 | cut -d'"' -f4)
+case "$t" in ''|*[!A-Za-z0-9-]*) echo unit7-taken; exit 0;; esac
+post /api/setup 403 'data = "{\\\\"token\\\\":\\\\"%s\\\\",\\\\"user\\\\":{\\\\"email\\\\":\\\\"%s\\\\",\\\\"password\\\\":\\\\"%s\\\\",\\\\"first_name\\\\":\\\\"Unit7\\\\",\\\\"last_name\\\\":\\\\"Owner\\\\"},\\\\"prefs\\\\":{\\\\"site_name\\\\":\\\\"My company\\\\"}}"' "$t" "$who" "$pw"`,
+  // Strapi: its first-admin call, once /admin/init says there's none
+  strapi: `ready /admin/init
+case "$(curl -s -m 8 "http://$ip:$port/admin/init")" in *'"hasAdmin":true'*) echo unit7-taken; exit 0;; esac
+post /admin/register-admin - 'data = "{\\\\"email\\\\":\\\\"%s\\\\",\\\\"password\\\\":\\\\"%s\\\\",\\\\"firstname\\\\":\\\\"Unit7\\\\",\\\\"lastname\\\\":\\\\"Owner\\\\"}"' "$who" "$pw"`,
+  // NocoDB: the first sign-up, then invite-only with the sign-in it gave back (the second call fails for anyone but its super admin)
+  nocodb: `ready /api/v1/health
+case "$(curl -s -m 8 "http://$ip:$port/api/v1/meta/nocodb/info")" in *'"firstUser":true'*) ;; *) echo unit7-taken; exit 0;; esac
+t=$(printf 'data = "{\\\\"email\\\\":\\\\"%s\\\\",\\\\"password\\\\":\\\\"%s\\\\"}"\n' "$who" "$pw" | curl -s -m 30 -K - -H 'Content-Type: application/json' -X POST "http://$ip:$port/api/v1/auth/user/signup" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4)
+case "$t" in ''|*[!A-Za-z0-9._-]*) echo "it didn't sign up" >&2; exit 7;; esac
+post /api/v1/app-settings - 'header = "xc-auth: %s"\\ndata = "{\\\\"invite_only_signup\\\\":true}"' "$t"`,
+  // Portainer: its admin call, with the setup token from its log where its version has one (409 once an admin exists)
+  portainer: `i=0; while :; do case "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$ip:$port/api/users/admin/check")" in 404) break;; 204) echo unit7-taken; exit 0;; esac; i=$((i+1)); [ $i -ge 240 ] && { echo "it didn't answer" >&2; exit 7; }; sleep 2; done
+t=$(docker logs "$c" 2>&1 | grep -o 'setup_token=[0-9a-f]*' | tail -1 | cut -d= -f2)
+post /api/users/admin/init 409 'header = "X-Setup-Token: %s"\\ndata = "{\\\\"Username\\\\":\\\\"admin\\\\",\\\\"Password\\\\":\\\\"%s\\\\"}"' "$t" "$pw"`,
+  // Open WebUI: the first sign-up (403 after it: that sign-up turns sign-ups off)
+  openwebui: `ready /health
+post /api/v1/auths/signup 403 'data = "{\\\\"name\\\\":\\\\"Owner\\\\",\\\\"email\\\\":\\\\"%s\\\\",\\\\"password\\\\":\\\\"%s\\\\"}"' "$who" "$pw"`,
+  // Flowise: its register call (it refuses a second organization)
+  flowise: `ready /api/v1/ping
+post /api/v1/account/register - 'data = "{\\\\"user\\\\":{\\\\"name\\\\":\\\\"Owner\\\\",\\\\"email\\\\":\\\\"%s\\\\",\\\\"credential\\\\":\\\\"%s\\\\"}}"' "$who" "$pw"`,
+  // PocketBase: its installer's token from its log, used the way its installer page does
+  pocketbase: `ready /api/health
+i=0; until t=$(docker logs "$c" 2>&1 | grep -o 'pbinstall/[A-Za-z0-9._-]*' | tail -1 | cut -d/ -f2); [ -n "$t" ]; do i=$((i+1)); [ $i -ge 30 ] && { echo "its setup link never came" >&2; exit 7; }; sleep 2; done
+post /api/collections/_superusers/records - 'header = "Authorization: %s"\\ndata = "{\\\\"email\\\\":\\\\"%s\\\\",\\\\"password\\\\":\\\\"%s\\\\",\\\\"passwordConfirm\\\\":\\\\"%s\\\\"}"' "$t" "$who" "$pw" "$pw"`,
+  // Appwrite: the console's one sign-up (501 once it's used)
+  appwrite: `ready /v1/health/version
+post /v1/account 501 'header = "X-Appwrite-Project: console"\\ndata = "{\\\\"userId\\\\":\\\\"unique()\\\\",\\\\"email\\\\":\\\\"%s\\\\",\\\\"password\\\\":\\\\"%s\\\\",\\\\"name\\\\":\\\\"Owner\\\\"}"' "$who" "$pw"`,
 };
-export const claimScript = (kind: NonNullable<Claim['api']>, container: string, port: number, who: string, url = '') => {
+export const claimScript = (kind: ClaimKind, container: string, port: number, who: string, url = '') => {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(container)) throw new Unit7Error('invalid_input', 'That isn’t a container name Unit7 will use.', 400);
   if (!/^[^\s"'\\@]+@[^\s"'\\@]+\.[A-Za-z]{2,}$/.test(who)) throw new Unit7Error('invalid_input', 'That isn’t an email address Unit7 will use.', 400);
   if (kind === 'wordpress' && !/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(url)) throw new Unit7Error('invalid_input', 'That isn’t an address Unit7 will use.', 400);
-  return script(`${CLAIM.head}\n${CLAIM[kind]}`, container, port, who, ...(url ? [url] : []));
+  return script(`${CLAIM.head}\n${CLAIM[kind]}`, container, port, who, ...(kind === 'flowise' ? ['-'] : url ? [url] : [])); // Flowise's passwords need a symbol
 };
 // what the claim said: the password, or why it can't be trusted (someone else got there first)
 export function claimResult(out: string): { pw?: string; taken?: boolean; why?: string } {
@@ -241,7 +366,7 @@ export function claimResult(out: string): { pw?: string; taken?: boolean; why?: 
 async function claimFirst(ctx: Ctx, s: ServerRow, a: Addon, container: string, port: number, url?: string): Promise<{ pw: string; user: string }> {
   const email = get<{ email: string }>(ctx.db, 'SELECT email FROM users WHERE id = ?', ctx.actor.userId ?? '')?.email ?? 'admin@unit7.local';
   const asRoot = json<{ sudo?: string }>(s.facts, {}).sudo === 'yes' ? 'sudo -n ' : '';
-  const r = await ssh(ctx.app).exec(s, asRoot + claimScript(a.claim!.api!, container, port, email, url), { timeoutMs: 5 * 60_000, signal: ctx.signal });
+  const r = await ssh(ctx.app).exec(s, asRoot + claimScript(a.claim!.api!, container, port, email, url), { timeoutMs: 12 * 60_000, signal: ctx.signal }); // the slowest tools take minutes to answer
   const made = sections(r.stdout).secret?.trim();
   if (made) ctx.redactor.add(made, `${a.name}’s admin password`);
   const got = claimResult(r.stdout);
