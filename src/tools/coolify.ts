@@ -867,10 +867,16 @@ async function wireSupabase(ctx: Ctx, api: Coolify, service: string, app: string
   await setEnvs(api, 'application', app, vars);
   return vars.map((v) => v.key);
 }
+// Supabase's stack makes its own dashboard login. Any other template may hand its admin to whoever opens it first, and its address
+// is one a stranger can guess, so an AI asks. addon.install doesn't come through here: it claims the admin before it starts
+const NO_FIRST_VISITOR = new Set(['supabase']);
 defineTool({
   name: 'coolify.create_service', title: 'Add a one-click service in Coolify',
   risk: 'write', action: (i) => (i.compose ? 'server_exec' : 'service_write'), timeoutMs: 8 * 60_000,
-  description: 'Add a stack to a Coolify project: a one-click template by its key (supabase, or any key in Coolify’s list; for the tools in addon.catalog use addon.install, which claims their admin login where this doesn’t) or your own docker-compose.yml text as compose (sent base64-encoded; your own compose can run anything on the server, so it asks first in production). urls gives a part a domain. For Supabase, injectInto (an application uuid) sets that app’s SUPABASE_URL and SUPABASE_ANON_KEY (plus NEXT_PUBLIC_ copies with nextPublic) from the new stack, inside Coolify. Waits for it to start (Supabase takes a few minutes). One with the same name in that environment is reused.',
+  assess: (_c, i) => (i.compose ? { tier: 3, ask: COMPOSE_ASK, impact: 'Runs this compose file on the server.' }
+    : NO_FIRST_VISITOR.has(i.type!) ? undefined
+    : { tier: 2, ask: `Unit7 doesn’t claim the admin login of ${i.type} here: whoever opens it first may become its owner. A person says yes first. For a tool in addon.catalog, use addon.install.`, impact: `Adds ${i.type}. Open it as soon as it’s up and make your own admin login.` }),
+  description: 'Add a stack to a Coolify project: a one-click template by its key (supabase, or any key in Coolify’s list; for the tools in addon.catalog use addon.install, which claims their admin login where this doesn’t, so here an AI asks a person first for anything but supabase) or your own docker-compose.yml text as compose (sent base64-encoded; your own compose can run anything on the server, so it asks first). urls gives a part a domain. For Supabase, injectInto (an application uuid) sets that app’s SUPABASE_URL and SUPABASE_ANON_KEY (plus NEXT_PUBLIC_ copies with nextPublic) from the new stack, inside Coolify. Waits for it to start (Supabase takes a few minutes). One with the same name in that environment is reused.',
   input: z.object({
     ...WHERE, type: z.string().regex(/^[a-z0-9][a-z0-9-]{1,60}$/).optional(), compose: z.string().min(10).max(256_000).optional(), name: NAME.optional(),
     urls: z.array(z.object({ part: z.string().regex(/^[\w.-]{1,60}$/), domain: HOST })).max(10).optional(),

@@ -337,3 +337,32 @@ test('4. a stored key an AI names in a setting asks a person, in Coolify and in 
   assert.equal(code(await o.a('env.set', { environmentId: env, key: 'PLAN', value: 'pro' })), 'ok', 'a plain setting doesn’t ask');
   assert.equal(code(await o.h('env.set', { environmentId: env, key: 'K', value: KEYS.manual })), 'ok', 'a person’s own doesn’t');
 });
+
+test('5. a template with a first-visitor admin: an AI asks, whatever the autonomy; Supabase and a person’s own click don’t', async () => {
+  const { app, o } = await world(), c = coolifyOn(app, o.orgId);
+  const add = (type: string) => ({ ...WHERE, type, urls: [{ part: type, domain: `${type}.203.0.113.9.sslip.io` }], wait: false });
+  for (const autonomy of [3, 4]) {
+    run(app.db, 'UPDATE orgs SET autonomy = ? WHERE id = ?', autonomy, o.orgId);
+    const r = await o.a('coolify.create_service', add('n8n')) as any;
+    assert.equal(r.status, 'approval_required', JSON.stringify(r));
+    assert.match(r.why, /whoever opens it first/);
+  }
+  assert.equal(c.services.length, 0, 'nobody can be first at something that isn’t there');
+  assert.equal(code(await o.a('coolify.create_service', { ...WHERE, type: 'supabase', wait: false })), 'ok');
+  assert.equal(code(await o.h('coolify.create_service', { ...add('n8n'), name: 'mine' })), 'ok', 'a person knows what they asked for');
+  const raw = await o.a('coolify.create_service', { ...WHERE, compose: ROOT_COMPOSE, name: 'x', wait: false }) as any;
+  assert.equal(raw.status, 'approval_required');
+  assert.match(raw.why, /compose file/);
+});
+
+test('5. coolify.build stops at such a step and says so; what it builds around it still works', async () => {
+  const { app, o } = await world(), c = coolifyOn(app, o.orgId);
+  run(app.db, 'UPDATE orgs SET autonomy = 4 WHERE id = ?', o.orgId);
+  const built = ok<any>(await o.a('coolify.build', { serverId: SRV, goal: 'a stack', service: 'gitea', project: 'site', confirmed: true }));
+  assert.equal(built.built, false);
+  assert.ok(built.failed.approvalId, JSON.stringify(built));
+  assert.match(built.next, /approval/);
+  assert.equal(c.services.length, 0);
+  assert.equal(code(await approve(app, o, { approvalId: built.failed.approvalId })), 'ok');
+  assert.equal(c.services.length, 1);
+});
