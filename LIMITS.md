@@ -66,6 +66,7 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 ## Databases
 
+- A table refused during a restore, because a check reads a table that isn’t in yet, goes again once the rest is in, with its triggers off. So do the foreign keys pointing at it, unless a name in the key holds a quote or a semicolon. Only tested on a real Postgres so far, not a real Supabase backup.
 - For an AI, a column shows when its name isn’t personal, so a secret under a plain name still shows, and a filter can reveal a value slowly. Only plain columns, counts and simple sums prove themselves, so anything computed comes back hidden. MySQL can’t show what a view renamed. Redis has no columns, so only key names and value shapes are checked. database.query, on databases Unit7 runs itself, doesn’t hide anything.
 - A dump is checked for what it says, not what it builds: SQL put together while it runs, such as in a DO block, isn’t caught. So load only dumps you trust. A plain string with a backslash right before a quote is refused: double it or use E''.
 - Switching to a new major version works for Postgres on Coolify or Compose only. part.query needs psql 12 or newer. Restoring to a moment in time isn’t built: the best case is the last copy.

@@ -261,13 +261,34 @@ export function proofOf(want: Table[], got: Map<string, number>, said: string[] 
 }
 export const SUPABASE = /(^|\/)supabase\/postgres(:|$)/;
 const pgAs = (image: string) => (SUPABASE.test(image) ? '-h 127.0.0.1 -U supabase_admin' : '-U postgres');
+// A check that reads another table refuses its rows while that table is still empty, and a dump's tables come in name order, so a real
+// restore loses them too. What came back empty goes again once the rest is in, in rounds for a chain of them. Only its rows go, with
+// triggers off as they were for the first load. Only empty ones: a COPY is all or nothing, and a second one over rows would double them.
+// $1 the container, $2 the database, $3 the file, $4 the tables, one a line, as the manifest names them
+export const pgAgain = (as: string) => String.raw`gunzip -c "$3" | D="$2" T="$4" awk 'BEGIN { n = split(ENVIRON["T"], l, "\n"); for (i = 1; i <= n; i++) w[l[i]] = 1; print "\\set ON_ERROR_STOP on"; print "SET session_replication_role = replica;"; print "\\set ON_ERROR_STOP off" } inc { if (on) print; if ($0 == "\\.") { inc = 0; on = 0 } next } /^\\connect / { db = $2; gsub(/"/, "", db); next } /^SET client_encoding = / { print; next } /^COPY / { t = $0; sub(/^COPY /, "", t); sub(/ *(\(.*\))? *FROM stdin;$/, "", t); inc = 1; on = (db == ENVIRON["D"]) && (t in w); if (on) print }' | docker exec -i "$1" psql -q ${as} -d "$2" 2>&1 >/dev/null | ${PG_SAID} || true`;
+// A foreign key can't be added while the table it points at is empty, so the ones pointing at those tables go again too. A dump is text
+// a visitor can reach, so only a line that can be nothing but one such key counts: no second statement, no quote, no psql command.
+// One that's already there just says so. Same arguments as pgAgain.
+export const pgKeysAgain = (as: string) => String.raw`gunzip -c "$3" | D="$2" T="$4" awk 'BEGIN { n = split(ENVIRON["T"], l, "\n"); for (i = 1; i <= n; i++) w[l[i]] = 1 } inc { if ($0 == "\\.") inc = 0; next } /^\\connect / { db = $2; gsub(/"/, "", db); next } /^COPY / { inc = 1; next } a != "" { if ($0 ~ /^    ADD CONSTRAINT [^;\\\047]* FOREIGN KEY [^;\\\047]* REFERENCES [^;\\\047]*;$/) { r = $0; sub(/^.* REFERENCES /, "", r); sub(/\(.*$/, "", r); if (db == ENVIRON["D"] && (r in w)) { print a; print } } a = "" } /^ALTER TABLE (ONLY )?[^;\\\047]+$/ { a = $0 }' | docker exec -i "$1" psql -q ${as} -d "$2" >/dev/null 2>&1 || true`;
 export async function provePostgres(ctx: Ctx, s: ServerRow, name: string, image: string, file: string, said: string[], as = pgAs(image)) {
   const want = parseManifest(await ssh(ctx.app).check(s, asRoot(s) + script(PG_MANIFEST, file), { what: 'Reading the backup', timeoutMs: 30 * 60_000, maxBytes: 16 * 1024 * 1024, signal: ctx.signal })), got = new Map<string, number>();
-  for (const db of [...new Set(want.map((t) => t.db))]) {
-    const tables = want.filter((t) => t.db === db);
-    const r = await ssh(ctx.app).exec(s, asRoot(s) + script(`docker exec -i "$1" psql ${as} -d "$2" -AtqX -F '|'`, name, db), { stdin: countsSql(tables), timeoutMs: 20 * 60_000, maxBytes: 16 * 1024 * 1024, signal: ctx.signal });
+  const count = async (db: string) => {
+    const r = await ssh(ctx.app).exec(s, asRoot(s) + script(`docker exec -i "$1" psql ${as} -d "$2" -AtqX -F '|'`, name, db), { stdin: countsSql(want.filter((t) => t.db === db)), timeoutMs: 20 * 60_000, maxBytes: 16 * 1024 * 1024, signal: ctx.signal });
     for (const [t, n] of parseCounts(r.stdout)) got.set(`${db}\t${t}`, n);
+  };
+  for (const db of [...new Set(want.map((t) => t.db))]) await count(db);
+  const left = () => want.filter((t) => t.rows && got.get(`${t.db}\t${t.table}`) === 0), first = left();
+  for (let round = 0, before = Infinity; round < 3 && left().length && left().length < before; round++) {
+    const empty = left();
+    before = empty.length;
+    ctx.progress?.(`${empty.length} table${empty.length === 1 ? ' was' : 's were'} refused at first. Trying again now the rest is in…`);
+    for (const db of [...new Set(empty.map((t) => t.db))]) {
+      const r = await ssh(ctx.app).exec(s, asRoot(s) + script(pgAgain(as), name, db, file, empty.filter((t) => t.db === db).map((t) => t.table).join('\n')), { timeoutMs: 30 * 60_000, signal: ctx.signal });
+      said = [...r.stderr.split('\n').filter(Boolean), ...said]; // the latest word first: it's what stands if a table still won't load
+      await count(db);
+    }
   }
+  for (const db of [...new Set(first.map((t) => t.db))]) await ssh(ctx.app).exec(s, asRoot(s) + script(pgKeysAgain(as), name, db, file, first.filter((t) => t.db === db).map((t) => t.table).join('\n')), { timeoutMs: 30 * 60_000, signal: ctx.signal });
   return proofOf(want, got, said);
 }
 export async function proveCount(ctx: Ctx, s: ServerRow, name: string, engine: string, password: string) {
