@@ -12,7 +12,7 @@ What Unit7 can and can't do, so you don't find out the hard way.
 | Known holes in images | Each deploy, then weekly | After you press Scan: the first scan downloads about 1 GB |
 | Backups, proof of restore | Yes | Postgres and Supabase compare every table and row with the file. MySQL/MariaDB, MongoDB and Redis check that data came back. Uploaded files aren't test-restored |
 | Uploaded files and settings | Yes | Yes, for what the X-ray can see |
-| Memory caps | Yes | Coolify applications, Docker, Compose. Not Coolify services such as Supabase |
+| Memory caps | Yes | Coolify applications and services, Docker, Compose |
 | Roll back | Yes, one click | Through Coolify |
 | Change app code | Never | Never. Your AI does that, and Unit7 checks it worked |
 
@@ -50,6 +50,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 ## Domains
 
 - Wildcard HTTPS needs a person to set up DNS-01. GoDaddy may refuse small accounts’ API keys. Vercel redirects work on whole domains only.
+
+## Moving and changing servers
+
+- server.move copies through this Mac and doesn’t resume. Built images, non-Coolify apps and host cron stay behind. Hostinger plan changes happen in hPanel. Port rules survive restarts only with systemd.
 
 ## Not built
 

@@ -65,7 +65,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 45. WordPress: wordpress_status first. A broken site: wordpress_plugin with op find, then offer its switch-off. A new site only through wordpress_install, which claims the admin at once. wordpress_admin is people-only.
 46. For files on a server use file_list, file_read and file_write, with part for a container, not server_exec. file_remove moves a file to a 7-day trash. An AI never opens secret files or changes who can sign in.
 47. DNS records: dns_list, then dns_set; domain_redirect for redirects; client_subdomain gives a client an address. Mail records wait for a person. domain_point and domain_launch take a Coolify app in one step.
-48. Coolify: coolify_auto_deploy (deploy on push), coolify_previews, coolify_storage, coolify_scale. project_list and graph_get show its projects with an ast_ id, which project_readiness, project_passport and client_assign accept.`;
+48. Coolify: coolify_auto_deploy (deploy on push), coolify_previews, coolify_storage, coolify_scale. project_list and graph_get show its projects with an ast_ id, which project_readiness, project_passport and client_assign accept.
+49. Server care: server_snapshot, server_open_port, server_ssh_keys, server_users, server_resize, server_move_plan. Buying, plan changes and deleting are people only: send the person to the server’s Advanced tab.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).
