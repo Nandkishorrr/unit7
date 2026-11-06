@@ -153,7 +153,7 @@ export function webhookFindings(o: { endpoints: WebhookEndpoint[]; hosts?: strin
   for (const m of ['live', 'test'] as const) if (o.undelivered[m]) add('warning', `${o.undelivered[m]} ${m} event${o.undelivered[m] === 1 ? '' : 's'} from the last week didn’t reach a webhook.`, 'A wrong signing secret is the usual reason: the site refuses what Stripe sends. Compare it with the secret on the endpoint in Stripe.');
   const twice = [...new Set(mine.filter((e) => mine.some((x) => x.url === e.url && x.mode !== e.mode)).map((e) => e.url))];
   if (!o.settings) {
-    for (const url of twice) add('info', `${url} gets both test and live events.`, 'Stripe signs them with different secrets, so a site that holds one secret refuses one of the two. Unit7 couldn’t read this site’s settings to check.');
+    for (const url of twice) add('info', `${url} gets both test and live events, and Unit7 couldn’t read this site’s settings to check its signing secrets.`, `Stripe signs each mode with its own secret, so a site that holds one refuses the other mode’s events. Check it keeps one per mode. ${REVEAL}`);
     return out;
   }
   const found = readSettings(o.settings), signing = found.filter((s) => s.kind === 'signing secret');

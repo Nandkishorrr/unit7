@@ -598,7 +598,9 @@ test('webhookFindings: each usual failure, and quiet when it’s right', () => {
   assert.match(go({ endpoints: [hook('live', url)], hosts: ['shop.example.com'], settings: [live] })[0]!.text, /holds no signing secret/);
   assert.match(go({ endpoints: [hook('live', url, 'disabled')] })[0]!.text, /Stripe switched off the live webhook/);
   assert.match(go({ undelivered: { live: 3 } })[0]!.text, /3 live events from the last week didn’t reach a webhook/);
-  assert.match(go({ endpoints: [hook('live', url), hook('test', url)], hosts: ['shop.example.com'] })[0]!.text, /couldn’t read this site’s settings/);
+  const unread = go({ endpoints: [hook('live', url), hook('test', url)], hosts: ['shop.example.com'] })[0]!;
+  assert.match(unread.text, /couldn’t read this site’s settings/);
+  assert.match(unread.fix, /Check it keeps one per mode/, 'what to do, not more of what happened');
 });
 
 async function stripeWorld() {
