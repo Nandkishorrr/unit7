@@ -73,13 +73,13 @@ async function setup() {
 }
 
 // a ZIP written by hand, so it can lie: claim is the size it says, flags and mode are whatever a test wants
-interface Entry { name: string; data?: string | Buffer; method?: number; claim?: number; flags?: number; mode?: number; crc?: number; share?: boolean }
+interface Entry { name: string; data?: string | Buffer; packed?: Buffer; method?: number; claim?: number; flags?: number; mode?: number; crc?: number; share?: boolean }
 function zipOf(files: Entry[]) {
   const out: Buffer[] = [], central: Buffer[] = [];
   let at = 0, shared: { at: number; body: Buffer; size: number; crc: number } | undefined;
   for (const f of files) {
     const raw = Buffer.from(f.data ?? ''), method = f.method ?? 8, name = Buffer.from(f.name);
-    const body = shared && f.share ? shared.body : method === 8 ? deflateRawSync(raw) : raw, size = shared && f.share ? shared.size : raw.length, crc = f.crc ?? (shared && f.share ? shared.crc : crc32(raw));
+    const body = shared && f.share ? shared.body : f.packed ?? (method === 8 ? deflateRawSync(raw) : raw), size = shared && f.share ? shared.size : raw.length, crc = f.crc ?? (shared && f.share ? shared.crc : crc32(raw));
     const local = shared && f.share ? shared.at : at;
     if (!(shared && f.share)) {
       const h = Buffer.alloc(30);
@@ -197,6 +197,7 @@ test('a bomb stops at the limit: an honest one at once, and one that lies about 
     await refused(zipOf([{ name: 'index.html', data: 'x' }, { name: 'big.bin', data: zeros }]));
     await refused(zipOf([{ name: 'big.bin', data: zeros, claim: 10 }]));                             // says 10 bytes, is 5 MB
     await refused(zipOf([{ name: 'big.bin', data: zeros, method: 0, claim: 10 }]));                  // the same, not even compressed
+    await refused(zipOf([{ name: 'big.bin', data: zeros, packed: deflateRawSync(zeros).subarray(0, -4), claim: 10 }])); // breaks off at its end: unpacking stops at the limit, so it never gets there
     await refused(zipOf(Array.from({ length: 40 }, (_, i) => ({ name: `f${i}.bin`, data: Buffer.alloc(100 * 1024), claim: 1 }))));   // each small, the sum isn't
     await refused(zipOf(Array.from({ length: 60 }, (_, i) => ({ name: `f${i}.bin`, data: Buffer.alloc(100 * 1024), claim: 1, share: true })))); // many names, one set of bytes
     assert.equal(uploaded(s.app).length, 0);
@@ -273,7 +274,7 @@ test('a bad file says what to do: not a ZIP, a password, odd compression, damage
 test('a folder of files from the browser is the same upload, and past the old 2 MB cap', async () => {
   const s = await setup();
   try {
-    const r = await s.sam('POST', '/api/live/upload', folderForm({ 'blog/index.html': '<h1>hi</h1>', 'blog/photo.bin': 'x'.repeat(3 * 1024 ** 2), 'blog/.env': 'SECRET=1', 'blog/node_modules/a.js': 'x' }, 'blog'));
+    const r = await s.sam('POST', '/api/live/upload', folderForm({ 'blog/index.html': '<h1>hi</h1>', 'blog/photo.bin': 'x'.repeat(3 * 1024 ** 2), 'blog/.env': 'SECRET=1', 'blog/server.pem': 'x', 'blog/node_modules/a.js': 'x' }, 'blog'));
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.name, 'blog');
     assert.equal(r.body.stack, 'static');
