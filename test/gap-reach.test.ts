@@ -12,6 +12,10 @@ import { testApp, testOrg, ok } from './helpers.ts';
 import { fakeApi, account, type Req } from './clouds-fakes.ts';
 import { all, get, id, run } from '../src/db.ts';
 import type { App } from '../src/app.ts';
+import type { Principal } from '../src/auth.ts';
+import { nextTask } from '../src/agent/bridge.ts';
+import { getConversation, isRunning, sendToAgent, type ContextKind } from '../src/agent/conversations.ts';
+import { NOTHING_ANSWERS, ruleFor } from '../src/agent/quick.ts';
 import { HttpMcp } from '../src/connectors/mcp-http.ts';
 import { HOSTED_MCP } from '../src/connectors/mcp-oauth.ts';
 import { PROFILES } from '../src/ops/index.ts';
@@ -723,4 +727,99 @@ test('stripe.webhooks through a sign-in reads every place it holds, live and san
     assert.deepEqual(r.endpoints.map((e: { mode: string; host: string }) => [e.mode, e.host]), [['live', 'shop.example.com'], ['test', 'dev.example.com']]);
     assert.deepEqual(r.compared.sort(), ['live', 'test']);
   } finally { api.close(); }
+});
+
+// --- the ask box with nothing to answer it -----------------------------------------------------------------------------------
+process.env.OLLAMA_URL = 'http://127.0.0.1:9/v1'; // no local model counts as connected
+async function askBox() {
+  const app = testApp(), o = await testOrg(app);
+  const p = { user: { id: o.userId, email: 'ada@example.com', name: 'Ada' }, org: { id: o.orgId, name: 'Ada', slug: 'ada' }, role: 'owner', via: 'session' } as Principal;
+  const thread = (conv: string) => getConversation(app, o.orgId, conv, o.userId).messages as { role: string; content: any }[];
+  // what comes back at once, then the thread when it has finished
+  const ask = async (message: string, conv?: string, context: { kind: ContextKind; id: string }[] = []) => {
+    const sent = await sendToAgent(app, p, message, conv, context);
+    while (isRunning(sent.conversationId, app)) await new Promise((r) => setTimeout(r, 5));
+    const messages = thread(sent.conversationId);
+    return { ...sent, last: messages.at(-1)!, steps: messages.filter((m) => m.role === 'tool').map((m) => m.content) };
+  };
+  const server = (name: string, status = 'ready') => {
+    const srv = id('srv');
+    run(app.db, `INSERT INTO servers (id, org_id, name, host, username, key_ref, status, facts) VALUES (?, ?, ?, '203.0.113.9', 'root', 'credential://ssh/box/private-key', ?, '{}')`, srv, o.orgId, name, status);
+    return srv;
+  };
+  return { app, o, p, thread, ask, server };
+}
+const METRICS = 'cpu  100 0 100 800 0 0 0 0\ncpu  110 0 110 880 0 0 0 0\nmem_total=8000000000\nmem_available=4000000000\ndisk_total=100000000000\ndisk_used=50000000000\nload=0.5\n';
+const answers = (app: App, seen: string[] = []) => {
+  ssh(app).exec = async (s) => { seen.push(s.name); return s.name.startsWith('down') ? { code: 1, stdout: '', stderr: 'no route to host', truncated: false } : { code: 0, stdout: METRICS, stderr: '', truncated: false }; };
+  return seen;
+};
+
+test('ruleFor: the commonest asks said straight out, and nothing else', () => {
+  for (const [said, rule] of [
+    ['Put this live', 'live'], ['deploy my app please', 'live'], ['Go live!', 'live'], ['Hey Unit7, publish my site and give me the link', 'live'],
+    ['Check on my servers and tell me if anything needs attention', 'server'], ['How’s my server?', 'server'], ['is my vps ok', 'server'],
+    ['What’s using my disk?', 'disk'], ['my disk is full', 'disk'], ['Show me my backups', 'backups'], ['do I have any backups?', 'backups'],
+  ] as const) assert.equal(ruleFor(said), rule, said);
+  for (const said of ['don’t put this live', 'put this live on my other server and move the database too', 'why is my server slow since the last deploy', 'delete my backups', 'restore my backups', 'what does go live mean']) assert.equal(ruleFor(said), undefined, said);
+});
+
+test('with no AI connected a rule answers in the thread, and nothing waits in the inbox', async () => {
+  const { app, o, ask } = await askBox();
+  const live = await ask('Put this live');
+  assert.equal(live.via, 'rules');
+  assert.match(live.last.content.text, /\[start a New project\]\(\/projects\?new=1\).*`unit7 live`/);
+  assert.match((await ask('what’s using my disk?')).last.content.text, /No server is connected yet. \[Add one\]\(\/servers\?new=1\)/);
+  const none = await ask('show my backups');
+  assert.equal(none.steps[0].status, 'ok');
+  assert.match(none.last.content.text, /no backups yet/);
+  run(app.db, `INSERT INTO backups (id, org_id, kind, reason, status) VALUES ('bkp_1', ?, 'manual', 'test', 'done')`, o.orgId);
+  const one = await ask('show my backups', none.conversationId);
+  assert.equal(one.via, 'rules', 'a follow-up in the same thread isn’t refused as busy');
+  assert.match(one.last.content.text, /newest backups/);
+  assert.equal(all(app.db, 'SELECT 1 FROM agent_tasks').length, 0);
+});
+
+test('a rule reads every server Unit7 can sign in to, says which didn’t answer, and stops at three', async () => {
+  const { app, ask, server } = await askBox();
+  const seen = answers(app);
+  const up = server('alpha'), down = server('down');
+  server('waiting', 'awaiting_key'); server('fresh', 'new');
+  const r = await ask('check my servers');
+  assert.equal(r.via, 'rules');
+  assert.deepEqual(r.steps.map((s) => [s.tool, s.status]), [['server.metrics', 'ok'], ['server.metrics', 'error']]);
+  assert.equal(r.steps[0].output.now.diskPct, 50);
+  assert.match(r.last.content.text, /That’s how alpha looks right now.*\[run a Check-up\]\(\/checkup\?run=1\)/);
+  assert.ok(r.last.content.text.includes(`down didn’t answer. [Open it](/servers/${down}) to see why.`));
+  assert.ok(!seen.includes('waiting') && !seen.includes('fresh'), 'one it can’t sign in to yet isn’t tried');
+
+  // the one picked for it, and only that one
+  seen.length = 0;
+  assert.equal((await ask('how is my server', undefined, [{ kind: 'server', id: up }])).steps.length, 1);
+  assert.deepEqual(seen, ['alpha']);
+  // nothing answered: no "that's how it looks"
+  assert.doesNotMatch((await ask('server status', undefined, [{ kind: 'server', id: down }])).last.content.text, /That’s how/);
+
+  server('beta'); server('gamma');
+  const many = await ask('my disk is full');
+  assert.equal(many.steps.length, 3);
+  assert.match(many.last.content.text, /first 3 of 4.*\[Servers\]\(\/servers\)/);
+});
+
+test('anything else says at once what to connect, keeps the request for your AI, and leaves the box free', async () => {
+  const { app, o, p, thread, ask } = await askBox();
+  const r = await ask('why is checkout slow since yesterday?');
+  assert.deepEqual([r.via, r.watching], ['your-ai', false]);
+  assert.deepEqual([r.last.role, r.last.content.text, r.last.content.brain], ['status', NOTHING_ANSWERS, true]);
+  assert.equal((await ask('and the cart?', r.conversationId)).via, 'your-ai', 'not refused as busy: nothing is working on it');
+
+  // your Claude Code starts up later, and what was asked is still there
+  assert.equal((await nextTask(app, o.orgId, o.userId, 0))?.message, 'why is checkout slow since yesterday?');
+  assert.equal(isRunning(r.conversationId, app), true, 'something holds it now');
+
+  // with it listening a rule stands aside, and nothing tells the person to connect anything
+  const sent = await sendToAgent(app, p, 'show my backups');
+  assert.deepEqual([sent.via, sent.watching], ['your-ai', true]);
+  assert.equal(thread(sent.conversationId).some((m) => m.role === 'status'), false);
+  assert.equal(isRunning(sent.conversationId, app), true, 'a request something is listening for is work under way');
 });
