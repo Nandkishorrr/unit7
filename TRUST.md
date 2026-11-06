@@ -64,6 +64,7 @@ Unit7 can use an AI you connect: an API key, a local model, or your own signed-i
 - Unit7 claims an add-on’s admin at install, or keeps it behind an extra password. Templates outside the catalogue are unprotected, so an AI asks first.
 - connection.call masks secret fields for an AI, treats unlisted tools as destructive, and leaves buying to people. stripe.webhooks shares only setting names and modes.
 - move.switch always needs a person. Copying readable settings needs a person’s yes, and values are never shown.
+- SMTP passwords stay in the vault and reach apps by reference. Resend apps get a send-only key. An AI can’t rewrite a login in use, and always asks before forwarding mail or placing a login in a Coolify app.
 
 ## Licence promise
 
