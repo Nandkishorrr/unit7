@@ -334,6 +334,7 @@ async function movePlan(ctx: Ctx, domain: string, cfAccount?: string) {
 
 defineTool({
   name: 'domain.move_dns', title: 'Move a domain\u2019s DNS to Cloudflare', risk: 'destructive', action: 'dns_write', timeoutMs: 10 * 60_000,
+  assess: () => ({ tier: 2, ask: 'Moving a domain\u2019s DNS changes who answers for everything on it, so a person says yes first.' }),
   description: 'Move a domain\u2019s DNS to Cloudflare (free, full API, can point the bare domain anywhere). Copies every record first, email included, then switches the nameservers (Unit7 does it at Hostinger or Name.com; elsewhere you get the two nameservers to set). Run with dryRun first to see what moves.',
   input: z.object({ domain: z.string().min(3).max(253), cloudflareAccountId: fid('acc').optional() }),
   async dryRun(ctx, i) {

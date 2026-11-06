@@ -37,6 +37,8 @@ const UNDO: Record<string, string> = {
   'domain.protect_email': 'To undo, ask Unit7 to remove the records it added.',
   'email.forward': 'To undo, use Undo in Activity: the forward goes, and mail goes where it went before.',
   'email.connect_app': 'To undo, use Undo in Activity: it takes out what it added.',
+  'auth.sign_in': 'To undo, use Undo in Activity: the sign-in turns off.',
+  'firebase.auth_domains': 'To undo, use Undo in Activity: it takes the domains off the list.',
   'domain.move_dns': 'To undo, switch the nameservers back. The old records stay where they are.',
   'service.stop': 'To undo, deploy it again.',
   'deployment.create': 'To undo, go back to the version before. One click on the app’s page.',

@@ -92,6 +92,7 @@ import './coolify-dashboard.ts';
 import './coolify-app.ts';
 import './promote.ts';
 import './supabase.ts';
+import './firebase-auth.ts';
 import './reach.ts';
 import './dataservices.ts';
 import '../seven/index.ts';

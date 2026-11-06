@@ -1,8 +1,9 @@
 // The map's shared pieces: its context, logos, chips, the little menu, and a domain's actions.
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { AlertTriangle, AppWindow, ArrowRight, Boxes, CalendarClock, Database, Globe, HardDrive, Layers, Lock, Mail, MoreHorizontal, Server, X } from 'lucide-react';
+import { AlertTriangle, AppWindow, ArrowRight, Boxes, CalendarClock, Database, Globe, HardDrive, Inbox, Layers, Lock, Mail, MoreHorizontal, Server, X } from 'lucide-react';
 import { act, Badge, Button, Dot, confirmDialog, cx, toast, stepAction } from '../../ui';
 import { runTool } from '../../lib/api';
+import { navigate } from '../../lib/router';
 import { tidy } from '../../lib/words';
 import { BrandLogo, providerName } from '../../brand/BrandLogo';
 import { MOVABLE, acctLabel, issueLabel, logoOf, pointInput, pointable, targetsOf, type Asset, type Derived, type Group, type Issue, type Managed } from './data';
@@ -117,7 +118,7 @@ export function Menu({ label, items, className, extra }: { label: string; items:
 
 // --- domains -------------------------------------------------------------------------------------
 // preview, ask, then move: every record copied (email included) before the nameservers switch
-async function moveDns(domain: string) {
+export async function moveDns(domain: string) {
   const plan = await runTool('domain.move_dns', { domain }, { dryRun: true }).catch((e: Error) => ({ status: 'error' as const, error: { code: 'http', message: e.message } }));
   if (plan.status === 'error') { toast('bad', `Can’t move ${domain} yet`, plan.error.message, { action: stepAction(plan as never, { retry: () => moveDns(domain) }) }); return; }
   if (plan.status !== 'dry_run') return;
@@ -140,6 +141,7 @@ export function domainActions(g: Group, ctx: MapCtx): (MenuItem | false)[] {
   const m = ctx.managed.get(root);
   return [
     !!g.dns && MOVABLE.has(g.dns) && { label: 'Move DNS to Cloudflare', icon: <BrandLogo id="cloudflare" size={16} />, run: () => void moveDns(root).then(ctx.reload) },
+    { label: 'Email', icon: <Inbox size={16} />, run: () => navigate(`/email/${root}`) },
     { label: 'Protect email', icon: <Mail size={16} />, run: () => void act('domain.protect_email', { domain: root }, { success: `${root}: email protection added` }).then((r) => { if (r) ctx.reload(); }) },
     !!m && { label: 'Check it now', icon: <Lock size={16} />, run: () => void act('domain.check', { domainId: m.id }).then((r) => r && ctx.reload()) },
     !!m && { label: 'Stop serving it here', icon: <X size={16} />, danger: true, run: () => void stopServing(root, m, ctx.reload) },

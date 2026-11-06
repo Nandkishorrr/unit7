@@ -51,6 +51,8 @@ import { GuidePage } from './pages/guide/Guide';
 import { FolderOpen, PiggyBank, Rocket } from 'lucide-react';
 import { FilesPage } from './pages/files/Files';
 import { LivePage } from './pages/live/Live';
+import { Mail } from 'lucide-react';
+import { EmailPage } from './pages/email/Email';
 
 export { Logo };
 export interface Me { user: { id: string; name: string; email: string }; org: { id: string; name: string; slug: string }; role: string; orgs: { id: string; name: string; role: string }[]; passkeys: any[] }
@@ -212,6 +214,8 @@ function Shell({ me, reloadMe, path }: { me: Me; reloadMe: () => void; path: str
   else if (path === '/add') page = <AddPage />;
   else if (path === '/guide') page = <GuidePage />;
   else if (path === '/live') page = <LivePage />;
+  else if (path === '/email') page = <EmailPage />;
+  else if ((m = match('/email/:domain', path))) page = <EmailPage domain={m.domain!} human={me.role !== 'agent' && me.role !== 'readonly' && me.role !== 'auditor'} />;
   else page = <div className="py-24 text-center text-muted">Nothing lives at {path}. <A href="/" className="font-medium text-blue-text hover:underline">Go home</A></div>;
 
   const round = 'relative grid size-10 shrink-0 place-items-center rounded-full border border-line bg-surface text-ink transition hover:bg-raised';
@@ -445,6 +449,7 @@ function Palette({ open, onClose, me }: { open: boolean; onClose: () => void; me
             <Command.Item className={item} onSelect={() => go('/servers?new=1')}><Plus size={16} /> Connect a server</Command.Item>
             <Command.Item className={item} onSelect={() => go('/connections')}><Plug size={16} /> Connect Hostinger, GitHub, an AI model…</Command.Item>
             <Command.Item value="get a domain buy connect a domain" className={item} onSelect={() => { onClose(); openDomainLaunch(); }}><Globe2 size={16} /> Get a domain, or connect one you have</Command.Item>
+            <Command.Item value="email inbox hello forward send spf dkim dmarc domain" className={item} onSelect={() => go('/email')}><Mail size={16} /> Email for a domain: sending and forwards</Command.Item>
             <Command.Item value="routines schedule every week" className={item} onSelect={() => go('/routines')}><Repeat size={16} /> Routines: things Unit7 does on a schedule</Command.Item>
             <Command.Item value="start free plans free tier cheapest vercel supabase firebase domain email database" className={item} onSelect={() => go('/guide')}><PiggyBank size={16} /> Start free: what each service gives you for $0</Command.Item>
             <Command.Item className={item} onSelect={() => { set('light'); onClose(); }}><Sun size={16} /> Light theme</Command.Item>

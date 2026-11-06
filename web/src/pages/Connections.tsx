@@ -10,7 +10,7 @@ import { openSignIn } from '../lib/actions';
 import { PROVIDER_ALIAS, tidy } from '../lib/words';
 import { looksLikeToken } from '../lib/token';
 import { qr } from '../lib/qr';
-import { act, Badge, Button, Card, Chip, confirmDialog, CopyButton, HoverCard, IconCircle, Illustration, Modal, PageHeader, Skeleton, StatusMark, SwitchRow, cx, toast } from '../ui';
+import { A, act, Badge, Button, Card, Chip, confirmDialog, CopyButton, HoverCard, IconCircle, Illustration, Modal, PageHeader, Skeleton, StatusMark, SwitchRow, cx, toast } from '../ui';
 import { connectAgent, type AgentInfo } from './AgentConnect';
 import { BrandLogo } from '../brand/BrandLogo';
 import { LOGOS as BRAND_ICONS } from '../brand/logos.generated';
@@ -159,7 +159,8 @@ export function Connections({ me }: { me: Me }) {
         if (g.key === 'backup') return !words || `${g.title} ${g.sub} drive dropbox icloud s3 r2`.toLowerCase().includes(words) ? <Group key={g.key} id={g.key} title={g.title} sub={g.sub}><BackupTiles human={human} /></Group> : null;
         if (!items.length) return null;
         return (
-          <Group key={g.key} id={g.key} title={g.title} sub={g.sub} on={items.filter(counts).length} of={items.length}>
+          <Group key={g.key} id={g.key} title={g.title} sub={g.sub} on={items.filter(counts).length} of={items.length}
+            more={g.key === 'dns' ? <A href="/email" className="mt-1 inline-flex items-center gap-1 text-[13px] font-medium text-blue-text hover:underline">Email for your domains: sending and forwards<ArrowUpRight size={13} /></A> : undefined}>
             {items.map((c) => (c.group === 'Alerts' ? <AlertTile key={c.id} c={c} human={human} quiet={!!pop} onOpen={(view) => setPop({ id: c.id, view })} />
               : <Tile key={c.id} c={c} human={human} quiet={!!pop} onOpen={(view) => setPop({ id: c.id, view })} />))}
             {g.key === 'hosting' && (!words || 'coolify'.includes(words)) && <CoolifyTiles human={human} />}
@@ -192,13 +193,14 @@ function Ring({ value }: { value: number }) {
   );
 }
 
-function Group({ id, title, sub, on, of, children }: { id: string; title: string; sub?: string; on?: number; of?: number; children: ReactNode }) {
+function Group({ id, title, sub, on, of, more, children }: { id: string; title: string; sub?: string; on?: number; of?: number; more?: ReactNode; children: ReactNode }) {
   return (
     <section id={id} aria-labelledby={`${id}-h`} className="scroll-mt-6 space-y-3.5">
       <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1 px-1">
         <div className="min-w-0">
           <h2 id={`${id}-h`} className="text-[17px] font-semibold tracking-[-0.025em]">{title}</h2>
           {sub && <p className="mt-0.5 text-[13px] text-muted">{sub}</p>}
+          {more}
         </div>
         {of !== undefined && <span className="inline-flex items-center gap-1.5 text-[12.5px] text-muted tabular" aria-label={`${on} of ${of} connected`}><Ring value={(on ?? 0) / of} />{on} of {of}</span>}
       </div>

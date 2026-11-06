@@ -424,9 +424,11 @@ CHANGE_UNDO['supabase.secret'] = async (ctx, ch) => {
 // --- auth settings ------------------------------------------------------------------------------------------------------
 // One setting, three names: Supabase's API, the names a stack sets it by (Coolify's template and Supabase's own .env), and
 // what GoTrue reads once it runs. Only these are ever read, and the SMTP password never is.
-interface AuthKey { field: string; api: string; names: string[]; run?: string }
+interface AuthKey { field: string; api: string; names: string[]; run?: string; kind?: 'number' | 'boolean'; unit?: string }
+const PROVIDERS = ['google', 'github'] as const;
+type Provider = (typeof PROVIDERS)[number];
 const AUTH_KEYS: AuthKey[] = [
-  { field: 'disableSignup', api: 'disable_signup', names: ['DISABLE_SIGNUP', 'GOTRUE_DISABLE_SIGNUP'], run: 'GOTRUE_DISABLE_SIGNUP' },
+  { field: 'disableSignup', api: 'disable_signup', names: ['DISABLE_SIGNUP', 'GOTRUE_DISABLE_SIGNUP'], run: 'GOTRUE_DISABLE_SIGNUP', kind: 'boolean' },
   { field: 'siteUrl', api: 'site_url', names: ['GOTRUE_SITE_URL', 'SITE_URL'], run: 'GOTRUE_SITE_URL' },
   { field: 'redirectUrls', api: 'uri_allow_list', names: ['ADDITIONAL_REDIRECT_URLS', 'GOTRUE_URI_ALLOW_LIST'], run: 'GOTRUE_URI_ALLOW_LIST' },
   { field: 'smtpHost', api: 'smtp_host', names: ['SMTP_HOST', 'GOTRUE_SMTP_HOST'], run: 'GOTRUE_SMTP_HOST' },
@@ -436,29 +438,44 @@ const AUTH_KEYS: AuthKey[] = [
   { field: 'smtpSenderName', api: 'smtp_sender_name', names: ['SMTP_SENDER_NAME', 'GOTRUE_SMTP_SENDER_NAME'], run: 'GOTRUE_SMTP_SENDER_NAME' },
   { field: 'smtpPass', api: 'smtp_pass', names: ['SMTP_PASS', 'GOTRUE_SMTP_PASS'] },
   { field: 'apiUrl', api: 'api_external_url', names: ['API_EXTERNAL_URL'], run: 'API_EXTERNAL_URL' },
-  // only read: which sign-in buttons are on
-  { field: 'google', api: 'external_google_enabled', names: [], run: 'GOTRUE_EXTERNAL_GOOGLE_ENABLED' },
-  { field: 'github', api: 'external_github_enabled', names: [], run: 'GOTRUE_EXTERNAL_GITHUB_ENABLED' },
+  // what a sender may do. GoTrue reads a plain number as per hour, and the gap as a Go duration, which needs its unit
+  { field: 'emailsPerHour', api: 'rate_limit_email_sent', names: ['GOTRUE_RATE_LIMIT_EMAIL_SENT'], run: 'GOTRUE_RATE_LIMIT_EMAIL_SENT', kind: 'number' },
+  { field: 'emailGapSeconds', api: 'smtp_max_frequency', names: ['GOTRUE_SMTP_MAX_FREQUENCY'], run: 'GOTRUE_SMTP_MAX_FREQUENCY', kind: 'number', unit: 's' },
+  // the sign-in buttons, set through auth.sign_in. The secret is never read, and only a stack names its own callback
+  ...PROVIDERS.flatMap((p): AuthKey[] => { const e = `GOTRUE_EXTERNAL_${p.toUpperCase()}`; return [
+    { field: p, api: `external_${p}_enabled`, names: [`${e}_ENABLED`], run: `${e}_ENABLED`, kind: 'boolean' },
+    { field: `${p}Id`, api: `external_${p}_client_id`, names: [`${e}_CLIENT_ID`], run: `${e}_CLIENT_ID` },
+    { field: `${p}Secret`, api: `external_${p}_secret`, names: [`${e}_SECRET`] },
+    { field: `${p}Callback`, api: `external_${p}_redirect_uri`, names: [`${e}_REDIRECT_URI`], run: `${e}_REDIRECT_URI` },
+  ]; }),
 ];
 const RUN_KEYS = AUTH_KEYS.flatMap((k) => (k.run ? [k.run] : []));
 const LINE = z.string().min(1).max(300).regex(/^[^\r\n\0]+$/, 'one line');
 const ADDRESS = z.string().max(300).regex(/^[a-z][a-z0-9+.-]*:\/\/[^\s,]+$/i, 'an address like https://app.example.com');
-type AuthInput = { signups?: boolean; siteUrl?: string; redirectUrls?: string[]; apiUrl?: string; smtpHost?: string; smtpPort?: number; smtpUser?: string; smtpPass?: string; smtpAdminEmail?: string; smtpSenderName?: string };
+type AuthInput = { signups?: boolean; siteUrl?: string; redirectUrls?: string[]; apiUrl?: string; smtpHost?: string; smtpPort?: number; smtpUser?: string; smtpPass?: string; smtpAdminEmail?: string; smtpSenderName?: string; emailsPerHour?: number; emailGapSeconds?: number;
+  signIn?: { provider: Provider; clientId: string; secret: string; callback?: string } };
 function wantedAuth(ctx: Ctx, i: AuthInput) {
-  const v: Record<string, string | undefined> = { disableSignup: i.signups === undefined ? undefined : String(!i.signups), siteUrl: i.siteUrl, redirectUrls: i.redirectUrls?.join(','), apiUrl: i.apiUrl, smtpHost: i.smtpHost, smtpPort: i.smtpPort?.toString(), smtpUser: i.smtpUser, smtpAdminEmail: i.smtpAdminEmail, smtpSenderName: i.smtpSenderName, smtpPass: i.smtpPass && valueOf(ctx, i.smtpPass, 'the SMTP password') };
+  const p = i.signIn?.provider;
+  const v: Record<string, string | undefined> = { disableSignup: i.signups === undefined ? undefined : String(!i.signups), siteUrl: i.siteUrl, redirectUrls: i.redirectUrls?.join(','), apiUrl: i.apiUrl, smtpHost: i.smtpHost, smtpPort: i.smtpPort?.toString(), smtpUser: i.smtpUser, smtpAdminEmail: i.smtpAdminEmail, smtpSenderName: i.smtpSenderName, smtpPass: i.smtpPass && valueOf(ctx, i.smtpPass, 'the SMTP password'),
+    emailsPerHour: i.emailsPerHour?.toString(), emailGapSeconds: i.emailGapSeconds?.toString(),
+    ...(i.signIn && { [p!]: 'true', [`${p}Id`]: i.signIn.clientId, [`${p}Secret`]: valueOf(ctx, i.signIn.secret, `the ${p} client secret`), [`${p}Callback`]: i.signIn.callback }) };
   const out = AUTH_KEYS.flatMap((k) => (v[k.field] === undefined ? [] : [{ ...k, value: v[k.field]! }]));
-  if (!out.length) throw need('Say what to change: signups, siteUrl, redirectUrls or an SMTP setting.');
-  // coolify.envs opens a reference and op get reads these back, so one here would show a secret: only the password takes one
-  const ref = out.find((k) => k.field !== 'smtpPass' && /credential:\/\//i.test(k.value));
+  if (!out.length) throw need('Say what to change: signups, siteUrl, redirectUrls, an SMTP setting or a sending limit.');
+  // coolify.envs opens a reference and op get reads these back, so one here would show a secret: only what's never read takes one
+  const ref = out.find((k) => k.run && /credential:\/\//i.test(k.value));
   if (ref) throw need(`${ref.field} is shown when it’s read, so it can’t hold a credential:// reference. Only smtpPass can.`);
   return out;
 }
+const asApi = (k: AuthKey & { value: string }) => (k.kind === 'number' ? Number(k.value) : k.kind === 'boolean' ? k.value === 'true' : k.value);
+// a limit reads 100, and a stack's gap 60s, 2m or 1h; anything fancier stays unsaid
+const countOf = (v: unknown) => { const m = /^(\d+)([smh]?)$/.exec(String(v ?? '')); return m ? Number(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) : undefined; };
 const authView = (c: Record<string, unknown>) => ({
   signups: c.disable_signup !== true && c.disable_signup !== 'true', siteUrl: c.site_url || undefined, redirectUrls: String(c.uri_allow_list ?? '').split(',').map((u) => u.trim()).filter(Boolean),
   ...(c.api_external_url ? { apiUrl: c.api_external_url } : {}), signIn: ['google', 'github'].filter((p) => [true, 'true'].includes(c[`external_${p}_enabled`] as string)),
   smtp: { host: c.smtp_host || undefined, port: c.smtp_port || undefined, user: c.smtp_user || undefined, adminEmail: c.smtp_admin_email || undefined, senderName: c.smtp_sender_name || undefined, ...('smtp_pass' in c && { passwordSet: !!c.smtp_pass }) },
+  emails: { perHour: countOf(c.rate_limit_email_sent), gapSeconds: countOf(c.smtp_max_frequency) },
 });
-const AUTH_LIMITS = 'Self-hosted: changes need a Coolify stack, and redeploy it. Sign-in providers and email templates aren’t covered here. The SMTP password can’t be read or put back.';
+const AUTH_LIMITS = 'Self-hosted: changes need a Coolify stack, and redeploy it. Sign-in providers and email templates aren’t covered here: auth.sign_in adds Google or GitHub. A stack with no sending limit of its own uses GoTrue’s 30 emails an hour. The SMTP password can’t be read or put back.';
 const running = async (ctx: Ctx, s: ServerRow, c: string) => parseKeys(sections(await ssh(ctx.app).check(s, asRoot(s) + readKeys([c], RUN_KEYS), { what: 'Reading its sign-in settings', timeoutMs: 30_000 })).keys)[c] ?? {};
 async function putEnvs(ctx: Ctx, serverId: string, uuid: string, kind: string, keys: { key: string; value: string | null; literal?: boolean }[]) {
   let last: { deploy?: { status?: string } } = {};
@@ -481,20 +498,22 @@ async function setAuthOnServer(ctx: Ctx, i: Where & AuthInput) {
   if (r.via !== 'coolify') throw refuse(`${p.name} isn’t run by Coolify, so supabase.auth can’t change it. ${r.via === 'ssh' ? 'Use part.env with DISABLE_SIGNUP, SITE_URL, ADDITIONAL_REDIRECT_URLS or the SMTP_ settings.' : r.why}`);
   const c = inner(p, AUTH, 'auth'), want = wantedAuth(ctx, i), before = await running(ctx, s, c);
   const have = new Set((await step<{ key: string; preview?: boolean }[]>(ctx, 'coolify.envs', { serverId: s.id, uuid: r.uuid, kind: r.kind, op: 'list' })).filter((e) => !e.preview).map((e) => e.key));
-  const sets = want.map((k) => { const key = k.names.find((n) => have.has(n)) ?? k.names[0]!; return { ...k, key, had: have.has(key) }; });
-  const back = sets.filter((k) => k.run).map((k) => ({ key: k.key, value: k.had ? before[k.run!] ?? '' : null }));
+  const sets = want.map((k) => { const key = k.names.find((n) => have.has(n)) ?? k.names[0]!; return { ...k, value: k.value + (k.unit ?? ''), key, had: have.has(key) }; });
+  // a secret that's new can go again; one that was there can't come back, so it stays
+  const back = sets.filter((k) => k.run || !k.had).map((k) => ({ key: k.key, value: k.had ? before[k.run!] ?? '' : null }));
   ctx.progress(`Changing ${p.name}’s sign-in settings and redeploying it through Coolify…`);
-  const done = await putEnvs(ctx, s.id, r.uuid, r.kind, sets.map((k) => ({ key: k.key, value: k.value, literal: k.field === 'smtpPass' })));
+  const done = await putEnvs(ctx, s.id, r.uuid, r.kind, sets.map((k) => ({ key: k.key, value: k.value, literal: !k.run })));
   const off = /fail/.test(done.deploy?.status ?? '') ? ['the deploy'] : await stillOff(ctx, s, c, Object.fromEntries(sets.filter((k) => k.run).map((k) => [k.run!, k.value])));
   if (off.length) {
     await putEnvs(ctx, s.id, r.uuid, r.kind, back).catch((e: Error) => { throw new Unit7Error('rollback_failed', `The change didn’t reach ${off.join(', ')}, and putting it back failed too: ${e.message}. It needs a look in Coolify.`, 502); });
-    return { changed: false, rolledBack: true, why: off[0] === 'the deploy' ? 'The deploy failed, so Unit7 put the old settings back.' : `The stack’s Compose file sets ${off.join(', ')} itself, so the change never reached the auth container. Unit7 put the old settings back. To change it, edit the Compose file in Coolify (the service’s Edit Compose File).`, limits: AUTH_LIMITS };
+    return { changed: false, rolledBack: true, why: off[0] === 'the deploy' ? 'The deploy failed, so Unit7 put the old settings back.' : `The stack’s Compose file sets ${off.join(', ')} itself, or doesn’t pass it on, so the change never reached the auth container. Unit7 put the old settings back. To change it, edit the Compose file in Coolify (the service’s Edit Compose File).`,
+      ...(off[0] !== 'the deploy' && { inCompose: Object.fromEntries(sets.flatMap((k) => (k.run ? [[k.run, k.value]] : []))) }), limits: AUTH_LIMITS };
   }
   const summary = `Changed the sign-in settings of ${p.name} on ${s.name}`;
   await runXray(ctx, s).catch(() => undefined); // so readiness and the Check-up see the fix now, not at the next hourly look
   return { changed: true, part: p.name, ...authView(Object.fromEntries(AUTH_KEYS.filter((k) => k.run).map((k) => [k.api, sets.find((x) => x.api === k.api)?.value ?? before[k.run!]]))),
     ...(back.length && remember(ctx, `coolify:${r.uuid}`, 'supabase.auth_server', summary, { serverId: s.id, uuid: r.uuid, kind: r.kind, keys: back })),
-    ...(i.smtpPass && { note: 'Undo can’t put back the old SMTP password: Unit7 never reads it.' }), limits: AUTH_LIMITS };
+    ...(i.smtpPass && { note: 'Undo can’t put back the old SMTP password: Unit7 never reads it.' }), ...(i.signIn && { note: 'Undo can’t put back an old client secret: Unit7 never reads it.' }), limits: AUTH_LIMITS };
 }
 CHANGE_UNDO['supabase.auth_server'] = async (ctx, ch) => {
   const u = json<{ serverId: string; uuid: string; kind: string; keys: { key: string; value: string | null }[] }>(ch.undo, { serverId: '', uuid: '', kind: 'service', keys: [] });
@@ -502,33 +521,40 @@ CHANGE_UNDO['supabase.auth_server'] = async (ctx, ch) => {
   return { restored: u.keys.map((k) => k.key), note: 'Coolify redeployed the stack. The SMTP password isn’t put back.' };
 };
 
+async function setAuthHosted(ctx: Ctx, i: Where & AuthInput & { ref: string }) {
+  const acc = accountFor(ctx, 'supabase', i.accountId, i.ref), path = `/projects/${i.ref}/config/auth`;
+  const was = await sb<Record<string, unknown>>(ctx, acc, path);
+  // the built-in sender stays at 2 an hour whatever is asked: only a sender of the person's own goes past it
+  if (i.emailsPerHour !== undefined && !(i.smtpHost ?? was.smtp_host)) throw new Unit7Error('no_sender', 'Supabase’s built-in sender stays at 2 emails an hour, and this project has no sender of its own. Run email.setup, then email.connect_app, then ask again.', 409);
+  const body: Record<string, unknown> = {}, before: Record<string, unknown> = {};
+  for (const k of wantedAuth(ctx, i)) {
+    body[k.api] = asApi(k);
+    if (k.run) before[k.api] = was[k.api] ?? null;
+  }
+  const after = await sb<Record<string, unknown>>(ctx, acc, path, { method: 'PATCH', body }), now = { ...was, ...after };
+  // readiness and the Check-up read this from the last sync: the fix shows now
+  run(ctx.db, `UPDATE assets SET meta = json_set(meta, '$.auth', json(?)) WHERE org_id = ? AND provider = 'supabase' AND ext_id = ?`, JSON.stringify({ smtp: !!now.smtp_host, ...(now.site_url ? { site: now.site_url } : {}) }), ctx.orgId, i.ref);
+  return { changed: true, ref: i.ref, ...authView(now), ...(Object.keys(before).length && remember(ctx, `supabase:${i.ref}`, 'supabase.auth', `Changed the sign-in settings of the Supabase project ${i.ref}`, { accountId: acc, ref: i.ref, before })),
+    ...(i.smtpPass && { note: 'Undo can’t put back the old SMTP password: Supabase never shows it.' }), ...(i.signIn && { note: 'Undo turns it off again, and can’t put back an old client secret: Supabase never shows it.' }) };
+}
+const setAuth = (ctx: Ctx, i: Where & AuthInput): Promise<{ changed: boolean; why?: string; note?: string; changeId?: string; undo?: string; rolledBack?: boolean; inCompose?: Record<string, string> }> => (i.ref ? setAuthHosted(ctx, { ...i, ref: i.ref }) : setAuthOnServer(ctx, i));
+
 defineTool({
   name: 'supabase.auth', title: 'Supabase sign-in settings',
   risk: (i) => (i.op === 'get' ? 'read' : 'write'), action: (i) => (i.op === 'get' ? 'read' : 'settings_write'), sensitive: ['smtpPass'], timeoutMs: 20 * 60_000,
-  description: 'Sign-up, the site address, allowed redirect addresses and SMTP settings of a hosted project (ref) or a self-hosted stack (serverId and part). op get shows them; the SMTP password is never shown. op set changes the ones given: signups, siteUrl, redirectUrls (the whole list), apiUrl (self-hosted: API_EXTERNAL_URL), smtpHost, smtpPort, smtpUser, smtpPass (a credential:// reference works), smtpAdminEmail, smtpSenderName. Undo puts the old values back, except the SMTP password. Self-hosted works through its GoTrue settings: Coolify stacks only, through coolify.envs and a redeploy, checked in the running auth container and put back if it didn’t take (a Compose file that sets a value itself has to be edited in Coolify). Sign-in providers and email templates aren’t covered. After a domain change, auth.urls sets the addresses for you and says what to change at Google or GitHub.',
+  description: 'Sign-up, the site address, allowed redirect addresses, SMTP settings and email sending limits of a hosted project (ref) or a self-hosted stack (serverId and part). op get shows them; the SMTP password is never shown. op set changes the ones given: signups, siteUrl, redirectUrls (the whole list), apiUrl (self-hosted: API_EXTERNAL_URL), smtpHost, smtpPort, smtpUser, smtpPass (a credential:// reference works), smtpAdminEmail, smtpSenderName, emailsPerHour (a project-wide cap: hosted rate_limit_email_sent, self-hosted GOTRUE_RATE_LIMIT_EMAIL_SENT) and emailGapSeconds (how long before one person can be emailed again: hosted smtp_max_frequency, self-hosted GOTRUE_SMTP_MAX_FREQUENCY). Supabase’s built-in sender stays at 2 emails an hour whatever is asked, so a hosted project needs its own sender first (email.setup, then email.connect_app) and emailsPerHour refuses until then. Undo puts the old values back, except the SMTP password. Self-hosted works through its GoTrue settings: Coolify stacks only, through coolify.envs and a redeploy, checked in the running auth container and put back if it didn’t take (a Compose file that sets a value itself, or doesn’t pass it on, has to be edited in Coolify; inCompose says what to put there). Google and GitHub sign-in: auth.sign_in. Email templates aren’t covered. After a domain change, auth.urls sets the addresses for you and says what to change at Google or GitHub.',
   input: z.object({ ...WHERE, op: z.enum(['get', 'set']).default('get'), signups: z.boolean().optional().describe('false stops new sign-ups'), siteUrl: ADDRESS.optional(), redirectUrls: z.array(ADDRESS).max(50).optional().describe('The whole list: it replaces the old one'), apiUrl: ADDRESS.optional().describe('Self-hosted only: the stack’s public API address'),
-    smtpHost: z.string().max(253).regex(/^[a-z0-9.-]+$/i, 'a host like smtp.example.com').optional(), smtpPort: z.number().int().min(1).max(65_535).optional(), smtpUser: LINE.optional(), smtpPass: LINE.optional(), smtpAdminEmail: z.string().email().max(200).optional(), smtpSenderName: LINE.optional() }).refine(oneTarget, ONE_TARGET),
+    smtpHost: z.string().max(253).regex(/^[a-z0-9.-]+$/i, 'a host like smtp.example.com').optional(), smtpPort: z.number().int().min(1).max(65_535).optional(), smtpUser: LINE.optional(), smtpPass: LINE.optional(), smtpAdminEmail: z.string().email().max(200).optional(), smtpSenderName: LINE.optional(),
+    emailsPerHour: z.number().int().min(1).max(2_147_483_647).optional().describe('How many sign-in emails the whole project may send in an hour'), emailGapSeconds: z.number().int().min(0).max(32_767).optional().describe('Seconds before the same person can be sent another one') }).refine(oneTarget, ONE_TARGET),
   assess: (c, i) => (i.op === 'get' ? { tier: 0 } : assessWhere(c, i, 2, 'Changes who can sign up, or where sign-in sends people and its email.')),
   async run(ctx, i) {
+    if (i.ref && i.apiUrl) throw need('A hosted project’s API address is Supabase’s to set: apiUrl is for a stack on your server.');
+    if (i.op === 'set') return setAuth(ctx, i);
     if (!i.ref) {
-      if (i.op === 'set') return setAuthOnServer(ctx, i);
       const { s, p } = await stackOf(ctx, i), env = await running(ctx, s, inner(p, AUTH, 'auth'));
       return { part: p.name, ...authView(Object.fromEntries(AUTH_KEYS.filter((k) => k.run).map((k) => [k.api, env[k.run!]]))), limits: AUTH_LIMITS, untrusted: UNTRUSTED };
     }
-    if (i.apiUrl) throw need('A hosted project’s API address is Supabase’s to set: apiUrl is for a stack on your server.');
-    const acc = accountFor(ctx, 'supabase', i.accountId, i.ref), path = `/projects/${i.ref}/config/auth`;
-    const was = await sb<Record<string, unknown>>(ctx, acc, path);
-    if (i.op === 'get') return { ref: i.ref, ...authView(was), untrusted: UNTRUSTED };
-    const body: Record<string, unknown> = {}, before: Record<string, unknown> = {};
-    for (const k of wantedAuth(ctx, i)) {
-      body[k.api] = k.api === 'disable_signup' ? k.value === 'true' : k.value;
-      if (k.run) before[k.api] = was[k.api] ?? null;
-    }
-    const after = await sb<Record<string, unknown>>(ctx, acc, path, { method: 'PATCH', body }), now = { ...was, ...after };
-    // readiness and the Check-up read this from the last sync: the fix shows now
-    run(ctx.db, `UPDATE assets SET meta = json_set(meta, '$.auth', json(?)) WHERE org_id = ? AND provider = 'supabase' AND ext_id = ?`, JSON.stringify({ smtp: !!now.smtp_host, ...(now.site_url ? { site: now.site_url } : {}) }), ctx.orgId, i.ref);
-    return { changed: true, ref: i.ref, ...authView(now), ...(Object.keys(before).length && remember(ctx, `supabase:${i.ref}`, 'supabase.auth', `Changed the sign-in settings of the Supabase project ${i.ref}`, { accountId: acc, ref: i.ref, before })),
-      ...(i.smtpPass && { note: 'Undo can’t put back the old SMTP password: Supabase never shows it.' }) };
+    return { ref: i.ref, ...authView(await sb<Record<string, unknown>>(ctx, accountFor(ctx, 'supabase', i.accountId, i.ref), `/projects/${i.ref}/config/auth`)), untrusted: UNTRUSTED };
   },
 });
 CHANGE_UNDO['supabase.auth'] = async (ctx, ch) => {
@@ -551,28 +577,32 @@ function byHand(site: string, callback: string | undefined, on: string[]) {
   };
   return on.map((p) => steps[p]);
 }
-async function urlsPlan(ctx: Ctx, i: UrlsIn) {
-  if (i.ref && i.apiUrl) throw need('A hosted project’s API address is Supabase’s to set: apiUrl is for a stack on your server.');
-  const where = i.ref ? { ref: i.ref, ...(i.accountId && { accountId: i.accountId }) } : { serverId: i.serverId, part: i.part };
-  const now = await step<{ siteUrl?: string; redirectUrls: string[]; apiUrl?: string; signIn: string[] }>(ctx, 'supabase.auth', where);
-  const site = new URL(i.url).origin, old = now.siteUrl?.replace(/\/+$/, '');
-  const redirectUrls = [...new Set([...now.redirectUrls, ...(old && old !== site ? [`${old}/**`] : []), `${site}/**`])];
-  let api: string | undefined;
+type AuthNow = { siteUrl?: string; redirectUrls: string[]; apiUrl?: string; signIn: string[] };
+const whereOf = (i: Where) => (i.ref ? { ref: i.ref, ...(i.accountId && { accountId: i.accountId }) } : { serverId: i.serverId, part: i.part });
+// the address people come back to after signing in: a hosted project's own or custom one, a stack's public one
+async function apiOf(ctx: Ctx, i: Where & { apiUrl?: string }, now: AuthNow) {
   if (i.ref) {
     const acc = accountFor(ctx, 'supabase', i.accountId, i.ref), own = await sb<{ status?: string; custom_hostname?: string }>(ctx, acc, `/projects/${i.ref}/custom-hostname`).catch(() => undefined);
-    api = own?.custom_hostname && /^5_/.test(own.status ?? '') ? `https://${own.custom_hostname}` : await supabase.url(ctx, acc, i.ref);
-  } else {
-    const { p } = await stackOf(ctx, i), reachable = !!now.apiUrl && /^https:\/\/[^/:]+\.[^/:]+/.test(now.apiUrl);
-    api = i.apiUrl ?? (reachable ? now.apiUrl : p.hosts?.[0] && `https://${p.hosts[0]}`);
+    return own?.custom_hostname && /^5_/.test(own.status ?? '') ? `https://${own.custom_hostname}` : supabase.url(ctx, acc, i.ref);
   }
-  const newApi = !i.ref && api && api !== now.apiUrl ? api : undefined, callback = api && `${api.replace(/\/+$/, '')}/auth/v1/callback`;
+  const { p } = await stackOf(ctx, i), reachable = !!now.apiUrl && /^https:\/\/[^/:]+\.[^/:]+/.test(now.apiUrl);
+  return i.apiUrl ?? (reachable ? now.apiUrl : p.hosts?.[0] && `https://${p.hosts[0]}`);
+}
+const callbackOf = (api: string | undefined) => api && `${api.replace(/\/+$/, '')}/auth/v1/callback`;
+const NO_ADDRESS = 'This stack has no public address yet, so Google and GitHub have nowhere to send people back to. Give it a domain, then run this again with apiUrl.';
+async function urlsPlan(ctx: Ctx, i: UrlsIn) {
+  if (i.ref && i.apiUrl) throw need('A hosted project’s API address is Supabase’s to set: apiUrl is for a stack on your server.');
+  const where = whereOf(i), now = await step<AuthNow>(ctx, 'supabase.auth', where);
+  const site = new URL(i.url).origin, old = now.siteUrl?.replace(/\/+$/, '');
+  const redirectUrls = [...new Set([...now.redirectUrls, ...(old && old !== site ? [`${old}/**`] : []), `${site}/**`])];
+  const api = await apiOf(ctx, i, now), newApi = !i.ref && api && api !== now.apiUrl ? api : undefined, callback = callbackOf(api);
   return { where, now, site, redirectUrls, added: redirectUrls.filter((u) => !now.redirectUrls.includes(u)), newApi, same: now.siteUrl === site && redirectUrls.length === now.redirectUrls.length && !newApi,
-    report: { site, redirectUrls, ...(callback ? { callback } : { note: 'This stack has no public address yet, so Google and GitHub have nowhere to send people back to. Give it a domain, then run this again with apiUrl.' }), byHand: byHand(site, callback, now.signIn), untrusted: UNTRUSTED } };
+    report: { site, redirectUrls, ...(callback ? { callback } : { note: NO_ADDRESS }), byHand: byHand(site, callback, now.signIn), untrusted: UNTRUSTED } };
 }
 
 defineTool({
   name: 'auth.urls', title: 'Make login work on a domain', risk: 'write', action: 'settings_write', timeoutMs: 20 * 60_000,
-  description: 'After a domain change, login still points at the old address: this fixes it for a Supabase project (ref) or a self-hosted stack (serverId and part). It sets the site address to url and adds that address to the allowed redirect addresses, keeping every address already allowed and the old site address (hosted through supabase.auth; self-hosted through GOTRUE_SITE_URL, GOTRUE_URI_ALLOW_LIST and API_EXTERNAL_URL, with a redeploy). byHand says what to change at Google or GitHub sign-in, for those turned on, with the exact address to paste: those live in the person’s own accounts. An AI’s change waits for a person in production. Run it as a dry run first. Undo puts the old addresses back.',
+  description: 'After a domain change, login still points at the old address: this fixes it for a Supabase project (ref) or a self-hosted stack (serverId and part). It sets the site address to url and adds that address to the allowed redirect addresses, keeping every address already allowed and the old site address (hosted through supabase.auth; self-hosted through GOTRUE_SITE_URL, GOTRUE_URI_ALLOW_LIST and API_EXTERNAL_URL, with a redeploy). byHand says what to change at Google or GitHub sign-in, for those turned on, with the exact address to paste: those live in the person’s own accounts. An AI’s change waits for a person in production. Run it as a dry run first. Undo puts the old addresses back. A sign-in that isn’t on yet is auth.sign_in, the limit on sign-up emails is supabase.auth with emailsPerHour, and Firebase Auth is firebase.auth_domains.',
   input: z.object({ ...WHERE, url: WEB.describe('The app’s address now: https://app.example.com'), apiUrl: WEB.optional().describe('Self-hosted: the stack’s public API address, if Unit7 can’t see it') }).refine(oneTarget, ONE_TARGET),
   async dryRun(ctx, i) {
     const p = await urlsPlan(ctx, i);
@@ -582,13 +612,56 @@ defineTool({
     const p = await urlsPlan(ctx, i);
     if (p.same) return { changed: false, ...p.report, ...(p.report.byHand.length ? {} : { done: 'Sign-in already points here, and nothing needs changing by hand.' }) };
     try {
-      const r = await step<{ changed: boolean; why?: string; changeId?: string; undo?: string; rolledBack?: boolean }>(ctx, 'supabase.auth', { ...p.where, op: 'set', siteUrl: p.site, redirectUrls: p.redirectUrls, ...(p.newApi && { apiUrl: p.newApi }) });
-      return { changed: r.changed, ...p.report, ...(r.changeId && { changeId: r.changeId, undo: r.undo }), ...(r.why && { why: r.why }),
-        ...(r.rolledBack && { inCompose: { GOTRUE_SITE_URL: p.site, GOTRUE_URI_ALLOW_LIST: p.redirectUrls.join(','), ...(p.newApi && { API_EXTERNAL_URL: p.newApi }) } }) };
+      const r = await step<Awaited<ReturnType<typeof setAuth>>>(ctx, 'supabase.auth', { ...p.where, op: 'set', siteUrl: p.site, redirectUrls: p.redirectUrls, ...(p.newApi && { apiUrl: p.newApi }) });
+      return { changed: r.changed, ...p.report, ...(r.changeId && { changeId: r.changeId, undo: r.undo }), ...(r.why && { why: r.why }), ...(r.inCompose && { inCompose: r.inCompose }) };
     } catch (e) {
       if ((e as Unit7Error).code !== 'approval_required') throw e;
       return { changed: false, waiting: (e as Error).message, note: 'Once it’s approved, it’s done: nothing more to run.', ...p.report };
     }
+  },
+});
+
+// --- Google and GitHub sign-in --------------------------------------------------------------------------------------------
+// Neither offers an API that makes a sign-in client, so a person makes it once: this says what to paste where, and where its
+// client ID and secret go. The secret reaches Unit7 by ui.form or the Vault as a credential:// reference, never through a chat.
+const SIGN_IN: Record<Provider, { name: string; open: string; steps: string[]; paste: (site: string | undefined, callback: string) => Record<string, string | undefined> }> = {
+  google: { name: 'Google', open: 'https://console.cloud.google.com/apis/credentials', paste: (origin, redirect) => ({ origin, redirect }), steps: [
+    'Open the page, and pick the Google project to use. If Google asks for a consent screen, fill that in first.',
+    'Create credentials → OAuth client ID → Web application.',
+    'Add origin under Authorized JavaScript origins, and redirect under Authorized redirect URIs.',
+    'Create it. Google shows a client ID and a client secret.',
+  ] },
+  github: { name: 'GitHub', open: 'https://github.com/settings/developers', paste: (homepage, callback) => ({ homepage, callback }), steps: [
+    'Open the page, then OAuth Apps → New OAuth App.',
+    'Set Homepage URL to homepage and Authorization callback URL to callback. It takes one callback, so use one OAuth app per site.',
+    'Register it, then press Generate a new client secret.',
+  ] },
+};
+// which setting holds what: a hosted project's own names, or a stack's
+const holders = (i: Where, p: Provider) => {
+  const name = (f: string) => { const k = AUTH_KEYS.find((x) => x.field === f)!; return i.ref ? k.api : k.names[0]!; };
+  return { clientId: name(`${p}Id`), clientSecret: name(`${p}Secret`), on: name(p), ...(!i.ref && { callback: name(`${p}Callback`) }) };
+};
+
+defineTool({
+  name: 'auth.sign_in', title: 'Add Google or GitHub sign-in',
+  risk: (i) => (i.client ? 'write' : 'read'), action: (i) => (i.client ? 'settings_write' : 'read'), sensitive: ['clientSecret'], timeoutMs: 20 * 60_000,
+  peopleOnly: (i) => (i.clientSecret && !isRef(i.clientSecret) ? 'An AI never handles a client secret. Ask the person with ui.form (a secret field comes back as a credential:// reference), or have them add it on the Vault page, then pass the reference.' : false),
+  description: 'Add Google or GitHub sign-in to a Supabase project (ref) or a self-hosted stack (serverId and part). Neither provider has an API that makes a sign-in client, so without client this only reads: it gives the exact callback address to paste, where to paste it, the steps, and which setting holds the client ID and the secret. Show that to the person. Then ask them for the two values with ui.form (a secret field comes back as a credential:// reference) or the Vault, never in chat, and run this again with client and clientSecret: Unit7 puts them into Supabase and turns the sign-in on, through a person’s approval in production. On a self-hosted stack that’s a Coolify redeploy, checked in the running auth container: most stacks’ Compose files need these settings added first, and compose says exactly which. The secret never comes back, and Undo turns the sign-in off.',
+  input: z.object({ ...WHERE, provider: z.enum(PROVIDERS), url: WEB.optional().describe('The site’s address, if it isn’t Supabase’s site address yet'), apiUrl: WEB.optional().describe('Self-hosted: the stack’s public API address, if Unit7 can’t see it'),
+    client: LINE.optional().describe('From the OAuth client the person made'), clientSecret: LINE.optional().describe('A credential:// reference from ui.form or the Vault. An AI never handles the value') })
+    .refine(oneTarget, ONE_TARGET).refine((i) => !i.client === !i.clientSecret, 'Give client and clientSecret together.').refine((i) => !i.ref || !i.apiUrl, 'A hosted project’s API address is Supabase’s to set: apiUrl is for a stack on your server.'),
+  assess: (c, i) => (i.client ? assessWhere(c, i, 2, `Puts a ${SIGN_IN[i.provider].name} client into Supabase and turns its sign-in on.`) : { tier: 0 }),
+  async run(ctx, i) {
+    const now = await step<AuthNow>(ctx, 'supabase.auth', whereOf(i)), to = SIGN_IN[i.provider], callback = callbackOf(await apiOf(ctx, i, now));
+    if (!callback) throw new Unit7Error('no_address', NO_ADDRESS, 409);
+    const site = i.url ? new URL(i.url).origin : now.siteUrl?.replace(/\/+$/, ''), on = now.signIn.includes(i.provider), paste = to.paste(site, callback), settings = holders(i, i.provider);
+    if (!i.client) return { provider: i.provider, on, byApi: false, why: `${to.name} has no API that makes a sign-in client, so a person makes it once.`, open: to.open, steps: to.steps, paste, ...(!site && { note: 'Supabase has no site address yet: give url, or auth.urls sets one.' }), settings,
+      then: 'Ask the person for the client ID and the secret with ui.form, or have them put the secret on the Vault page. Never in chat. Then run this again with client and clientSecret.', untrusted: UNTRUSTED };
+    const r = await setAuth(ctx, { ...whereOf(i), signIn: { provider: i.provider, clientId: i.client, secret: i.clientSecret!, ...(!i.ref && { callback }) } });
+    if (!r.changed) return { provider: i.provider, on: false, why: r.why, ...(r.inCompose && { compose: `In Coolify, open this stack’s Edit Compose File, and under its auth service add ${Object.values(settings).join(', ')}, each as NAME=\${NAME}. Then run this again.` }), untrusted: UNTRUSTED };
+    ctx.emit('auth.sign_in', `${to.name} sign-in is on for ${i.ref ?? i.part}`, { severity: 'success', resource: i.ref ?? i.part });
+    return { provider: i.provider, on: true, callback, paste, ...(r.changeId && { changeId: r.changeId, undo: r.undo }), ...(r.note && { note: r.note }), next: `Try it in a private window. If ${to.name} says the address doesn’t match, the callback above isn’t pasted exactly.`, untrusted: UNTRUSTED };
   },
 });
 

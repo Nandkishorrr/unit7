@@ -84,5 +84,6 @@ export function dkimCheck(rows: { a: string; value?: string | null }[], add: (ke
 export function loginHint(db: DB, orgId: string, hostname: string) {
   if (hostname.startsWith('*.') || isTestHost(hostname)) return undefined;
   const known = get(db, `SELECT 1 FROM accounts WHERE org_id = ? AND provider = 'supabase'`, orgId) || seenAuth(db, orgId).length;
-  return known ? `If this app signs people in with Supabase, run auth.urls with url https://${hostname}, or login keeps pointing at the old address.` : undefined;
+  const google = get(db, `SELECT 1 FROM accounts WHERE org_id = ? AND provider IN ('firebase', 'gcp')`, orgId);
+  return [known && `If this app signs people in with Supabase, run auth.urls with url https://${hostname}, or login keeps pointing at the old address.`, google && `If it signs people in with Firebase Auth, add ${hostname} with firebase.auth_domains, or sign-in fails there.`].filter(Boolean).join(' ') || undefined;
 }

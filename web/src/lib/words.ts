@@ -304,6 +304,8 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
     case 'domain.protect_email': return `${i.domain ?? 'The domain'} gets records that stop strangers sending email as it.`;
     case 'email.forward': return `Email to ${i.from ?? 'that address'} goes to ${i.to ?? 'the inbox'}.`;
     case 'email.connect_app': return `This app can send email as ${i.domain ?? 'your domain'}.`;
+    case 'auth.sign_in': return `People can sign in with ${i.provider === 'github' ? 'GitHub' : 'Google'}.`;
+    case 'firebase.auth_domains': return `People can sign in from ${(i.domains ?? ['that domain']).join(', ')}.`;
     case 'domain.move_dns': return `${i.domain ?? 'The domain'}’s DNS moves to Cloudflare. The site stays up.`;
     case 'domain.canonical': { const d = String(i.domain ?? 'the domain').replace(/^www\./, ''); return i.prefer === 'www' ? `${d} sends visitors to www.${d}, keeping the page they asked for.` : `www.${d} sends visitors to ${d}, keeping the page they asked for.`; }
     case 'uptime.sync': return `Uptime Kuma on ${server} checks each of your sites every minute. Your own monitors stay as they are.`;
@@ -421,9 +423,15 @@ Object.assign(TOOL_WORDS, {
   'dns.list': 'See DNS records', 'dns.set': 'Add or change a DNS record', 'dns.remove': 'Remove a DNS record',
   'domain.redirect': 'Send a domain or a page somewhere else', 'client.subdomain': 'Give a client their own address',
 });
+// a tool's last sentence tells an AI which flag says yes; on a page the person answers a pop-up
+export const noFlag = (m: string) => m.replace(/ ?Say yes (to that )?with \w+[\s\S]*$/, '');
+// and its "run this again" is the button that does it
+export const pressAgain = <T extends string | undefined>(t: T, button: string) => t?.replace(/\b([rR])un (?:this|email\.setup) again/g, (_m, r: string) => `${r === 'R' ? 'Press' : 'press'} ${button} again`) as T;
+
 // email (tools/email.ts) and login on a real domain (tools/supabase.ts)
 Object.assign(TOOL_WORDS, {
   'email.check': 'Check a domain’s email', 'email.setup': 'Send email from a domain', 'email.connect_app': 'Put email sending into an app', 'email.forward': 'Forward an address to an inbox', 'auth.urls': 'Make login work on a domain',
+  'auth.sign_in': 'Add Google or GitHub sign-in', 'firebase.auth_domains': 'Allow sign-in from a domain on Firebase',
 });
 // the big clouds (src/tools/clouds-*.ts): DNS records, redeploys, spending alerts and the cost-spike stopper
 Object.assign(TOOL_WORDS, {

@@ -1,7 +1,8 @@
 // The inside view of one thing, in the centred pop-up (a sheet on a phone): how it connects, drawn left to right;
 // what needs fixing, with the fix one click away; what it's linked to.
 import { useState, type ReactNode } from 'react';
-import { AlertTriangle, ArrowUpRight, ChevronRight, Eye, EyeOff, Globe, Link2, Plus, Rocket, Sparkles } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, ChevronRight, Eye, EyeOff, Globe, Inbox, Link2, Plus, Rocket, Sparkles } from 'lucide-react';
+import { navigate } from '../../lib/router';
 import { A, act, Badge, Button, Dot, Modal, cx } from '../../ui';
 import { BrandLogo, providerName } from '../../brand/BrandLogo';
 import { isUnused, issueKind, issueLabel, liveOf, logoOf, pointInput, pointable, targetsOf, type Asset, type Derived, type Edge, type Issue } from './data';
@@ -394,11 +395,12 @@ function Body({ a, onClose }: { a: Asset; onClose: () => void }) {
       <Facts a={a} />
       <Related a={a} />
 
-      {ctx.human && (menu.length > 0 || pointable(a) || managed || isRoot) && (
+      {ctx.human && (menu.length > 0 || pointable(a) || a.kind === 'domain') && (
         <section>
           <h3 className="mb-2 text-[13px] font-semibold">Actions</h3>
           <div className="flex flex-wrap gap-2">
             {pointable(a) && !adding && <Button size="sm" variant="primary" icon={<Plus size={15} />} onClick={() => setAdding(true)}>Add a domain</Button>}
+            {a.kind === 'domain' && !isRoot && <Button size="sm" variant="soft" icon={<Inbox size={15} />} onClick={() => navigate(`/email/${a.name}`)}>Email</Button>}
             {isRoot && g && <Button size="sm" variant="soft" icon={<Rocket size={15} />} onClick={() => { onClose(); openDomainLaunch({ domain: g.root, own: true }); }}>Set it up</Button>}
             {menu.map((m) => <Button key={m.label} size="sm" variant={m.danger ? 'secondary' : 'soft'} className={m.danger ? 'text-bad' : undefined} icon={m.icon} onClick={m.run}>{m.label}</Button>)}
             {managed && <Button size="sm" variant="soft" onClick={() => void act('domain.check', { domainId: managed.id }).then((r) => r && ctx.reload())}>Check it now</Button>}

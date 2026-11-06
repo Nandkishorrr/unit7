@@ -876,7 +876,6 @@ test('email.forward says what to do where it can’t: another DNS host, no accou
     assert.match(e.message, /Email Routing Addresses: Edit/);
     assert.equal(all<{ status: string }>(f.app.db, `SELECT status FROM accounts WHERE provider = 'cloudflare'`)[0]!.status, 'verified', 'the key still does everything else');
     f.cf.st.refused = undefined;
-    assert.match(failed(await f.o.h('email.forward', { from: 'hello@mail.example.com', to: 'me@inbox.example' })).message, /on example\.com itself/);
   } finally { f.close(); }
   assert.match(decodeURIComponent(CATALOG.find((p) => p.id === 'cloudflare')!.method.kind === 'key' ? (CATALOG.find((p) => p.id === 'cloudflare')!.method as { keyUrl: string }).keyUrl : ''), /email_routing_rule/, 'a new key can do this');
 });
