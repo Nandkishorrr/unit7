@@ -10,7 +10,8 @@ export async function step<T = any>(ctx: Ctx, tool: string, input: Record<string
   const r = await execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: 'a step of putting a site live', signal: ctx.signal, conversationId: ctx.conversationId, underApproval: ctx.approvalId });
   if (r.status === 'ok') return r.output as T;
   if (r.status === 'approval_required') throw new Unit7Error('approval_required', `${tool} is waiting on the Approvals page. Run this again once it’s approved.`, 409, { approvalId: r.approvalId });
-  throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : `${tool} didn’t run.`, 409);
+  // nested: that run already noted any trouble on its own account, so whoever called it doesn't pin it on one of theirs
+  throw new Unit7Error(r.status === 'error' ? r.error.code : 'denied', r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : `${tool} didn’t run.`, 409, { nested: true });
 }
 
 // a private repo holding this site, new or updated

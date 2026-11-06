@@ -42,7 +42,8 @@ export interface AccountRow { id: string; org_id: string; provider: string; name
 // clicking in Unit7 is never blocked: each click is one deliberate try, and it's how an account gets fixed.
 export function providerTrouble(e: unknown): 'auth' | 'rate' | undefined {
   if (!(e instanceof Error)) return undefined;
-  const { code = '', status = 0 } = e as Partial<Unit7Error>;
+  const { code = '', status = 0, detail } = e as Partial<Unit7Error>;
+  if ((detail as { nested?: boolean } | undefined)?.nested) return undefined; // a step's own run already noted it, on the account it used
   if (['forbidden', 'approval_required', 'no_account', 'account_paused', 'invalid_input', 'not_found'].includes(code)) return undefined; // Unit7's own answers
   if (status === 429 || /\b429\b|too many requests|rate.?limit/i.test(e.message)) return 'rate';
   if (status === 401 || code === 'mcp_unauthorized' || /invalid_grant|\b401\b|unauthori[sz]ed|bad credentials|authentication failed|(token|key|credentials?)\b[^.]{0,24}\b(invalid|not valid|expired|revoked)/i.test(e.message)) return 'auth';

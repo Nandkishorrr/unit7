@@ -65,7 +65,7 @@ const godaddy = (rows: any[]) => ({ method, path, body }: Req) => {
 const HOME = '<html><head><title>Shop</title></head><body><h1>Welcome to the shop</h1><p>Good things for sale here</p><a href="/about">About</a><a href="/style.css">x</a></body></html>';
 const ABOUT = '<html><head><title>About us</title></head><body><p>We make good things by hand</p></body></html>';
 
-interface World { site?: Partial<Record<string, [number, string]>>; dead?: boolean; plan?: string; envs?: any[]; build?: string[]; files?: Record<string, string>; repo?: boolean; rows?: any[]; taken?: boolean }
+interface World { site?: Partial<Record<string, [number, string]>>; dead?: boolean; plan?: string; envs?: any[]; build?: string[]; files?: Record<string, string>; repo?: boolean; rows?: any[]; taken?: boolean; refuse?: boolean; dnsAt?: string }
 async function world(o: World = {}) {
   const app = testApp(), org = await testOrg(app), root = mkdtempSync(join(tmpdir(), 'remote-'));
   repoAt(root, 'shop', o.files ?? SHOP);
@@ -78,6 +78,7 @@ async function world(o: World = {}) {
     if (method !== 'GET') st.oldHostWrites.push(`${method} ${p}`);
     if (p === '/v2/user') return { user: { username: 'ada', defaultTeamId: null, billing: { plan: o.plan ?? 'hobby' } } };
     if (p === '/v2/teams') return { teams: [] };
+    if (p === '/v9/projects/prj_old/domains') return { domains: [{ name: ZONE, redirect: null }, { name: `www.${ZONE}`, redirect: ZONE }] };
     if (p === '/v10/projects/prj_old/env') return { envs: o.envs ?? [
       { key: 'PUBLIC_NAME', type: 'plain', value: 'demo', target: ['production', 'preview'] },
       { key: 'API_KEY', type: 'encrypted', value: SECRET, decrypted: true, target: ['production'] },
@@ -92,6 +93,7 @@ async function world(o: World = {}) {
     const p = path.split('?')[0]!, id = 'srv-1';
     if (p === '/services' && method === 'GET') return st.made.map((service) => ({ service, cursor: 'c' }));
     if (p === '/owners') return [{ owner: { id: 'own-1', name: 'Ada' }, cursor: 'c' }];
+    if (p === '/services' && method === 'POST' && o.refuse) return [401, { message: 'unauthorized' }];
     if (p === '/services' && method === 'POST') { const b = JSON.parse(body); st.made.push({ ...b, id, serviceDetails: { url: newSite.base } }); return [201, { service: { id }, deployId: 'dep-1' }]; }
     if (p === `/services/${id}`) return { id, name: 'shop', type: 'static_site', ownerId: 'own-1', serviceDetails: { url: newSite.base } };
     if (p === `/services/${id}/deploys/dep-1`) return { id: 'dep-1', status: st.deploys.length > 1 ? st.deploys.shift() : st.deploys[0] };
@@ -103,7 +105,7 @@ async function world(o: World = {}) {
     return undefined;
   });
   const dns = await fakeApi(godaddy(rows) as never);
-  const info = async () => ({ zone: ZONE, host: 'godaddy', nameservers: [] });
+  const info = async () => ({ zone: ZONE, host: o.dnsAt ?? 'godaddy', nameservers: [] });
   dnsLook.host = info; dnsDeps.host = info; domainDns.host = info; dnsDeps.answers = async () => [];
   domainDns.look = () => ({ soa: async () => ({}), ns: async () => [], a: async () => ['192.0.2.20'], cname: async () => [] });
   domainDns.https = async () => true;
@@ -137,11 +139,12 @@ test('a plan says what a Vercel site is, where it can go and all that comes alon
     assert.match(out.comes.cron[0].says, /only on Vercel/);
     assert.match(out.comes.cron[1].says, /GitHub runs this/);
     assert.equal(out.comes.redirects[0].where, 'vercel.json');
-    assert.match(out.comes.redirects.at(-1).says, /refreshing a page gives a 404/);
+    assert.match(out.comes.redirects.find((r: any) => r.where === 'The app’s own pages').says, /refreshing a page gives a 404/);
+    assert.deepEqual(out.comes.redirects.find((r: any) => r.where === `www.${ZONE}`).says, `It sends visitors to ${ZONE}. Vercel does that, so after the switch domain.canonical or domain.redirect sets it up again.`);
     assert.equal(out.comes.webhooks[0].from, 'Stripe');
     assert.match(out.staysBehind.join(' '), /Vercel Analytics/);
     assert.match(out.staysBehind.join(' '), /VERCEL_URL/);
-    assert.match(out.warnings[0], /Hobby plan is for personal, non-commercial use only.*stripe|\(.*stripe.*\)/i, 'a Hobby site that takes payments is warned about');
+    assert.match(out.warnings[0], /^This looks commercial \(it takes payments \(stripe\)\).*Hobby plan is for personal, non-commercial use only/, 'a Hobby site that takes payments is warned about');
     assert.deepEqual(out.costsNow.lines, ['Vercel old: 20 USD so far this month']);
     const render = out.whereTo.find((p: any) => p.to === 'render');
     assert.equal(render.ok, true);
@@ -149,6 +152,28 @@ test('a plan says what a Vercel site is, where it can go and all that comes alon
     assert.deepEqual(w.st.oldHostWrites, [], 'it only read');
     assert.equal(w.dns.calls.filter((c) => c.method !== 'GET').length, 0);
     assert.equal(all(w.app.db, 'SELECT id FROM changes WHERE org_id = ?', w.org.orgId).length, 0);
+  } finally { w.close(); }
+});
+
+test('a plan warns about what a move can trip over: another project on the same host, a commercial site on Hobby there, and DNS living on the host being left', async () => {
+  const w = await world({ dnsAt: 'vercel' });
+  try {
+    const other = account(w.app, w.org.orgId, 'vercel', 'tok-demo-other', 'Vercel other');
+    const out = ok<any>(await w.org.h('move.plan', { assetId: w.assetId }));
+    const place = out.whereTo.find((p: any) => p.to === 'vercel' && p.accountId === other);
+    assert.match(place.costs, /Pro is \$20 a month/);
+    assert.match(place.warnings[0], /A domain can only be on one project here/);
+    assert.match(place.warnings[1], /Hobby plan is for personal/);
+    assert.match(out.comes.domains[0].warning, /Its DNS is on Vercel, the host being left.*domain\.move_dns/);
+  } finally { w.close(); }
+});
+
+test('a repo’s files are data: a broken vercel.json or package.json doesn’t stop a plan', async () => {
+  const w = await world({ files: { 'index.html': '<h1>hi</h1>', 'vercel.json': '{ // comments\n "crons": [] }', 'package.json': 'not json' } });
+  try {
+    const out = ok<any>(await w.org.h('move.plan', { assetId: w.assetId }));
+    assert.deepEqual(out.comes.cron, []);
+    assert.deepEqual(out.comes.redirects.filter((r: any) => r.where === 'vercel.json'), []);
   } finally { w.close(); }
 });
 
@@ -350,6 +375,17 @@ test('a failed build can be tried again over what it made, and a name that was a
   } finally { t.close(); }
 });
 
+test('a new host refusing its key doesn’t get the old host’s account marked as failing', async () => {
+  const w = await world({ refuse: true });
+  try {
+    const e = failed(await w.org.h('move.run', { assetId: w.assetId, to: 'render', env: GIVEN }));
+    assert.match(e.message, /unauthorized/);
+    const status = (acc: string) => get<{ status: string }>(w.app.db, 'SELECT status FROM accounts WHERE id = ?', acc)!.status;
+    assert.equal(status(w.acc), 'verified', 'Vercel did nothing wrong');
+    assert.equal(status(w.renderAcc), 'failing', 'the account that refused is the one marked');
+  } finally { w.close(); }
+});
+
 test('a host that can cost money: an AI can’t start it, and a person’s build waits on Approvals once, then the move goes on from there', async () => {
   const w = await world(), render = hostOf('render')!;
   render.costs = 'Render can cost money in this test.';
@@ -417,6 +453,9 @@ test('an AI calling move.switch only asks: nothing moves, and a person’s own c
     assert.equal(writes(w), before, 'no DNS changed');
     assert.deepEqual(w.st.domains, []);
     await assert.rejects(decideApproval(w.app, w.org.orgId, { ...w.org.human, kind: 'token' }, ai.approvalId, true), /Only a person can approve/);
+    run(w.app.db, 'UPDATE orgs SET rules = ? WHERE id = ?', JSON.stringify({ site_switch: 'allowed' }), w.org.orgId);
+    const ruled = failed(await w.org.h('move.switch', { moveId }));
+    assert.equal(ruled.code, 'approval_needed', 'a rule can’t turn the approval off');
     assert.equal(writes(w), before);
     assert.equal(moveRow(w, moveId).m.stage, 'built');
   } finally { w.close(); }
