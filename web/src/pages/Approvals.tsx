@@ -57,6 +57,7 @@ const UNDO: Record<string, string> = {
   'part.import': 'Unit7 takes a fresh backup first: Bring it back on the server’s Health tab goes back to it.',
   'part.restore_files': 'What was there moves aside. Undo in Activity swaps it back.',
   'part.upgrade_switch': 'The old files stay on the server. Undo in Activity goes back, losing what changed since.',
+  'planetscale.create_database': 'To undo, delete it on Connections, under PlanetScale. Unit7 can’t bring back what’s in it.',
   'server.reboot': 'Nothing to undo: the server comes back by itself in a minute or two.',
   'file.remove': 'To undo, use Undo in Activity. It stays in the trash for 7 days.',
   'file.write': 'To undo, use Undo in Activity. The old copy is kept.',

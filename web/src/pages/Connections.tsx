@@ -21,7 +21,7 @@ import type { Me } from '../App';
 import { LifecycleMenu, useArchived } from './lifecycle';
 import { logoOf, type Asset, type MapData } from './map/data';
 import { GuideCard } from './guide/Guide';
-import { BudgetAlertButton, ExportSteps, SpendByDay, SpikeBanner } from './clouds';
+import { BudgetAlertButton, ExportSteps, NewDatabaseDialog, SpendByDay, SpikeBanner } from './clouds';
 import { Choices } from './choices';
 import { pick } from '../lib/choices';
 
@@ -375,6 +375,7 @@ function ProviderPop({ c, view, human, reload, setView, onClose }: { c?: Conn; v
 
 function Accounts({ c, human, reload, onAdd, onClose }: { c: Conn; human: boolean; reload: () => void; onAdd: () => void; onClose: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [adding, setAdding] = useState<string | null>(null); // the account a new paid database goes on
   const accounts = live(c);
   const things = useAccountThings();
   const verify = async (a: Account) => {
@@ -418,6 +419,7 @@ function Accounts({ c, human, reload, onAdd, onClose }: { c: Conn; human: boolea
                   <button type="button" className={DANGER} disabled={!!busy} onClick={() => remove(a)}>{busy === `d${a.id}` ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}Remove</button>
                 </span>
               )}
+              {human && !bad && c.id === 'planetscale' && <span className="basis-full sm:pl-12"><Button size="sm" variant="secondary" icon={<Plus size={13} />} onClick={() => setAdding(a.id)}>New database</Button></span>}
               <AccountThings a={a} human={human} things={things} />
             </li>
           );
@@ -426,6 +428,7 @@ function Accounts({ c, human, reload, onAdd, onClose }: { c: Conn; human: boolea
       {c.method === 'local' && <p className="text-[13px] text-muted">Found on this Mac. Its models show up in the ask box on Home.</p>}
       {BILLED.has(c.id) && accounts.filter((a) => a.status !== 'failing').map((a) => <CloudBill key={a.id} a={a} many={accounts.length > 1} provider={c.id} />)}
       {human && c.method !== 'local' && c.method !== 'ntfy' && <Button variant="soft" icon={<Plus size={15} />} onClick={onAdd}>Add another account</Button>}
+      {adding && <NewDatabaseDialog accountId={adding} onClose={() => setAdding(null)} onDone={things.reload} />}
     </div>
   );
 }

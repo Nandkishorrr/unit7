@@ -1,12 +1,13 @@
 // The server page's Data tab: every database the X-ray found, whoever runs it, and what people do with one: see its tables, ask it
 // something, load a file into it, take a copy away. Everything goes through part.* (tools/data.ts), so the gate decides as it does anywhere.
 import { useEffect, useState, type FormEvent } from 'react';
-import { Database, Download, Play, Upload } from 'lucide-react';
+import { CircleArrowUp, Database, Download, Play, Upload } from 'lucide-react';
 import { BrandLogo } from '../../brand/BrandLogo';
-import { Button, Card, CardHeader, Empty, Field, Input, Select, Skeleton, Textarea, cx, toast } from '../../ui';
-import { upload } from '../../lib/api';
+import { A, Button, Card, CardHeader, Empty, Field, Input, Select, Skeleton, Textarea, cx, nextAction, timeAgo, toast } from '../../ui';
+import { onLive, upload } from '../../lib/api';
+import { navigate } from '../../lib/router';
 import { tidy } from '../../lib/words';
-import { partLogo, partWhat, size, type XPart } from './shape';
+import { partLogo, partWhat, size, upgradeOffer, type UpgradePlan, type XPart } from './shape';
 import { CardsSkeleton, call, type ServerXray } from './Xray';
 
 const ENGINES = new Set(['postgres', 'mysql', 'mariadb', 'mongo', 'redis']);
@@ -16,6 +17,8 @@ interface Result { columns: string[]; rows: string[][]; more: boolean; masked?: 
 type R = Awaited<ReturnType<typeof call>>;
 const said = (r: R) => tidy(r.status === 'error' ? r.error.message : r.status === 'denied' ? r.why : '');
 const waiting = () => toast('warn', 'Waiting for your OK', 'Approve it on the Approvals page and Unit7 does it.');
+// the same check part.upgrade_plan makes, so a mistyped image never loses the card to an error
+const IMAGE = /^[a-z0-9][a-z0-9._/-]{0,120}:[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/;
 const tableOf = (t: Row) => (t.schema && t.schema !== 'public' ? `${t.schema}.${t.name}` : t.name);
 // a statement to start from, in the way each engine asks
 const starter = (engine: string, t: Row) => (engine === 'mongo' ? `db.${t.name}.find().limit(50)` : engine === 'redis' ? 'DBSIZE' : engine === 'postgres' ? `SELECT * FROM "${t.schema}"."${t.name}" LIMIT 50` : `SELECT * FROM \`${t.schema}\`.\`${t.name}\` LIMIT 50`);
@@ -88,6 +91,7 @@ function Picked({ part, serverId }: { part: XPart; serverId: string }) {
           <ExportCard input={{ ...base, ...database }} table={table || null} engine={engine} />
         </div>
       </div>
+      <div className="min-w-0 lg:col-span-12"><UpgradeCard part={part} serverId={serverId} /></div>
     </div>
   );
 }
@@ -122,6 +126,94 @@ function QueryBox({ part, input, sql, onSql }: { part: XPart; input: Record<stri
       </form>
       {err && <p role="alert" className="mt-3 rounded-[16px] bg-bad/8 px-4 py-3 text-[13px] text-ink">{err}</p>}
       {res && <Answer r={res} />}
+    </Card>
+  );
+}
+
+// A major version: part.upgrade_plan says what can work here, a test runs next to the live one, and the switch is a person's, typed out.
+// Closing the tab stops a run: the tool goes with its request, so the page says to keep it open.
+function UpgradeCard({ part, serverId }: { part: XPart; serverId: string }) {
+  const base = { serverId, part: part.id };
+  const [image, setImage] = useState('');
+  const [other, setOther] = useState('');
+  const [plan, setPlan] = useState<UpgradePlan | null>(null);
+  const [why, setWhy] = useState('');
+  const [busy, setBusy] = useState<'test' | 'switch' | null>(null);
+  const [line, setLine] = useState('');
+  const [err, setErr] = useState('');
+  const [typed, setTyped] = useState('');
+  const load = async () => {
+    const r = await call('part.upgrade_plan', { ...base, ...(image && { image }) });
+    if (r.status === 'ok') { setPlan(r.output as UpgradePlan); setWhy(''); } else { setPlan(null); setWhy(said(r)); }
+  };
+  useEffect(() => { void load(); }, [image]);
+  useEffect(() => onLive((e) => { if (e.type === 'tool.progress' && e.data?.tool === 'part.upgrade_run') setLine(e.message); }), []);
+  const test = async () => {
+    setBusy('test'); setErr(''); setLine('');
+    const r = await call('part.upgrade_run', { ...base, ...(image && { image }) });
+    setBusy(null);
+    if (r.status === 'approval_required') return waiting();
+    if (r.status !== 'ok') return setErr(said(r));
+    toast('ok', 'The test passed', `The live ${part.name} wasn’t touched.`);
+    await load();
+  };
+  const move = async () => {
+    setBusy('switch'); setErr('');
+    const r = await call('part.upgrade_switch', { ...base, confirmName: typed.trim() });
+    setBusy(null);
+    if (r.status === 'approval_required') { toast('info', 'One last yes', 'Confirm it on Approvals, then Unit7 moves it.'); return navigate('/approvals'); }
+    if (r.status !== 'ok') return setErr(said(r));
+    setTyped('');
+    toast('ok', `${part.name} moved to its new version`, 'Your apps reconnect by themselves.', { action: nextAction(r.output) });
+    await load();
+  };
+  const offer = plan && upgradeOffer(plan);
+  return (
+    <Card className="min-w-0 p-5 md:p-6">
+      <CardHeader icon={<CircleArrowUp size={19} />} title="Move to a new version" sub={plan ? `Postgres ${plan.major} now. Nothing changes until you say so.` : 'A newer major version, tested first'} />
+      {why ? <p className="mt-3 text-[13px] text-ink-2">{why}</p> : !plan || !offer ? <Skeleton className="mt-4 h-24 rounded-[18px]" /> : (
+        <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <div className="min-w-0 space-y-3">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px]">
+              <dt className="text-muted">Now</dt><dd className="break-all font-mono text-[12.5px]">{plan.from}</dd>
+              {plan.to && <><dt className="text-muted">New version</dt><dd className="break-all font-mono text-[12.5px]">{plan.to}</dd></>}
+              <dt className="text-muted">Size</dt><dd>{size(plan.size)}</dd>
+              {plan.extensions.length > 0 && <><dt className="text-muted">Extensions</dt><dd className="break-words">{plan.extensions.join(', ')}</dd></>}
+            </dl>
+            {plan.problem && <p className="rounded-[16px] bg-warn/10 px-4 py-3 text-[13px] text-ink">{plan.problem}</p>}
+            {plan.watch && <p className="text-[12.5px] text-muted">{plan.watch}</p>}
+            <ol className="list-decimal space-y-1 pl-4 text-[12.5px] text-ink-2">{plan.steps.map((s) => <li key={s}>{s}</li>)}</ol>
+            <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); setImage(other.trim()); }}>
+              <div className="min-w-0 flex-1"><Field label="Another version"><Input className="font-mono text-[12.5px]" value={other} placeholder={plan.to ?? 'postgres:17-alpine'} autoComplete="off" spellCheck={false} onChange={(e) => setOther(e.target.value)} /></Field></div>
+              <Button type="submit" variant="secondary" disabled={!IMAGE.test(other.trim())}>Check it</Button>
+            </form>
+          </div>
+          <div className="min-w-0 space-y-3">
+            {plan.tested && (
+              <div className="rounded-[16px] bg-ok/8 px-4 py-3 text-[13px]">
+                <p className="font-medium text-ink">The test passed, {timeAgo(plan.tested.at)}</p>
+                <p className="mt-0.5 break-words text-ink-2">{plan.tested.found} Try your app against it for as long as you like. The live one wasn’t touched.</p>
+              </div>
+            )}
+            {plan.switchNote && <p className="rounded-[16px] bg-raised px-4 py-3 text-[13px] text-ink-2">{plan.switchNote}</p>}
+            {err && <p role="alert" className="break-words rounded-[16px] bg-bad/8 px-4 py-3 text-[13px] text-ink">{err}</p>}
+            {offer.test && <Button variant={plan.tested ? 'secondary' : 'primary'} icon={<Play size={14} />} loading={busy === 'test'} disabled={!!busy} onClick={test}>{plan.tested ? 'Test it again' : 'Test on the new version'}</Button>}
+            {busy === 'test' && <p role="status" className="text-[12.5px] text-muted">{line || 'Starting…'} This takes a while on a big database, and the live one keeps running. Keep this tab open until it’s done.</p>}
+            {offer.move && (
+              <div className="space-y-3 rounded-[18px] border border-line-strong p-4">
+                <p className="break-all text-[13.5px] font-medium">Switch to {plan.tested!.image}</p>
+                <ul className="list-disc space-y-1 pl-4 text-[12.5px] text-ink-2">
+                  <li>Apps can’t reach {part.name} during the switch. It holds {size(plan.size)}, so pick a quiet moment.</li>
+                  <li>One last backup comes first, and the old files stay on the server. If the data doesn’t match, it goes back by itself.</li>
+                  <li>Afterwards, Undo in <A href="/activity" className="underline">Activity</A> goes back to {plan.from}, and you lose what changed since the switch.</li>
+                </ul>
+                <label className="block"><span className="mb-1.5 block text-[13px] font-medium">Type <b className="font-semibold">{part.name}</b> to switch</span><Input value={typed} autoComplete="off" onChange={(e) => setTyped(e.target.value)} /></label>
+                <div className="flex justify-end"><Button variant="danger" icon={<CircleArrowUp size={14} />} loading={busy === 'switch'} disabled={!!busy || typed.trim() !== part.name} onClick={move}>Switch to the new version</Button></div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

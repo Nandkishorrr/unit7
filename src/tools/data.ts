@@ -634,6 +634,8 @@ async function upgradeFacts(ctx: Ctx, t: Target, image?: string) {
   const toMajor = to ? majorOf(to) : NaN;
   return { ...f, major, to, ...(Number.isFinite(toMajor) && toMajor <= major && { wrong: `${to} isn’t a newer major version than the ${major} running now.` }) };
 }
+// the newest test that passed and hasn't been used up or undone: what the switch moves to, and what the plan shows a person
+const lastTest = (ctx: Ctx, t: Target) => get<{ note: string; summary: string; created_at: string }>(ctx.db, `SELECT note, summary, created_at FROM changes WHERE org_id = ? AND server_id = ? AND part = ? AND verb = 'upgrade_ready' AND status = 'done' ORDER BY created_at DESC LIMIT 1`, ctx.orgId, t.s.id, t.p.id);
 // where its data lives on the server, and that the new image keeps it in the same place: Postgres 18's image moved it
 async function dataDir(ctx: Ctx, t: Target, image: string) {
   const out = await ssh(ctx.app).check(t.s, asRoot(t.s) + script(`docker inspect -f '{{json .Mounts}}' "$1"; docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" | grep '^PGDATA=' || true; echo @@; docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$2" | grep '^PGDATA=' || true`, t.c, image), { what: 'Reading where the data lives' });
@@ -647,13 +649,14 @@ async function dataDir(ctx: Ctx, t: Target, image: string) {
 
 defineTool({
   name: 'part.upgrade_plan', title: 'Plan a database’s major upgrade', risk: 'read', action: 'read', timeoutMs: 60_000,
-  description: 'Before a major version upgrade of a Postgres database server.xray found: the version now, the image it would go to (image, or the next major of the same image), how big it is, its extensions, whether Unit7 can switch it (Coolify databases and Compose services; for Supabase and plain containers it tests side by side and a person moves it), and each step. Changes nothing.',
+  description: 'Before a major version upgrade of a Postgres database server.xray found: the version now, the image it would go to (image, or the next major of the same image), how big it is, its extensions, whether Unit7 can switch it (Coolify databases and Compose services; for Supabase and plain containers it tests side by side and a person moves it), the test that passed (tested), if any, and each step: part.upgrade_run tests, part.upgrade_switch switches. Changes nothing.',
   input: z.object({ serverId: fid('srv'), part: PART, image: IMAGE.optional() }),
   async run(ctx, i) {
-    const t = await target(ctx, i.serverId, i.part), f = await upgradeFacts(ctx, t, i.image), route = switchRoute(t);
+    const t = await target(ctx, i.serverId, i.part), f = await upgradeFacts(ctx, t, i.image), route = switchRoute(t), tested = lastTest(ctx, t);
     return { part: t.p.name, from: t.image, major: f.major, to: f.to ?? null, size: f.bytes, extensions: f.extensions, canSwitch: !!route.via, ...(route.why && { switchNote: route.why }), ...(f.wrong && { problem: f.wrong }), ...(!f.to && { problem: 'Unit7 can’t tell the next version from this image’s tag. Say which image.' }),
+      ...(tested && { tested: { image: tested.note, at: tested.created_at, found: tested.summary } }),
       ...(f.extensions.length > 0 && { watch: `Check the new image has these: ${f.extensions.join(', ')}.` }),
-      steps: ['part.upgrade_run takes a fresh backup and restores it into the new version, next to the live one, with no public port. Live keeps running.', 'It compares every table’s rows with the backup, and says what didn’t come back.', 'Try your app against the side copy for as long as you like.', ...(route.via ? ['part.upgrade_switch, a person’s call: apps are shut out, one last backup is taken, the old files move aside, the new version starts and takes that backup, and it’s proven again. If that fails it goes back by itself; afterwards Undo in Activity goes back, losing what changed since.'] : [])] };
+      steps: ['A test takes a fresh backup and restores it into the new version, next to the live one, with no public port. Live keeps running.', 'It compares every table’s rows with the backup, and says what didn’t come back.', 'Try your app against the side copy for as long as you like.', ...(route.via ? ['The switch, a person’s call: apps are shut out, one last backup is taken, the old files move aside, the new version starts and takes that backup, and it’s proven again. If that fails it goes back by itself; afterwards Undo in Activity goes back, losing what changed since.'] : [])] };
   },
 });
 
@@ -677,6 +680,7 @@ defineTool({
       run(ctx.db, `UPDATE changes SET status = 'undone', note = ? WHERE id = ?`, proof.note.slice(0, 300), copy.changeId);
       throw new Unit7Error('upgrade_failed', `${f.to} didn’t take ${t.p.name}’s data: ${proof.note}. The live one wasn’t touched, and the side copy is gone.`, 409);
     }
+    run(ctx.db, 'UPDATE changes SET summary = ? WHERE id = ?', `Tested ${t.p.name} on ${f.to}: ${proof.note}. The side copy is ${copy.name}.`, copy.changeId);
     ctx.emit('change.made', `${t.p.name} was tested on ${f.to}: ${proof.note}. The live one is untouched. It can be undone.`, { severity: 'success', resource: t.s.id, data: { changeId: copy.changeId, part: t.p.id, undo: 'change.undo' } });
     const route = switchRoute(t);
     return { part: t.p.name, image: f.to, copy: copy.name, proof: proof.note, ...(copy.network && { network: copy.network }), ...(copy.passwordRef && { passwordRef: copy.passwordRef }), changeId: copy.changeId, safetyBackup: safety.backupId,
@@ -726,8 +730,9 @@ async function switchBack(ctx: Ctx, s: ServerRow, p: Part, u: Switched, imageMov
 }
 
 defineTool({
-  name: 'part.upgrade_switch', title: 'Move a database to its new major version', risk: 'destructive', action: 'restore', peopleOnly: true, timeoutMs: 125 * 60_000,
-  description: 'People only, typing the name as confirmName. After part.upgrade_run passed: moves a Coolify or Compose Postgres to the tested version. Apps are shut out and one last backup is taken, then the old files move aside next to the volume (nothing is deleted), the new version starts and takes that backup, and every table is compared with it. Apps are down for that long. If it doesn’t match it goes back by itself. Undo in Activity goes back later, losing what changed since.',
+  name: 'part.upgrade_switch', title: 'Move a database to its new major version', risk: 'destructive', action: 'restore', timeoutMs: 125 * 60_000,
+  peopleOnly: () => 'Only a person can move a database to a new version, even with approval: the server’s Data tab has the button.',
+  description: 'People only, on the server’s Data tab, typing the name as confirmName. After part.upgrade_run passed: moves a Coolify or Compose Postgres to the tested version. Apps are shut out and one last backup is taken, then the old files move aside next to the volume (nothing is deleted), the new version starts and takes that backup, and every table is compared with it. Apps are down for that long. If it doesn’t match it goes back by itself. Undo in Activity goes back later, losing what changed since.',
   input: z.object({ serverId: fid('srv'), part: PART, confirmName: z.string().max(300) }),
   assess: () => ({ tier: 3, impact: 'Apps can’t reach the database while it moves. The old files stay on the server, and Undo goes back to them.' }),
   async run(ctx, i) {
@@ -736,7 +741,7 @@ defineTool({
     typed(p, i.confirmName);
     const route = switchRoute(t);
     if (!route.via) throw new Unit7Error('not_here', route.why, 409);
-    const tested = get<{ note: string }>(ctx.db, `SELECT note FROM changes WHERE org_id = ? AND server_id = ? AND part = ? AND verb = 'upgrade_ready' AND status = 'done' ORDER BY created_at DESC LIMIT 1`, ctx.orgId, s.id, p.id);
+    const tested = lastTest(ctx, t);
     if (!tested) throw new Unit7Error('not_tested', `${p.name} hasn’t passed part.upgrade_run yet. Test it first.`, 409);
     const to = tested.note, src = await dataDir(ctx, t, to), at = stamp(), r = runner(ctx, s, p, route.via);
     await r.check(t.image); // everything that can refuse does it here, while it's all still running

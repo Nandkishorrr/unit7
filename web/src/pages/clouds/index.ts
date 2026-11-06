@@ -2,5 +2,6 @@
 // cost-spike banner and its stop plan), app buttons (redeploy, restart, roll back), removing a DNS record, chat cards.
 export { BudgetAlertButton, BudgetAlertModal, ExportSteps, SpendByDay, SpendSpark, SpikeBanner, StopPlanModal, suggestAmount, money, type Spend, type StopStep } from './money';
 export { CloudAppActions } from './apps';
+export { NewDatabaseDialog } from './add';
 export { RemoveRecordDialog, type DnsRecordRef } from './dns';
 export { CloudChatCard } from './cards';

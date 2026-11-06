@@ -77,16 +77,18 @@ const ENGINE = z.enum(['postgresql', 'mysql']).default('postgresql');
 
 defineTool({
   name: 'planetscale.sizes', title: 'PlanetScale sizes and rates', risk: 'read', action: 'read', timeoutMs: 60_000,
-  description: 'The sizes a new PlanetScale database can have, with PlanetScale’s own rate for each. Its docs don’t give the rate’s unit, so quote it as it is and point to planetscale.com/pricing. PlanetScale has no free plan, so a person picks one of these for planetscale.create_database.',
+  description: 'The sizes a new PlanetScale database can have, with PlanetScale’s own rate for each. Its docs don’t give the rate’s unit, so quote it as it is and point to planetscale.com/pricing. PlanetScale has no free plan, so a person picks one of these for planetscale.create_database. With several organisations and no org, it lists them (orgs) and no sizes.',
   input: z.object({ accountId, org: ORG, engine: ENGINE }),
   async run(ctx, i) {
-    const acc = accountFor(ctx, 'planetscale', i.accountId), org = await orgOf(ctx, acc, 'planetscale', i.org);
-    return { org, engine: i.engine, sizes: await planetscale.sizes(ctx, acc, org, i.engine), untrusted: UNTRUSTED };
+    const acc = accountFor(ctx, 'planetscale', i.accountId), orgs = (await planetscale.organizations(ctx, acc)).map((o) => o.name);
+    if (!i.org && orgs.length > 1) return { orgs, sizes: [], next: 'Say which organisation (org).', untrusted: UNTRUSTED };
+    const org = await orgOf(ctx, acc, 'planetscale', i.org ?? orgs[0]);
+    return { org, orgs, engine: i.engine, sizes: await planetscale.sizes(ctx, acc, org, i.engine), untrusted: UNTRUSTED };
   },
 });
 
 defineTool({
-  name: 'planetscale.create_database', title: 'Create a PlanetScale database', risk: 'destructive', action: 'provider_purchase', peopleOnly: () => 'PlanetScale has no free plan, so a new database costs money from the start. Only a person can create one, even with approval. planetscale.sizes shows the choices.', timeoutMs: 2 * 60_000,
+  name: 'planetscale.create_database', title: 'Create a PlanetScale database', risk: 'destructive', action: 'provider_purchase', peopleOnly: () => 'PlanetScale has no free plan, so a new database costs money from the start. Only a person can create one, even with approval: Connections, then PlanetScale, then New database. planetscale.sizes shows the choices.', timeoutMs: 2 * 60_000,
   description: `People only: PlanetScale has no free plan, so a new database is billed from the start, and an AI can’t create one, even with approval. A person gives size (from planetscale.sizes) and confirmName (the database’s name). Postgres unless told. planetscale.databases shows when it’s healthy. ${NO_LOGIN}`,
   input: z.object({ accountId, org: ORG, name: NEW_NAME, size: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/, 'a size from planetscale.sizes'), engine: ENGINE, region: REGION.optional().describe('A region slug. The organisation’s default unless told.'), confirmName: CONFIRM }),
   assess: (c, i) => paidAssess(c, i, `Creates the PlanetScale database ${i.name} at size ${i.size}. PlanetScale has no free plan, so it adds to your bill.`),

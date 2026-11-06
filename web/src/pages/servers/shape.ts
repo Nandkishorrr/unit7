@@ -49,6 +49,24 @@ export function money(n: number | null | undefined, currency = 'USD'): string {
   const s = SYMBOL[currency] ?? `${currency} `;
   return `${s}${n % 1 ? n.toFixed(2) : String(n)}`;
 }
+// --- a database's major version (part.upgrade_plan) ---
+export interface UpgradePlan {
+  from: string; major: number; to: string | null; size: number; extensions: string[]; canSwitch: boolean; switchNote?: string; problem?: string; watch?: string;
+  steps: string[]; tested?: { image: string; at: string; found: string };
+}
+// only what the plan says can work: a test needs a version to go to, a switch needs a way to do it and a test that passed
+export const upgradeOffer = (p: UpgradePlan) => ({ test: !!p.to && !p.problem, move: p.canSwitch && !!p.tested });
+
+// --- what a new PlanetScale database can be (planetscale.sizes) ---
+export interface HostedSize { name: string; displayName?: string; cpu?: string; ram?: number; storage?: number | null; rate?: number | null }
+// memory comes in bytes and is sold in binary sizes: 536870912 is its 512 MB
+const sold = (b: number) => (b >= 2 ** 30 ? `${Number((b / 2 ** 30).toFixed(1))} GB` : `${Math.round(b / 2 ** 20)} MB`);
+// cheapest first. A size with no rate isn't offered: a person sees the price before they press
+export const sizeChoices = (sizes: HostedSize[]) => sizes.filter((s) => typeof s.rate === 'number').sort((a, b) => a.rate! - b.rate!).map((s) => ({
+  id: s.name, label: s.displayName ?? s.name, price: `Rate ${s.rate}`,
+  detail: [s.cpu && `${s.cpu} CPU`, s.ram && `${sold(s.ram)} of memory`, s.storage && `${sold(s.storage)} of storage`].filter(Boolean).join(', '),
+}));
+
 // "2 h ago" style, for the stale line
 export function hoursAgo(iso: string, now = Date.now()): string {
   const m = Math.max(0, (now - Date.parse(iso)) / 60_000);

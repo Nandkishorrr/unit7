@@ -278,7 +278,7 @@ export function Dialog({ open, onClose, title, children, wide }: { open: boolean
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      onClose={(e) => { if (e.target === ref.current) onClose(); }}
       onClick={(e) => { if (e.target === ref.current) onClose(); }}
       className={cx('m-auto w-[calc(100%-2rem)] rounded-[28px] border border-line bg-surface p-0 text-ink shadow-float', wide ? 'max-w-2xl' : 'max-w-md')}
     >
@@ -340,8 +340,8 @@ export function Modal({ open, onClose, title, children, size = 'md' }: { open: b
     <dialog
       ref={ref}
       aria-labelledby={titleId}
-      onCancel={(e) => { e.preventDefault(); onClose(); }} // Esc: animate out like any other close
-      onClose={() => { if (open) onClose(); }} // the browser closed it on its own
+      onCancel={(e) => { if (e.target !== ref.current) return; e.preventDefault(); onClose(); }} // Esc: animate out like any other close. React bubbles these, so a dialog inside this one stays its own
+      onClose={(e) => { if (open && e.target === ref.current) onClose(); }} // the browser closed it on its own
       onPointerDown={(e) => { pressed.current = e.target === ref.current; }}
       onClick={(e) => { if (pressed.current && e.target === ref.current) onClose(); pressed.current = false; }}
       className={cx('modal m-auto max-h-[calc(100dvh-3rem)] w-[calc(100%-2rem)] overflow-hidden rounded-[28px] border border-line bg-surface p-0 text-ink shadow-float',

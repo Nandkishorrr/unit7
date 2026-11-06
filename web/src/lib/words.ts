@@ -31,7 +31,7 @@ export const providerName = (id: string) => PROVIDER_NAMES[id] ?? PROVIDER_NAMES
 
 // lowercase ids that are also everyday words (or commands) stay as they are inside sentences
 const PLAIN_WORDS = new Set(['amplify', 'workers', 'domain', 'render', 'node', 'fly', 'webhook', 'forge', 'unit7', 'cursor', 'resend', 'go', 'bun', 'rust', 'remix', 'java', 'ruby', 'rails']);
-const ID_IN_TEXT = new RegExp(`(?<![\\w./@:-])(${Object.keys(PROVIDER_NAMES).filter((id) => /^[a-z0-9]+$/.test(id) && !PLAIN_WORDS.has(id)).join('|')})(?![\\w/-]|\\.\\w)`, 'g');
+const ID_IN_TEXT = new RegExp(`(?<![\\w./@:-])(${Object.keys(PROVIDER_NAMES).filter((id) => /^[a-z0-9]+$/.test(id) && !PLAIN_WORDS.has(id)).join('|')})(?![\\w/-]|[.:]\\w)`, 'g');
 
 // What a tool does, as a person would say it
 export const TOOL_WORDS: Record<string, string> = {
@@ -355,6 +355,7 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
     case 'part.restore_files': return i.into === 'live' ? `${partName(i.part)}’s files go back to that copy. What uses them stops for as long as it takes, and what was there moves aside.` : `${partName(i.part)}’s files are unpacked into a new folder on the server. Nothing that runs is touched.`;
     case 'part.upgrade_run': return `A fresh backup of ${partName(i.part)} goes into the new version, next to the live one. The live one doesn’t change.`;
     case 'part.upgrade_switch': return `Apps can’t reach ${partName(i.part)} while it moves to the tested version. The old files stay on the server.`;
+    case 'planetscale.create_database': return `A new PlanetScale database, ${i.name}, starts at size ${i.size}. PlanetScale has no free plan, so it adds to your bill from the start.`;
   }
   return `${toolWords(tool)}.`;
 }
@@ -489,7 +490,7 @@ Object.assign(NAMED, {
 });
 
 // Databases and cron jobs on a hosted platform (tools/hosted.ts)
-Object.assign(TOOL_WORDS, { 'hosted.plans': 'See what a host can add, and its price', 'render.create_database': 'Create a Postgres on Render', 'render.create_cron': 'Create a cron job on Render', 'railway.create_database': 'Add a database on Railway' });
+Object.assign(TOOL_WORDS, { 'hosted.plans': 'See what a host can add, and its price', 'render.create_database': 'Create a Postgres on Render', 'render.create_cron': 'Create a cron job on Render', 'railway.create_database': 'Add a database on Railway', 'planetscale.sizes': 'See PlanetScale’s sizes and rates', 'planetscale.create_database': 'Create a PlanetScale database' });
 
 // Staging → Production (tools/promote.ts), and the chat's Delete card (tools/ui.ts)
 Object.assign(TOOL_WORDS, { 'deployment.promote': 'Promote to Production', 'ui.delete': 'Ask about deleting it', 'ui.folder': 'Ask for the site to put live', 'live.options': 'See where a site can go', 'live.put': 'Put a site live' });
