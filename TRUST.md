@@ -55,6 +55,7 @@ Unit7 can use an AI you connect: an API key, a local model, or your own signed-i
 - wp-cli output is data. WordPress admin passwords reach only the vault and the person asking, and a failed update’s automatic put-back touches files, never the database.
 - An AI can’t open secret files on a server, even through a link, and can’t change who can sign in. File contents stay out of the audit log.
 - Mail record changes need a person’s yes. The proxy only restarts when asked for, through the gate.
+- A deploy key’s private half goes only to Coolify. Unit7’s own Coolify key can delete, because Coolify needs that to replace things, and approvals still decide.
 
 ## Licence promise
 
