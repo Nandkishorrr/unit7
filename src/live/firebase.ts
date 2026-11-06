@@ -71,7 +71,7 @@ export const firebaseHost: Host = addHost({
       if (isMissing(e)) return {};
       throw e;
     });
-    const lines = (got.entries ?? []).map((e) => [e.timestamp, e.httpRequest?.status, e.httpRequest?.requestMethod, e.httpRequest?.requestUrl].filter(Boolean).join(' ')).reverse();
+    const lines = (got.entries ?? []).map((e) => [e.timestamp, e.httpRequest?.status, e.httpRequest?.requestMethod, e.httpRequest?.requestUrl?.split('?')[0]].filter(Boolean).join(' ')).reverse(); // the query can carry a reset code
     if (!lines.length) throw new Unit7Error('no_logs', `Firebase Hosting builds nothing, so it has no build log. All it has are visitors’ requests, and Google keeps those in Cloud Logging only once you link them: https://console.firebase.google.com/project/${project}/settings/integrations/cloudlogging. New requests show up within 30 minutes.`, 404);
     return lines;
   },

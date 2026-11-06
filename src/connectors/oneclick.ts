@@ -271,7 +271,7 @@ function asApp(secret: string) {
   const now = Math.floor(Date.now() / 1000);
   const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iat: now - 60, exp: now + 540, iss: String(s.app_id) })}`;
   const jwt = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(s.pem).toString('base64url')}`;
-  return (path: string, method = 'GET') => fetch(`${API()}${path}`, { method, headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'user-agent': 'Unit7' }, signal: AbortSignal.timeout(20_000) });
+  return (path: string, method = 'GET', body?: unknown) => fetch(`${API()}${path}`, { method, ...(body !== undefined && { body: JSON.stringify(body) }), headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'user-agent': 'Unit7', ...(body !== undefined && { 'content-type': 'application/json' }) }, signal: AbortSignal.timeout(20_000) });
 }
 
 // A one-hour install token for a GitHub App account (cached until five minutes before it expires). Kept with where it came
@@ -295,6 +295,17 @@ export async function githubAppToken(app: App, orgId: string, account: { id: str
   const j = await r.json().catch(() => ({})) as { token?: string; expires_at?: string; message?: string };
   if (!r.ok || !j.token) throw new Unit7Error('github_token', `GitHub refused an install token: ${j.message ?? r.status}`, 502);
   ghTokens.set(account.id, { token: j.token, until: Date.parse(j.expires_at ?? '') - 5 * 60_000 || Date.now() + 50 * 60_000, app, orgId, accountId: account.id, inst });
+  return j.token;
+}
+
+// For a container that runs package tools on a repo's own files, which can run code: this one repo, its files only, an hour at most.
+// A pasted or CLI token can't be narrowed, so that stays what it was.
+export async function githubRepoToken(app: App, orgId: string, account: { id: string; meta: string }, secret: string, repo: string): Promise<string> {
+  await githubAppToken(app, orgId, account, secret);
+  const inst = ghTokens.get(account.id)!.inst;
+  const r = await asApp(secret)(`/app/installations/${inst}/access_tokens`, 'POST', { repositories: [repo], permissions: { contents: 'write', metadata: 'read' } });
+  const j = await r.json().catch(() => ({})) as { token?: string; message?: string };
+  if (!r.ok || !j.token) throw new Unit7Error('github_token', `GitHub refused a token for ${repo}: ${j.message ?? r.status}`, 502);
   return j.token;
 }
 

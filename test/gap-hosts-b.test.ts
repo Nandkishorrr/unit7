@@ -854,3 +854,16 @@ test('an empty repo says so, instead of a git error', async () => {
     refused(await w.org.a('live.options', { repo: 'demo/shop' }), /no files to put live/);
   } finally { w.close(); }
 });
+
+test('a workflow runs with a repo’s secrets, so an AI’s push of one into a repo that exists waits for a person', async () => {
+  const w = await world({}), asks = /carries a GitHub workflow/;
+  try {
+    const uploadId = await w.up({ ...PLAIN, '.github/workflows/x.yml': 'on: push' });
+    const ai = await w.org.a('github.push', { uploadId, repo: 'demo/shop', branch: 'tmp' }) as any;
+    assert.equal(ai.status, 'approval_required', JSON.stringify(ai));
+    assert.match(ai.why, asks);
+    assert.equal((await w.org.a('github.push', { uploadId: await w.up(PLAIN), repo: 'demo/shop', branch: 'tmp' })).status, 'ok', 'plain files go');
+    const person = await w.org.h('github.push', { uploadId, repo: 'demo/shop', branch: 'tmp2' });
+    assert.equal(person.status, 'ok', JSON.stringify(person));
+  } finally { w.close(); }
+});

@@ -815,3 +815,28 @@ test('a compose file is a system file wherever it sits', async () => {
   assert.equal(action({ path: '/opt/shop/compose.prod.yaml' }), 'system_file_write');
   assert.equal(action({ path: '/opt/shop/index.html' }), 'file_write');
 });
+
+test('a function anywhere in FROM hides everything, with brackets, in brackets or with none', async () => {
+  const all = (sql: string, d: 'lite' | 'my') => textMask(statement(sql, d).toks, ['value']).all;
+  for (const sql of ['select value from users, (json_each(json_quote(password)))', 'select value from json_each, users where json_each.json = json_quote(password)', 'select value from users join json_tree on json_tree.json = json_quote(password)', 'select name from pragma_table_info']) assert.equal(all(sql, 'lite'), true, sql);
+  assert.equal(all("select v from users, (json_table(password, '$' columns (v text path '$')) t)", 'my'), true);
+  // plain reads stay plain
+  assert.equal(textMask(statement('select id from users join teams on (users.team = teams.id) where id in (1, 2)', 'my').toks, ['id']).all, false);
+});
+
+test('Unit7’s GitHub keys never go into an app, whoever asks', async () => {
+  const { INTERNAL_REF } = await import('../src/tools/runtime.ts');
+  for (const ref of ['credential://github/demo/token', 'credential://github/demo/user']) assert.ok(INTERNAL_REF.test(ref), ref);
+  assert.equal(INTERNAL_REF.test('credential://vercel/demo/token'), false);
+  const { app, o } = await world();
+  const env = ok<any>(await o.h('project.create', { name: 'Biz', environments: ['production'] })).environments[0].id;
+  const serviceId = ok<any>(await o.h('service.create', { environmentId: env, name: 'api', source: { type: 'git', repo: 'demo/api' } })).serviceId;
+  assert.equal(app.db !== undefined, true);
+  assert.match((await o.h('env.set', { serviceId, key: 'NOTES', value: 'credential://github/demo/user' }) as any).error.message, /one of Unit7's own keys/);
+});
+
+test('a person sees which stored key a Worker would get, and a visitor’s address loses its query', async () => {
+  const { getTool } = await import('../src/tools/runtime.ts');
+  const view = getTool('cloudflare.worker_deploy')!.view!;
+  assert.equal(view('secrets', { secrets: { ANALYTICS_ID: 'credential://demo/stored/stripe-live', OWN: 'typed-value' } } as never, {} as never), 'ANALYTICS_ID from credential://demo/stored/stripe-live, OWN [value hidden]');
+});

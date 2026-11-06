@@ -748,3 +748,14 @@ test('hosted.plans gives a person every price with where it stands, and the AIâ€
   for (const name of Object.keys(PROFILES)) for (const t of ['render.create_cron', 'railway.create_database', 'server.buy']) assert.ok(!PROFILES[name]!.includes(t), `${name}: ${t} can only be a personâ€™s`);
   for (const t of ['render.create_cron', 'railway.create_database']) assert.equal(typeof (getTool(t)!.peopleOnly as any)({}), 'string', t);
 });
+
+test('a database address reaching an app asks a person, and never goes in a public setting', async () => {
+  const st: any = { status: ['creating', 'available'] }, w = await world({ render: renderApi(st) }), acc = w.acc('render');
+  try {
+    const r = await w.o.a('render.create_database', { accountId: acc, name: 'shop-db', into: 'srv-1' }) as any;
+    assert.equal(r.status, 'approval_required', JSON.stringify(r));
+    assert.match(r.why, /database login/);
+    const pub = await w.o.h('render.create_database', { accountId: acc, name: 'shop-db', into: 'srv-1', key: 'NEXT_PUBLIC_DB' }) as any;
+    assert.match(pub.error.message, /every visitor downloads/);
+  } finally { w.close(); }
+});

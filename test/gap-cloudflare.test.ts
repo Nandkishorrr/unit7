@@ -306,7 +306,7 @@ test('a Worker’s code reads what it’s bound to, so an AI asks first, at any 
   assert.ok(!everywhere(app).includes(SECRET), 'sealed while it waits');
   const listed = ok(await o.h('approval.list')) as any;
   assert.ok(!JSON.stringify(listed).includes(SECRET), 'and the card shows the names only');
-  assert.match(JSON.stringify(listed), /KEY \[values hidden\]/);
+  assert.match(JSON.stringify(listed), /KEY \[value hidden\]/);
 });
 
 test('recent errors: Cloudflare’s own log, an AI’s copy without addresses, and a plain word when there’s nothing', async (t) => {

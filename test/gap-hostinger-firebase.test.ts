@@ -581,7 +581,7 @@ test('Firebase: it says so when Google hasn’t answered yet, a refused key is a
 // --- Firebase Hosting: logs -------------------------------------------------------------------------------------------------
 
 test('Firebase logs: what Cloud Logging holds, oldest first; none says how to link them; no right says which role', async () => {
-  const entries = [{ timestamp: '2026-11-07T10:01:00Z', httpRequest: { requestMethod: 'GET', requestUrl: 'https://shop.web.app/new', status: 404 } }, { timestamp: '2026-11-07T10:00:00Z', httpRequest: { requestMethod: 'GET', requestUrl: 'https://shop.web.app/', status: 200 } }];
+  const entries = [{ timestamp: '2026-11-07T10:01:00Z', httpRequest: { requestMethod: 'GET', requestUrl: 'https://shop.web.app/new?oobCode=a-reset-code', status: 404 } }, { timestamp: '2026-11-07T10:00:00Z', httpRequest: { requestMethod: 'GET', requestUrl: 'https://shop.web.app/', status: 200 } }];
   const s = await world({}, { entries, domain: { name: 'projects/shop-prod/sites/shop/customDomains/shop.example' } }, { firebase: true });
   try {
     const out = ok<any>(await s.org.h('live.logs', { to: 'firebase', project: 'shop' }));

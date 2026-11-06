@@ -8,7 +8,8 @@ import type { Size } from '../live/hosts.ts';
 import { taken, until } from '../live/kit.ts';
 import { call, refused, runtimeOf, workspace } from '../live/render.ts';
 import { openSource } from '../live/source.ts';
-import { fid } from './helpers.ts';
+import { isPublicKey } from './env.ts';
+import { fid, isAgent } from './helpers.ts';
 import { COMMAND, NAME, SOURCE } from './live.ts';
 import { defineTool } from './runtime.ts';
 
@@ -63,8 +64,8 @@ defineTool({
   peopleOnly: (i) => i.plan !== 'free' && 'A paid database costs money every month, so only a person can start one. An AI can make a free one.',
   // a free one only creates; giving it to an app changes that app
   green: (i) => i.plan === 'free' && !i.into,
-  assess: (_c, i) => (i.plan !== 'free' ? { tier: 3, impact: `Creates a Postgres on Render: ${priceOf(PG_PLANS, i.plan)}. It costs money every month until you delete it there.` }
-    : i.into ? { tier: 2, impact: `Creates a free Postgres on Render and puts its address in the app’s settings as ${i.key}. ${FREE_PG}` } : undefined),
+  assess: (c, i) => (i.plan !== 'free' ? { tier: 3, impact: `Creates a Postgres on Render: ${priceOf(PG_PLANS, i.plan)}. It costs money every month until you delete it there.` }
+    : i.into ? { tier: isAgent(c) ? 3 : 2, ...(isAgent(c) && { ask: 'This puts a database login into an app’s settings, where its code can read it.' }), impact: `Creates a free Postgres on Render and puts its address in the app’s settings as ${i.key}. ${FREE_PG}` } : undefined),
   description: 'Create a Postgres on Render, free unless a person picks a paid plan from hosted.plans. A free one stops working after 30 days, and Render then deletes it: say so. into: a Render service to give it to: its address goes straight into that app’s settings as key (DATABASE_URL) and is never shown, in the app’s region so it can use the private address. A setting that’s already there is left alone and nothing is made. Naming a database that already exists, with into, connects it. The app needs a redeploy to use it.',
   input: z.object({
     accountId: fid('acc'), name: NAME, plan: z.enum(ids(PG_PLANS)).default('free').describe('A plan from hosted.plans. Anything but free is a person’s.'),
@@ -75,6 +76,7 @@ defineTool({
   }),
   async run(ctx, i) {
     const acc = i.accountId, { name } = i;
+    if (i.into && isPublicKey(i.key)) throw new Unit7Error('invalid_input', `${i.key} goes in the page every visitor downloads, so a database address can’t go there. Use a name without a public prefix.`, 400);
     const had = (await render.postgres(ctx, acc)).find((p) => p.name === name);
     if (had && !i.into) throw new Unit7Error('already_exists', `${name} already exists on Render. Choose another name, or give into to connect it to an app.`, 409);
     const app = i.into ? await render.service(ctx, acc, i.into) : undefined;

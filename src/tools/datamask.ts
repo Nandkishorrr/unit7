@@ -212,17 +212,20 @@ export function readMask(st: { first: string; toks: Tok[] }, plan: unknown, colu
 // (MySQL) no outputs in its plan, so the statement has to prove it: one plain SELECT, item by item, each lined up with its column.
 // A subquery or a union can put anything under any name, and only the database knows what a view renamed.
 const word = (t: Tok | undefined, ...w: string[]) => t?.k === 'word' && w.includes(t.v.toLowerCase());
-// a function in FROM (json_each in SQLite, JSON_TABLE in MySQL) hands back any column's value under a plain name. toks start at FROM
+// a function in FROM (json_each in SQLite, JSON_TABLE in MySQL) hands back any column's value under a plain name, at any depth, and
+// SQLite's take their argument from WHERE too, so one named with no brackets counts. toks start at FROM
+const TABLE_FN = /^(jsonb?_(each|tree)|json_table|pragma_\w+)$/i;
 function tableCall(toks: Tok[]) {
   let depth = 0;
   for (const [k, t] of toks.entries()) {
     if (!depth && word(t, 'where', 'group', 'having', 'order', 'limit', 'window')) return false;
+    if ((t.k === 'word' || t.k === 'name') && TABLE_FN.test(t.v)) return true;
     if (t.k !== 'op') continue;
     if (t.v === ')') depth--;
     if (t.v !== '(') continue;
     depth++;
-    const fn = toks[k - 1], before = toks[k - 2];
-    if ((fn?.k === 'word' || fn?.k === 'name') && (word(before, 'from', 'join') || (before?.k === 'op' && (before.v === ',' || before.v === '.')))) return true;
+    const fn = toks[k - 1];
+    if ((fn?.k === 'word' || fn?.k === 'name') && !word(fn, 'from', 'join', 'on', 'using', 'and', 'or', 'not', 'in', 'index', 'key', 'partition')) return true;
   }
   return false;
 }

@@ -18,7 +18,7 @@ import { all, get, id, json, now, run, type DB } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { ssh } from '../connectors/ssh.ts';
 import { script } from '../connectors/shell.ts';
-import { defaultBranch, githubAuthEnv, githubToken, headSha, mergePull, openPull, parseRepo, pullCheck, rememberSha, type Repo } from '../connectors/github.ts';
+import { containerToken, defaultBranch, githubAuthEnv, githubToken, headSha, mergePull, openPull, parseRepo, pullCheck, rememberSha, type Repo } from '../connectors/github.ts';
 import { deploy, writeEnvFile, APPS, type ServiceConfig, type ServiceRow } from '../deploy/deployer.ts';
 import { requestPaths, warmPaths } from '../deploy/release.ts';
 import type { Summary } from '../sentinel/traffic.ts';
@@ -138,6 +138,7 @@ export const APPLY = `set -e
 H="\${GIT_URL:-https://github.com/$REPO.git}" # GIT_URL: only the tests set it (a local bare repo)
 if git clone -q --depth 50 -b "$BRANCH" "$H" /w 2>/dev/null; then cd /w; else git clone -q --depth 50 -b "$BASE" "$H" /w 2>/dev/null; cd /w; echo "@@base $(git rev-parse HEAD)"; git checkout -q -b "$BRANCH"; fi
 set -f
+if [ -f package.json ] && grep -q '"packageManager"' package.json && ! grep -Eq '"packageManager": *"[a-z]+@[0-9][0-9A-Za-z.+-]*"' package.json; then echo UNSUPPORTED; exit 0; fi
 [ -z "$PM_VERSION" ] || case "$MANAGER" in pnpm|yarn) { corepack enable && corepack prepare "$MANAGER@$PM_VERSION" --activate; } >/dev/null 2>&1 || true ;; esac
 if [ -n "$REVERT" ]; then git -c user.name=Unit7 -c user.email=unit7@users.noreply.github.com revert --no-edit "$REVERT" >/dev/null 2>&1 || { echo NOREVERT; exit 0; }
 else case "$MANAGER" in
@@ -145,9 +146,9 @@ else case "$MANAGER" in
        [ -z "$UP_DEV" ] || npm install -D --package-lock-only --ignore-scripts --no-audit --no-fund $UP_DEV >/dev/null 2>&1
        [ "$AUDIT" != 1 ] || npm audit fix --package-lock-only >/dev/null 2>&1 || true ;;
   pnpm) corepack enable >/dev/null 2>&1
-       [ -z "$UP_PROD" ] || pnpm add --lockfile-only --ignore-scripts $UP_PROD >/dev/null 2>&1
-       [ -z "$UP_DEV" ] || pnpm add -D --lockfile-only --ignore-scripts $UP_DEV >/dev/null 2>&1
-       [ "$AUDIT" != 1 ] || { pnpm audit --fix >/dev/null 2>&1; pnpm install --lockfile-only >/dev/null 2>&1; } || true ;;
+       [ -z "$UP_PROD" ] || pnpm add --lockfile-only --ignore-scripts --ignore-pnpmfile $UP_PROD >/dev/null 2>&1
+       [ -z "$UP_DEV" ] || pnpm add -D --lockfile-only --ignore-scripts --ignore-pnpmfile $UP_DEV >/dev/null 2>&1
+       [ "$AUDIT" != 1 ] || { pnpm audit --fix --ignore-pnpmfile >/dev/null 2>&1; pnpm install --lockfile-only --ignore-pnpmfile --ignore-scripts >/dev/null 2>&1; } || true ;;
   yarn) corepack enable >/dev/null 2>&1
        if [ -f .yarnrc.yml ]; then yarn up --mode=update-lockfile $UP_PROD $UP_DEV >/dev/null 2>&1
        else [ -z "$UP_PROD" ] || yarn add --ignore-scripts $UP_PROD >/dev/null 2>&1; [ -z "$UP_DEV" ] || yarn add -D --ignore-scripts $UP_DEV >/dev/null 2>&1; fi ;;
@@ -179,13 +180,16 @@ export async function applyOnBranch(ctx: Ctx, a: AppRef, items: Item[], o: { bra
   const s = serverRow(ctx, a.svc.server_id!);
   const managers = o.revert ? ['revert'] : [...new Set(items.map((i) => i.manager))];
   let baseSha: string | undefined, pushed = false, diff = '', files = '';
+  // the container runs package tools on the repo's own files, so it gets a key to this repo only
+  const box = await containerToken(ctx, a.repo, a.cfg.source?.type === 'git' ? a.cfg.source.accountId : undefined);
+  ctx.redactor.add(box, 'GitHub token');
   const skipped: string[] = [];
   for (const m of managers) {
     const t = o.revert ? { prod: '', dev: '', audit: false } : tokens(items, m);
     if (!o.revert && !IMAGE[m]) { skipped.push(`Unit7 can’t update ${m} libraries by itself yet.`); continue; }
     if (!o.revert && !t.prod && !t.dev && !t.audit) continue;
     const envFile = `${APPS}/fresh-${a.svc.id.slice(-8).toLowerCase().replace(/[^a-z0-9]/g, 'x')}.env`;
-    await writeEnvFile(ctx, s, envFile, { ...githubAuthEnv(a.token, 'https://github.com'), REPO: `${a.repo.owner}/${a.repo.name}`, BASE: a.base, BRANCH: o.branch, MANAGER: m, UP_PROD: t.prod, UP_DEV: t.dev, AUDIT: t.audit ? '1' : '0', MSG: o.message.replace(/\n/g, ' '), REVERT: o.revert ?? '', PM_VERSION: o.revert ? '' : pmVersion(a, m), COREPACK_ENABLE_AUTO_PIN: '0' });
+    await writeEnvFile(ctx, s, envFile, { ...githubAuthEnv(box, 'https://github.com'), REPO: `${a.repo.owner}/${a.repo.name}`, BASE: a.base, BRANCH: o.branch, MANAGER: m, UP_PROD: t.prod, UP_DEV: t.dev, AUDIT: t.audit ? '1' : '0', MSG: o.message.replace(/\n/g, ' '), REVERT: o.revert ?? '', PM_VERSION: o.revert ? '' : pmVersion(a, m), COREPACK_ENABLE_AUTO_PIN: '0' });
     ctx.progress(o.revert ? `Taking the update back out of ${a.svc.name}’s main branch…` : `Updating ${a.svc.name}’s ${m} libraries on a branch…`);
     const r = await ssh(ctx.app).exec(s, script('docker run --rm --env-file "$1" "$3" sh -c "$2" 2>&1; rc=$?; rm -f "$1"; exit $rc', envFile, APPLY, o.revert ? IMAGE.npm! : IMAGE[m]!), { timeoutMs: 20 * 60_000, signal: ctx.signal });
     const out = ctx.redactor.redact(r.stdout);

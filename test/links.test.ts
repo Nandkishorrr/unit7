@@ -150,6 +150,7 @@ test('an AI can wire public keys, but a database login or service key waits for 
   assert.ok(link.assess!(ai as never, neonLink as never)!.ask, 'a Neon login asks a person');
   assert.ok(link.assess!(ai as never, { ...neonLink, apply: false } as never)!.ask, 'apply only says whether to rebuild: the login goes in either way');
   assert.equal(link.assess!(person as never, neonLink as never), undefined);
+  assert.ok(link.assess!(ai as never, { ...neonLink, from: { kind: 'railway', accountId: 'acc', project: 'p', environment: 'e', service: 's' } } as never)!.ask, 'Railway gives a database address too');
   assert.equal(link.assess!(ai as never, { ...neonLink, from: { kind: 'supabase', accountId: 'acc', ref: 'r' } } as never), undefined, 'public keys go through');
 
   const v = await fakeVercel();

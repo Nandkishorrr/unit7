@@ -142,7 +142,7 @@ const READ = ['graph.get', 'server.list', 'server.metrics', 'server.usage', 'ser
 export const PROFILES: Record<string, string[]> = {
   read: READ,
   deploy: [...READ.slice(0, 10), 'project.list', 'service.get', 'live.options', 'live.put', 'live.logs', 'live.env', 'cloudflare.worker_deploy', 'github.create_repo', 'github.push', 'deployment.create', 'deployment.logs', 'deployment.rollback', 'env.list', 'env.set', 'domain.point', 'domain.check', 'coolify.control', 'coolify.deployments', 'coolify.logs', 'coolify.envs', 'safety.copy', 'safety.rehearse', 'service.restart', 'staging.plan', 'staging.create', 'connection.tools', 'connection.call', 'tools.find'],
-  ops: [...READ.slice(0, 13), 'docker.prune', 'server.tidy_logs', 'part.restart', 'part.logs', 'part.limits', 'part.impact', 'part.tables', 'part.query', 'cloudflare.workers', 'cloudflare.worker_errors', 'cloudflare.d1_query', 'file.list', 'file.read', 'server.close_port', 'change.list', 'change.undo', 'alert.recheck', 'backup.create', 'safety.protect', 'safety.copy', 'coolify.memory_cap', 'cloud.redeploy', 'connection.tools', 'connection.call', 'tools.find'],
+  ops: [...READ.slice(0, 13), 'docker.prune', 'server.tidy_logs', 'part.restart', 'part.logs', 'part.limits', 'part.impact', 'part.tables', 'part.query', 'cloudflare.workers', 'cloudflare.worker_errors', 'cloudflare.d1_query', 'file.list', 'file.read', 'server.close_port', 'change.list', 'change.undo', 'alert.recheck', 'backup.create', 'safety.protect', 'safety.copy', 'coolify.memory_cap', 'cloud.redeploy', 'hosted.plans', 'render.create_database', 'connection.tools', 'connection.call', 'tools.find'],
 };
 Object.assign(scopes, PROFILES);
 export function findTools(query: string, limit = 8) {

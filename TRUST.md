@@ -83,3 +83,4 @@ See [SECURITY.md](SECURITY.md).
 - An AI waits for a person before a Hostinger database password reaches an app.
 - D1 has no read-only login, so an AI’s reads rest on Unit7’s reading of the query, with Cloudflare’s changed_db checked after. A view that renames a column isn’t seen through.
 - A hosted database’s address goes straight to the app, never into a result.
+- An AI’s push of a GitHub workflow into a repo that exists waits for a person, because a workflow runs with the repo’s secrets. Unit7’s GitHub keys never go into an app, whoever asks.

@@ -14,7 +14,7 @@ import { get, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { dnsHost } from './dnsinfo.ts';
 import { assertReachable } from '../netguard.ts';
-import { fromGithubApp, githubAppToken, githubHome, githubRefused, githubRepoMaker } from './oneclick.ts';
+import { fromGithubApp, githubAppToken, githubHome, githubRefused, githubRepoMaker, githubRepoToken } from './oneclick.ts';
 import { sysBin } from './shell.ts';
 
 export interface Repo { owner: string; name: string }
@@ -43,6 +43,12 @@ export async function githubToken(ctx: Ctx, accountId?: string): Promise<string 
     if ((e as Unit7Error).code === 'no_account') return undefined;
     throw e;
   }
+}
+
+// The token for a throwaway container that runs package tools on a repo's files
+export async function containerToken(ctx: Ctx, repo: Repo, accountId?: string) {
+  const { value, account } = ctx.credentialFor('github', accountId);
+  return json<{ auth?: string }>(account.meta, {}).auth === 'github-app' ? githubRepoToken(ctx.app, ctx.orgId, account, value, repo.name) : value;
 }
 
 // The commit a branch points at, without cloning. Throws if the repo or branch can't be read.

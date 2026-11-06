@@ -8,7 +8,7 @@ import { get, json, now, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { ssh } from '../connectors/ssh.ts';
 import { script } from '../connectors/shell.ts';
-import { defaultBranch, githubAuthEnv, githubToken, mergePull, openPull, parseRepo, pullCheck } from '../connectors/github.ts';
+import { containerToken, defaultBranch, githubAuthEnv, githubToken, mergePull, openPull, parseRepo, pullCheck } from '../connectors/github.ts';
 import { writeEnvFile, APPS, type ServiceConfig } from '../deploy/deployer.ts';
 import type { ImageReport } from '../deploy/security.ts';
 import { serverRow } from './servers.ts';
@@ -28,7 +28,8 @@ const FIX = `set -e
 apk add --no-cache git >/dev/null
 git clone -q --depth 1 -b "$BASE" "https://github.com/$REPO.git" /w 2>/dev/null
 cd /w && git checkout -q -b "$BRANCH"
-if [ -f pnpm-lock.yaml ]; then corepack enable >/dev/null 2>&1; pnpm audit --fix >/dev/null 2>&1 || true; pnpm install --lockfile-only >/dev/null 2>&1 || true
+if [ -f package.json ] && grep -q '"packageManager"' package.json && ! grep -Eq '"packageManager": *"[a-z]+@[0-9][0-9A-Za-z.+-]*"' package.json; then echo UNSUPPORTED; exit 0; fi
+if [ -f pnpm-lock.yaml ]; then corepack enable >/dev/null 2>&1; pnpm audit --fix --ignore-pnpmfile >/dev/null 2>&1 || true; pnpm install --lockfile-only --ignore-pnpmfile --ignore-scripts >/dev/null 2>&1 || true
 elif [ -f package-lock.json ] || [ -f package.json ]; then npm audit fix --package-lock-only >/dev/null 2>&1 || true
 else echo UNSUPPORTED; exit 0; fi
 if git diff --quiet; then echo NOCHANGE; exit 0; fi
@@ -52,7 +53,10 @@ export async function openFixPr(ctx: Ctx, serviceId: string) {
   const envFile = `${APPS}/fix-${a.id.slice(-8).toLowerCase().replace(/[^a-z0-9]/g, 'x')}.env`;
   ctx.redactor.add(token, 'GitHub token');
   save(ctx, a.id, { fixTriedAt: now() });
-  await writeEnvFile(ctx, s, envFile, { ...githubAuthEnv(token, 'https://github.com'), REPO: `${repo.owner}/${repo.name}`, BASE: base, BRANCH: branch });
+  // the container runs the package manager on the repo's own files, so it gets a key to this repo only
+  const box = await containerToken(ctx, repo, src!.type === 'git' ? src!.accountId : undefined);
+  ctx.redactor.add(box, 'GitHub token');
+  await writeEnvFile(ctx, s, envFile, { ...githubAuthEnv(box, 'https://github.com'), REPO: `${repo.owner}/${repo.name}`, BASE: base, BRANCH: branch });
   ctx.progress(`Fixing ${a.name}'s vulnerable packages in a throwaway copy of the repo…`);
   const r = await ssh(ctx.app).exec(s, script('docker run --rm --env-file "$1" node:22-alpine sh -c "$2" 2>&1; rc=$?; rm -f "$1"; exit $rc', envFile, FIX), { timeoutMs: 15 * 60_000, signal: ctx.signal });
   const out = ctx.redactor.redact(r.stdout);

@@ -280,7 +280,8 @@ export interface ExecOptions { dryRun?: boolean; reason?: string; approvalId?: s
 export const APP_KEY_REF = /credential:\/\/(serverapp|addon|coolify)\//;
 // Unit7's own keys (backup encryption, phone approvals, SSH keys, backup storage) and its alert channels, whose messages carry
 // approve buttons. They never go into an app, whoever asks.
-export const INTERNAL_REF = /^credential:\/\/(unit7|forge|ssh|storage|ntfy|webhook)\//; // forge: keys saved before the rename
+// forge: keys saved before the rename. GitHub's hold an App's private key, or a person's own token
+export const INTERNAL_REF = /^credential:\/\/(unit7|forge|ssh|storage|ntfy|webhook)\/|^credential:\/\/github\/[^/]+\/(token|user)$/;
 // A key a person stored by hand: no account or database of Unit7's says where it belongs, so env.ts checkRef can't refuse it. Put
 // into an app, that app's code can read it, and an AI may have written that code: a person says yes first.
 function storedByHand(db: DB, orgId: string, ref: string) {

@@ -63,6 +63,7 @@ async function fakeGithub() {
       if (!signedByApp(r)) return [401, { message: 'A JSON web token could not be decoded' }];
       const token = `ghs_${randomBytes(8).toString('hex')}`;
       st.tokens.set(token, { ...st.granted });
+      if (r.body) (st as any).scoped = JSON.parse(r.body);
       return [201, { token, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: st.granted, repository_selection: 'all' }];
     }
     if (route === 'GET /app/installations/42') {
@@ -517,4 +518,13 @@ test('Coolify on an old install: the deploy key and the webhook say what to do, 
   assert.equal(on.webhook, undefined);
   assert.match(on.next, new RegExp(`Open ${PERMISSIONS}, set .*Webhooks`));
   assert.equal(cool.app.manual_webhook_secret_github, undefined, 'no secret set for a webhook that isn’t there');
+});
+
+test('a container running package tools gets a key to one repo’s files, and a pasted token stays what it is', async () => {
+  const { containerToken } = await import('../src/connectors/github.ts');
+  const g = await fakeGithub(), c = await connected(g), value = JSON.stringify(vaulted(c, 'token'));
+  const ctx = (meta: string, v: string) => ({ app: c.app, orgId: c.orgId, credentialFor: () => ({ value: v, account: { id: c.accountId, meta } }) }) as never;
+  assert.match(await containerToken(ctx(JSON.stringify(c.meta), value), { owner: 'demo', name: 'shop' }), /^ghs_/);
+  assert.deepEqual((g.st as any).scoped, { repositories: ['shop'], permissions: { contents: 'write', metadata: 'read' } });
+  assert.equal(await containerToken(ctx('{}', 'ghp_pasted'), { owner: 'demo', name: 'shop' }), 'ghp_pasted');
 });

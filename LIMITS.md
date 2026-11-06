@@ -109,6 +109,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Render has no free cron, and a database address is copied, so a password changed there isn’t followed. Railway has no cron here. Fly.io’s release list misses deploys made by API. Heroku’s add-ons and data don’t roll back. A DigitalOcean disk can’t shrink. Railway databases use a route its API docs don’t cover, and it hasn’t been tried on a real account.
 
+## Package updates
+
+- Updating packages runs the package tool on the repo’s own files in a throwaway container that holds a GitHub key. With Unit7’s GitHub App that key reaches one repo’s files for an hour. A pasted or CLI token reaches all it can, and a Yarn plugin in the repo could read it.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

@@ -40,6 +40,10 @@ export const SOURCE = {
 const oneSource = (i: { folder?: string; uploadId?: string; repo?: string; image?: string; copyOf?: string }) => [i.folder, i.uploadId, i.repo, i.image, i.copyOf].filter(Boolean).length === 1;
 const ONE_SOURCE = 'Give one of folder, uploadId, repo, image or copyOf.';
 const needsPerson = (i: { folder?: string }) => !!i.folder;
+// a workflow runs with every secret the repo has as soon as it lands, so an AI's push of one into a repo that exists waits for a person
+const WORKFLOW = /^\.github\/(workflows|actions)\//;
+const WORKFLOW_ASK = 'This push carries a GitHub workflow, which runs with the repo’s secrets as soon as it lands.';
+const pushesWorkflow = (ctx: Ctx, site: Site) => isAgent(ctx) && !ctx.approvalId && site.files.some((f) => WORKFLOW.test(f.path));
 export const WHERE = { to: z.string().regex(/^[a-z-]{2,30}$/).optional().describe('A host from live.options: vercel, coolify, netlify, cloudflare-pages, github-pages, hostinger, server…'), accountId: fid('acc').optional(), serverId: fid('srv').optional() };
 // the host, or the size picked on it
 export const costs = (i: { to?: string; size?: string }) => { const h = i.to ? hostOf(i.to) : undefined; return !!h?.costs || !!h?.sizes?.find((s) => s.id === i.size)?.paid; };
@@ -124,6 +128,7 @@ defineTool({
       const size = i.size ? chosen.host.sizes?.find((s) => s.id === i.size) : undefined;
       if (i.size && !size) throw new Unit7Error('invalid_input', `${chosen.host.name} has no size ${i.size}. It has: ${chosen.host.sizes?.map((s) => s.id).join(', ') || 'none to pick'}.`, 400);
       if (commands(i) && !chosen.host.tunes) throw new Unit7Error('invalid_input', `${chosen.host.name} works out its own build here, so Unit7 can’t change it. Set it on ${chosen.host.name}, or pick a place where live.options says tunes.`, 400);
+      if ((i.update || chosen.host.id === 'github-pages') && pushesWorkflow(ctx, site)) await askPerson(ctx, 'live.put', i, WORKFLOW_ASK);
       if (chosen.host.costs && !i.to) throw new Unit7Error('costs_money', `The place for this is ${chosen.host.name}, and it can cost money. ${chosen.host.costs} A person has to choose it, with to: "${chosen.host.id}".`, 400);
       // the first time, Coolify's own step asks. An update brings a new compose file, so its yes covers the whole of it
       if (i.update && chosen.host.id === 'coolify' && runsCompose(site.detection) && isAgent(ctx) && !ctx.approvalId) await askPerson(ctx, 'live.put', i, COMPOSE_ASK);
@@ -201,6 +206,7 @@ defineTool({
     if (!token) throw new Unit7Error('no_account', 'GitHub isn’t connected yet. Connect it in Connections.', 400);
     const site = await openSource(ctx, { folder: i.folder, uploadId: i.uploadId });
     try {
+      if (!i.create && pushesWorkflow(ctx, site)) await askPerson(ctx, 'github.push', i, WORKFLOW_ASK);
       const w = secretWarning(site);
       if (w && (i.create ? !i.private : false)) throw new Unit7Error('keys_in_site', `Stopped: these files hold keys and the repo would be public: ${w.list}.`, 400);
       const repo = i.create ? await createRepo(token, i.repo.split('/').pop()!, { private: i.private }) : parseRepo(i.repo) ?? await repoExists(token, i.repo);
