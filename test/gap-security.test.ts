@@ -48,8 +48,9 @@ function coolifyOn(app: App, orgId: string) {
     if (r === 'GET /github-apps') return [200, []];
     if (/^POST \/applications\/(public|dockerfile)$/.test(r)) { const a = { uuid: `app${st.apps.length + 1}x`, name: body.name, build_pack: body.build_pack }; st.apps.push(a); return [201, { uuid: a.uuid }]; }
     if (/^GET \/applications\/\w+$/.test(r)) { const a = st.apps.find((x) => path.endsWith(x.uuid)); return a ? [200, a] : [404, { message: 'Not found.' }]; }
-    if (/^(GET|POST) \/applications\/\w+\/envs$/.test(r)) { if (method === 'POST') st.envs.push(body); return [200, []]; }
+    if (/^(GET|POST) \/applications\/\w+\/envs$/.test(r)) { if (method === 'POST') st.envs.push(body); return [200, st.envs]; }
     if (/^PATCH \/applications\/\w+\/envs\/bulk$/.test(r)) { st.envs.push(...body.data); return [201, []]; }
+    if (/^POST \/databases\/\w+$/.test(r)) { st.databases.push({ uuid: 'db2', name: body.name }); return [201, { uuid: 'db2' }]; }
     if (/^GET \/databases\/\w+$/.test(r)) return [200, { uuid: 'db1', internal_db_url: 'postgres://app:stored-db-password@db1:5432/app' }];
     if (r === 'POST /deploy') return [200, { deployments: [{ message: 'Queued', deployment_uuid: 'dep1' }] }];
     if (r === 'GET /deployments/dep1') return [200, { deployment_uuid: 'dep1', status: 'finished' }];
@@ -289,4 +290,50 @@ test('3. a yes can’t carry a reference past what it may reach, and the card na
   assert.equal(card.input.env, `STRIPE = ${KEYS.manual}, PLAIN`);
   assert.equal(code(await approve(app, o, ask)), 'ok');
   assert.deepEqual(got.at(-1)!.map((e) => [e.key, e.value]).sort(), [['PLAIN', 'x'], ['STRIPE', 'sk_live_stored']]);
+});
+
+test('4. an existing database’s password goes into an AI’s app only on a person’s yes; a new one, or one already wired, doesn’t ask', async () => {
+  const { app, o } = await world(), c = coolifyOn(app, o.orgId);
+  c.databases.push({ uuid: 'db1', name: 'prod-db' });
+  c.apps.push({ uuid: 'mine1x', name: 'ai-app', build_pack: 'dockerfile' });
+  const wire = { ...WHERE, engine: 'postgresql', name: 'prod-db', injectInto: 'mine1x', wait: false };
+  const r = await o.a('coolify.create_database', wire) as any;
+  assert.equal(r.status, 'approval_required', JSON.stringify(r));
+  assert.match(r.why, /prod-db already exists/);
+  assert.equal(c.envs.length, 0, 'nothing went into the app');
+  assert.ok(!c.calls.some((x) => x.startsWith('GET /databases/')), 'and the address wasn’t even read');
+  const done = ok<any>(await approve(app, o, r) as never);
+  assert.deepEqual(done.wired, ['DATABASE_URL']);
+  assert.equal(c.envs[0].key, 'DATABASE_URL');
+  assert.ok(!JSON.stringify(done).includes('stored-db-password'));
+  assert.equal(code(await o.a('coolify.create_database', wire)), 'ok', 'already wired: a build run again doesn’t ask');
+  assert.equal(c.envs.length, 1, 'and nothing moved');
+  assert.equal(code(await o.a('coolify.create_database', { ...wire, name: 'fresh-db' })), 'ok', 'a new one’s password was never anyone else’s');
+  // a person's own call doesn't wait, as before
+  c.envs.length = 0;
+  ok(await o.h('coolify.create_database', wire));
+  assert.equal(c.envs.length, 1);
+});
+
+test('4. a stored key an AI names in a setting asks a person, in Coolify and in Unit7’s own apps; the same value, approved, goes in', async () => {
+  const { app, o } = await world(), c = coolifyOn(app, o.orgId);
+  storeKeys(app, o.orgId);
+  c.apps.push({ uuid: 'mine1x', name: 'ai-app', build_pack: 'dockerfile' });
+  const set = { serverId: SRV, uuid: 'mine1x', kind: 'application', op: 'set', key: 'K', value: KEYS.manual };
+  for (const autonomy of [3, 4]) {
+    run(app.db, 'UPDATE orgs SET autonomy = ? WHERE id = ?', autonomy, o.orgId);
+    const r = await o.a('coolify.envs', set) as any;
+    assert.equal(r.status, 'approval_required', `autonomy ${autonomy}: ${JSON.stringify(r)}`);
+    assert.ok(r.why.includes(KEYS.manual));
+  }
+  assert.equal(c.envs.length, 0);
+  const asked = await o.a('coolify.envs', set) as any;
+  assert.equal(code(await approve(app, o, asked)), 'ok');
+  assert.equal(c.envs[0].value, 'sk_live_stored');
+  // the same drain through an app Unit7 deploys itself
+  const pr = ok<any>(await o.h('project.create', { name: 'shop' })), env = pr.environments[0].id;
+  run(app.db, 'UPDATE environments SET autonomy = 4 WHERE id = ?', env);
+  assert.equal((await o.a('env.set', { environmentId: env, key: 'K', value: KEYS.manual })).status, 'approval_required');
+  assert.equal(code(await o.a('env.set', { environmentId: env, key: 'PLAN', value: 'pro' })), 'ok', 'a plain setting doesn’t ask');
+  assert.equal(code(await o.h('env.set', { environmentId: env, key: 'K', value: KEYS.manual })), 'ok', 'a person’s own doesn’t');
 });

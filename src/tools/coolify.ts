@@ -553,7 +553,7 @@ defineTool({
   name: 'coolify.envs', title: 'Coolify settings (environment variables)',
   risk: (i) => (i.op === 'set' || i.op === 'unset' ? 'write' : 'read'), action: (i) => (i.op === 'set' || i.op === 'unset' ? 'env_write' : i.op === 'reveal' ? 'secret_reveal' : 'read'),
   sensitive: ['value'], peopleOnly: (i) => i.op === 'reveal', timeoutMs: 20 * 60_000,
-  description: 'The settings (environment variables) of a Coolify application, database or service. op list: names and flags only, never values. op set: add or change one (value may be a credential:// reference), with Coolify’s own flags. op unset: remove one. op reveal (people only, owners and admins): show one value; needs a read:sensitive token. Coolify applies a change on the next deploy: pass redeploy to deploy right after, or run coolify.control deploy later. preview targets the preview-deployment copy of a setting.',
+  description: 'The settings (environment variables) of a Coolify application, database or service. op list: names and flags only, never values. op set: add or change one (value may be a credential:// reference: an AI asks a person first, because the app’s code can read it), with Coolify’s own flags. op unset: remove one. op reveal (people only, owners and admins): show one value; needs a read:sensitive token. Coolify applies a change on the next deploy: pass redeploy to deploy right after, or run coolify.control deploy later. preview targets the preview-deployment copy of a setting.',
   input: z.object({
     serverId: fid('srv'), uuid: UUID, kind: KIND, op: z.enum(['list', 'set', 'unset', 'reveal']).default('list'), key: KEY.optional(), value: z.string().max(65_536).optional(),
     preview: z.boolean().default(false), literal: z.boolean().optional(), multiline: z.boolean().optional(), shownOnce: z.boolean().optional(), buildtime: z.boolean().optional(), runtime: z.boolean().optional(),
@@ -804,7 +804,10 @@ async function makeDatabase(ctx: Ctx, api: Coolify, s: ServerRow, i: DbInput) {
   let uuid: string, url: string | undefined;
   if (had) {
     uuid = had.uuid;
-    if (i.injectInto) {
+    // an existing database's password going into an app an AI may have written: a person says yes. Already there, there's nothing to move
+    const wired = i.injectInto && isAgent(ctx) && !ctx.approvalId && items(await api.call('GET', `/applications/${enc(i.injectInto)}/envs`).catch(() => [])).some((x) => x?.key === e.key && !x.is_preview);
+    if (i.injectInto && !wired) {
+      if (isAgent(ctx) && !ctx.approvalId) await askPerson(ctx, 'coolify.create_database', i, `${name} already exists, and this puts its password into that app, where the app’s code can read it. A person says yes first.`);
       url = (await api.call('GET', `/databases/${enc(uuid)}`))?.internal_db_url;
       // hidden without read:sensitive: Coolify's own record then, read with root, straight into the app
       if (typeof url !== 'string' || !url.includes('@')) url = await coolifyPhp<{ url?: string }>(ctx.app, s, 'db_url', { uuid }, ctx.signal).then((r) => r.url, () => undefined);
@@ -830,7 +833,7 @@ async function makeDatabase(ctx: Ctx, api: Coolify, s: ServerRow, i: DbInput) {
 defineTool({
   name: 'coolify.create_database', title: 'Create a database in Coolify',
   risk: (i) => (i.public ? 'destructive' : 'write'), action: 'database_create', timeoutMs: 6 * 60_000,
-  description: 'Create a database in a Coolify project: postgresql, mysql, mariadb, mongodb, redis, keydb, dragonfly or clickhouse. Private unless public (that opens it to the internet, so it asks first). Unit7 makes the password; with injectInto (an application uuid) it sets that app’s DATABASE_URL (REDIS_URL, MONGODB_URI or CLICKHOUSE_URL) inside Coolify, so the secret never shows up anywhere. Waits until it runs. One with the same name in that environment is reused.',
+  description: 'Create a database in a Coolify project: postgresql, mysql, mariadb, mongodb, redis, keydb, dragonfly or clickhouse. Private unless public (that opens it to the internet, so it asks first). Unit7 makes the password; with injectInto (an application uuid) it sets that app’s DATABASE_URL (REDIS_URL, MONGODB_URI or CLICKHOUSE_URL) inside Coolify, so the secret never shows up anywhere. Waits until it runs. One with the same name in that environment is reused; for an AI, wiring one that already exists into an app asks a person first.',
   input: z.object({ ...WHERE, engine: z.enum(ENGINE_NAMES), name: NAME.optional(), public: z.boolean().default(false), publicPort: z.number().int().min(1024).max(65535).optional(), injectInto: UUID.optional(), reuse: z.boolean().default(true), wait: z.boolean().default(true) })
     .refine((i) => !i.public || !!i.publicPort, 'A public database needs publicPort.'),
   async run(ctx, i) {

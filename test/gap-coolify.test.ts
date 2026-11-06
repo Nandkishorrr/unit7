@@ -370,7 +370,7 @@ test('Supabase wiring when the stack isn’t up: plain words and nothing half se
 
 test('an existing database’s address, hidden without read:sensitive, is read from Coolify’s record and goes straight into the app', async () => {
   const { o, srv, c, app } = await setup('4.4.0', AUTO_KEY);
-  const r = ok(await o.a('coolify.create_database', { serverId: srv, project: 'proj02', engine: 'postgresql', name: 'relay-db', injectInto: 'shopapp01' }));
+  const r = ok(await o.h('coolify.create_database', { serverId: srv, project: 'proj02', engine: 'postgresql', name: 'relay-db', injectInto: 'shopapp01' }));
   assert.equal(r.reused, true);
   assert.deepEqual(r.wired, ['DATABASE_URL']);
   assert.equal(c.bulk[0].value, 'postgres://u:from-php@relaydb01:5432/app');

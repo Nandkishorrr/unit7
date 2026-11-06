@@ -12,7 +12,7 @@ import { Unit7Error, notFound, forbidden } from '../errors.ts';
 import { type Risk, type Role, type Rule, type EnvKind, decide, isAdmin } from '../policy.ts';
 import { type Assessment, TIER_NAMES, decideTiered, tierOf } from '../policy.ts';
 import { Redactor, looksRandom, looksSecretName } from '../redact.ts';
-import { isRef, parseRef } from '../vault.ts';
+import { isRef, parseRef, slugify } from '../vault.ts';
 import type { Severity } from '../events.ts';
 import { importantTouched } from '../kept.ts';
 
@@ -277,6 +277,17 @@ export interface ExecOptions { dryRun?: boolean; reason?: string; approvalId?: s
 // A key from an app on a server, an add-on or Coolify (their logins, admin passwords and full-access keys among them),
 // named anywhere in a change an AI asks for: a person approves it first. env.ts checkRef refuses the people-only ones outright.
 export const APP_KEY_REF = /credential:\/\/(serverapp|addon|coolify)\//;
+// Unit7's own keys (backup encryption, phone approvals, SSH keys, backup storage) and its alert channels, whose messages carry
+// approve buttons. They never go into an app, whoever asks.
+export const INTERNAL_REF = /^credential:\/\/(unit7|forge|ssh|storage|ntfy|webhook)\//; // forge: keys saved before the rename
+// A key a person stored by hand: no account or database of Unit7's says where it belongs, so env.ts checkRef can't refuse it. Put
+// into an app, that app's code can read it, and an AI may have written that code: a person says yes first.
+function storedByHand(db: DB, orgId: string, ref: string) {
+  if (!isRef(ref) || APP_KEY_REF.test(ref) || INTERNAL_REF.test(ref)) return false;
+  const { provider, account } = parseRef(ref);
+  return !get(db, 'SELECT 1 FROM accounts WHERE org_id = ? AND provider = ? AND slug = ?', orgId, provider, account)
+    && !all<{ id: string }>(db, 'SELECT id FROM services WHERE org_id = ?', orgId).some((s) => slugify(s.id) === account);
+}
 // A key for people, not apps: a dashboard login or admin password, a full-access key (a service-role key, a root
 // password), Coolify's own API token (it runs the whole server), or one Unit7 has no record of. An AI never places one.
 export function peopleRef(app: App, orgId: string, ref: string) {
@@ -375,11 +386,14 @@ export async function execute(app: App, orgId: string, actor: Actor, name: strin
       const why = 'Autopilot is paused, so Unit7 and AI agents can only look, not change anything. A person can still act, or resume Autopilot.';
       return { status: 'denied', why, auditId: audit('denied', { error: why }) };
     }
-    const appKeys = isAgent && risk !== 'read' ? [...JSON.stringify(input).matchAll(/credential:\/\/(?:serverapp|addon|coolify)\/[^"\s\\]+/g)].map((m) => m[0]) : [];
+    const refs = isAgent && risk !== 'read' ? [...JSON.stringify(input).matchAll(/credential:\/\/[^"\s\\]+/g)].map((m) => m[0]) : [];
+    const appKeys = refs.filter((r) => APP_KEY_REF.test(r));
     const people = appKeys.find((r) => peopleRef(app, orgId, r));
     if (people) { const why = `${people} is a login or full-access key meant for people. An AI can’t use it, even with approval; a person can.`; return { status: 'denied', why, auditId: audit('denied', { error: why }) }; }
     const placesAppKey = appKeys.length > 0;
-    const { d: plain, e: where } = decideAll(risk, placesAppKey ? { ...assessed, tier: Math.max(assessed?.tier ?? 0, 2) as Assessment['tier'], discovered: true } : assessed);
+    const handKeys = action === 'env_write' && !o.underApproval ? refs.filter((r) => storedByHand(db, orgId, r)) : [];
+    const { d: plain, e: where } = decideAll(risk, placesAppKey ? { ...assessed, tier: Math.max(assessed?.tier ?? 0, 2) as Assessment['tier'], discovered: true }
+      : handKeys.length ? { ...assessed, tier: Math.max(assessed?.tier ?? 0, 2) as Assessment['tier'], ask: `An app can read ${handKeys.join(', ')} once it has it, so a person says yes first.` } : assessed);
     // a fix someone asked for from a phone alert: the AI looks freely, then proposes one change, which waits for them
     const fix = !o.approvalId && isAgent && risk !== 'read' && plain.decision !== 'deny' ? proposing(db, orgId, o.conversationId, actor) : undefined;
     if (fix?.approval_id) { const why = 'One fix from the phone alert is already waiting for the person’s OK. Stop here and say in a line what it does.'; return { status: 'denied', why, auditId: audit('denied', { error: why }) }; }

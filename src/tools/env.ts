@@ -3,7 +3,7 @@
 // Every value is envelope-encrypted (or is a credential:// reference resolved at deploy). Each
 // change is a new version, so "what was DATABASE_URL last Tuesday" has an answer.
 import { z } from 'zod';
-import { APP_KEY_REF, defineTool, peopleRef, type Ctx } from './runtime.ts';
+import { APP_KEY_REF, INTERNAL_REF, defineTool, peopleRef, type Ctx } from './runtime.ts';
 import { type DB, all, get, id, json, now, run, tx } from '../db.ts';
 import { Unit7Error, forbidden, notFound } from '../errors.ts';
 import { detectSecrets, looksRandom, looksSecretName } from '../redact.ts';
@@ -75,11 +75,9 @@ export function merged(db: DB, orgId: string, s: Scope) {
   return [...out.values()];
 }
 
-// Which vault references an app may use. Unit7's own keys (backup encryption, phone approvals, SSH keys, backup
-// storage) and its alert channels (whose messages carry approve buttons) never go into an app, whoever asks. An
-// AI may also only wire in what a person bound to the environment: a connected account bound to it explicitly
-// (never "the only one there is"), or a database that lives in it. A key a person stored by hand is fine.
-const INTERNAL_REF = /^credential:\/\/(unit7|forge|ssh|storage|ntfy|webhook)\//; // forge: keys saved before the rename
+// Which vault references an app may use. Unit7's own keys never go into an app, whoever asks. An AI may also only wire
+// in what a person bound to the environment: a connected account bound to it explicitly (never "the only one there is"),
+// or a database that lives in it. A key a person stored by hand has no place to check, so the gate asks them first.
 export function checkRef(ctx: Ctx, s: Scope, ref: string) {
   if (INTERNAL_REF.test(ref)) throw forbidden(`${ref} is one of Unit7's own keys. Apps can't use it.`);
   // an app's people-only keys go into another app only by a person's own hand (never a token or an AI)

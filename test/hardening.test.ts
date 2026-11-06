@@ -161,9 +161,11 @@ test('an app can never be wired to Unit7’s own keys, and an AI only to its own
   // a second Vercel account's token, wired by an AI into an app
   for (const slug of ['main', 'other']) run(app.db, `INSERT INTO accounts (id, org_id, provider, name, slug, meta) VALUES (?, ?, 'vercel', ?, ?, '{}')`, id('acc'), o.orgId, slug, slug);
   assert.notEqual((await o.a('env.set', { serviceId: devSvc, key: 'VERCEL_TOKEN', value: 'credential://vercel/other/token' })).status, 'ok');
-  // a person's own API key is fine
+  // a person's own API key goes in on their yes: the app's code can read it, and an AI may have written that code
   ok(await o.h('vault.set', { ref: 'credential://stripe/main/key', value: 'sk_test_' + 'a'.repeat(24) }));
-  ok(await o.a('env.set', { serviceId: devSvc, key: 'STRIPE_KEY', value: 'credential://stripe/main/key' }));
+  const asked = await o.a('env.set', { serviceId: devSvc, key: 'STRIPE_KEY', value: 'credential://stripe/main/key' }) as any;
+  assert.equal(asked.status, 'approval_required');
+  ok(await decideApproval(app, o.orgId, o.human, asked.approvalId, true) as never);
 });
 
 test('in production, an AI asks before running new code or commands with the app’s secrets', async () => {
