@@ -63,7 +63,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 43. "Put this live", "deploy this site", "new Vercel project": live_options (it says what it is and where it can go), then live_put with an uploadId or a repo. Only a person can give a folder: in a terminal they run unit7 live from the folder, which picks the best connected host. Hosts build it themselves and live_put checks it answers. It stops on keys in a plain website: tell the person which files. live_logs reads a host's build log and live_env sets its settings. github_create_repo and github_push save code in GitHub, never with a force push.
 44. Hosted Supabase and Neon: use supabase_* and neon_* (projects, sql, functions, secrets, auth, storage, realtime, logs, branches). supabase_auth, supabase_storage, supabase_functions and supabase_realtime also take serverId and part, for a self-hosted stack.
 45. WordPress: wordpress_status first. A broken site: wordpress_plugin with op find, then offer its switch-off. A new site only through wordpress_install, which claims the admin at once. wordpress_admin is people-only.
-46. For files on a server use file_list, file_read and file_write, with part for a container, not server_exec. file_remove moves a file to a 7-day trash. An AI never opens secret files or changes who can sign in.`;
+46. For files on a server use file_list, file_read and file_write, with part for a container, not server_exec. file_remove moves a file to a 7-day trash. An AI never opens secret files or changes who can sign in.
+47. DNS records: dns_list, then dns_set; domain_redirect for redirects; client_subdomain gives a client an address. Mail records wait for a person. domain_point and domain_launch take a Coolify app in one step.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).

@@ -47,6 +47,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Text up to 1 MB, 64 KB for an AI, and 100 MB for transfers. Containers need a shell. Undo fails once a container is recreated.
 
+## Domains
+
+- Wildcard HTTPS needs a person to set up DNS-01. GoDaddy may refuse small accounts’ API keys. Vercel redirects work on whole domains only.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.
