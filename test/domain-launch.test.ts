@@ -8,6 +8,8 @@ import type { AddressInfo } from 'node:net';
 import { Resolver } from 'node:dns/promises';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { hostinger } from '../src/connectors/hostinger.ts';
+import { dnsLook } from '../src/connectors/dnswrite.ts';
+import { dnsDeps } from '../src/tools/clouds-dns.ts';
 import { decideApproval, type Ctx, type ToolResult } from '../src/tools/runtime.ts';
 import { all, id, run } from '../src/db.ts';
 import { Redactor } from '../src/redact.ts';
@@ -16,6 +18,9 @@ import { CANON, LAUNCH, launch, splitName, typedCents } from '../src/tools/launc
 process.env.UNIT7_HOSTINGER_CMD = process.execPath;
 process.env.UNIT7_HOSTINGER_ARGS = fileURLToPath(new URL('./fake-hostinger-domains.mjs', import.meta.url));
 Object.assign(LAUNCH, { pollMs: 5, waitMs: 300 });
+// public DNS as the launch reads it: nothing there, unless a test says so
+const noDns = { host: async () => ({ nameservers: [] as string[] }), answers: async () => [] as string[] };
+Object.assign(dnsDeps, noDns);
 const app = testApp();
 after(() => hostinger(app).closeAll());
 
@@ -299,20 +304,80 @@ test('an AI runs a launch again after each OK: what’s done isn’t asked again
   }
 });
 
+// a person's yes, and what that run said
+function yes(orgId: string, tool: string, what: object, at: string, o: { result?: string; said?: object } = {}) {
+  const approval = id('apr');
+  run(app.db, `INSERT INTO approvals (id, org_id, tool, input, why, actor, status, result, decided_at, expires_at) VALUES (?, ?, ?, ?, 'asked', 'ai', 'done', ?, ?, ?)`, approval, orgId, tool, JSON.stringify(what), o.result ?? 'success', at, at);
+  run(app.db, `INSERT INTO audit (id, org_id, actor_kind, actor_name, tool, action, risk, output, result, approval_id) VALUES (?, ?, 'agent', 'AI', ?, 'dns_write', 'write', ?, 'success', ?)`, id('aud'), orgId, tool, JSON.stringify(o.said ?? {}), approval);
+}
+const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3600_000).toISOString();
+
 test('a step a person OKed that ran isn’t asked again, and an old yes or a failed run still is', async () => {
   const o = await withHostinger('Ida'), svc = 'svc_aaaaaaaaaaaa', input = { domain: 'idashop.co', target: { serviceId: svc }, dns: 'cloudflare' as const };
   run(app.db, `INSERT INTO domains (id, org_id, hostname, status, tls) VALUES (?, ?, 'idashop.co', 'pending', 'issuing')`, id('dom'), o.orgId);
-  const yes = (tool: string, what: object, at: string, result = 'success') => run(app.db, `INSERT INTO approvals (id, org_id, tool, input, why, actor, status, result, decided_at, expires_at) VALUES (?, ?, ?, ?, 'asked', 'ai', 'done', ?, ?, ?)`, id('apr'), o.orgId, tool, JSON.stringify(what), result, at, at);
   const steps = async () => { const f = fakeCalls(); const r = await launch(ctxFor(o), input, f.call); return { asked: f.tools().filter((t) => /move_dns|protect_email|canonical/.test(t)), r }; };
-  yes('domain.protect_email', { domain: 'idashop.co' }, new Date(Date.now() - 7 * 3600_000).toISOString());
-  yes('domain.move_dns', { domain: 'idashop.co' }, new Date().toISOString(), 'error: Cloudflare refused');
-  yes('domain.canonical', { domain: 'other.co', prefer: 'apex' }, new Date().toISOString());
+  yes(o.orgId, 'domain.protect_email', { domain: 'idashop.co' }, hoursAgo(7));
+  yes(o.orgId, 'domain.move_dns', { domain: 'idashop.co' }, hoursAgo(0), { result: 'error: Cloudflare refused' });
+  yes(o.orgId, 'domain.canonical', { domain: 'other.co', prefer: 'apex' }, hoursAgo(0));
   assert.deepEqual((await steps()).asked, ['domain.move_dns', 'domain.protect_email', 'domain.canonical'], 'too old, failed, another domain');
-  for (const [tool, what] of [['domain.move_dns', { domain: 'idashop.co' }], ['domain.protect_email', { domain: 'idashop.co' }], ['domain.canonical', { domain: 'idashop.co', prefer: 'apex' }]] as const) yes(tool, what, new Date().toISOString());
+  yes(o.orgId, 'domain.move_dns', { domain: 'idashop.co' }, hoursAgo(0), { said: { next: 'Nameservers switched.' } });
+  yes(o.orgId, 'domain.protect_email', { domain: 'idashop.co' }, hoursAgo(0));
+  yes(o.orgId, 'domain.canonical', { domain: 'idashop.co', prefer: 'apex' }, hoursAgo(0));
   const { asked, r } = await steps();
   assert.deepEqual(asked, []);
   assert.equal(r.live, true);
-  assert.equal(r.steps[1]!.note, 'Moved after your OK.');
+  assert.equal(r.steps[1]!.note, 'Nameservers switched.', 'what that run said');
+});
+
+test('what public DNS shows needs no OK, and a move’s yes lasts the day its nameservers can take', async () => {
+  const domain = 'joshop.example', o = await withHostinger('Jo'), input = { domain, target: { serviceId: 'svc_aaaaaaaaaaaa' }, dns: 'cloudflare' as const };
+  run(app.db, `INSERT INTO domains (id, org_id, hostname, status, tls) VALUES (?, ?, ?, 'pending', 'issuing')`, id('dom'), o.orgId, domain);
+  const steps = async () => { const f = fakeCalls(); const r = await launch(ctxFor(o), input, f.call); return { asked: f.tools().filter((t) => /move_dns|protect_email/.test(t)), r }; };
+  // no yes at all, but Cloudflare answers for it and DMARC is there: done, and a yes now would only fail with "already"
+  dnsDeps.host = async () => ({ zone: domain, host: 'cloudflare', nameservers: [] });
+  dnsDeps.answers = async (name) => (name === `_dmarc.${domain}` ? ['v=DMARC1; p=reject'] : []);
+  const done = await steps();
+  Object.assign(dnsDeps, noDns);
+  assert.deepEqual(done.asked, []);
+  assert.equal(done.r.steps[1]!.note, 'Already on Cloudflare.');
+  assert.equal(done.r.steps[4]!.note, 'Already protected.');
+  // the old host still answers: yesterday's yes stands, and the launch repeats what that run said
+  yes(o.orgId, 'domain.move_dns', { domain }, hoursAgo(30), { said: { next: 'Set the nameservers at your registrar.' } });
+  const moving = await steps();
+  assert.deepEqual(moving.asked, ['domain.protect_email']);
+  assert.equal(moving.r.steps[1]!.note, 'Set the nameservers at your registrar.');
+  // days on, nothing shows it happened, so a person is asked again
+  run(app.db, 'UPDATE approvals SET decided_at = ? WHERE org_id = ?', hoursAgo(72), o.orgId);
+  assert.deepEqual((await steps()).asked, ['domain.move_dns', 'domain.protect_email']);
+});
+
+test('at Ask first on a host with no redirect setting: the yes for email keeps what it said, and the redirect asks nothing', async () => {
+  const domain = 'umashop.example', o = await testOrg(app, 'Uma'), fly = id('acc'), target = { fly: { accountId: fly, app: 'shop' } }, realHost = dnsLook.host, realFetch = CANON.fetch;
+  run(app.db, 'UPDATE orgs SET autonomy = 2 WHERE id = ?', o.orgId);
+  run(app.db, `INSERT INTO accounts (id, org_id, provider, name, slug) VALUES (?, ?, 'fly', 'Main', 'main')`, fly, o.orgId);
+  for (const h of [domain, `www.${domain}`]) run(app.db, `INSERT INTO domains (id, org_id, hostname, status, tls, target) VALUES (?, ?, ?, 'pending', 'issuing', ?)`, id('dom'), o.orgId, h, JSON.stringify({ kind: 'fly', ...target.fly }));
+  dnsLook.host = noDns.host; // DNS Unit7 can't write to, so the email record is the person's to add
+  CANON.fetch = async () => new Response('ok'); // www just opens the app
+  const pending = () => all<{ id: string; tool: string }>(app.db, `SELECT id, tool FROM approvals WHERE org_id = ? AND status = 'pending'`, o.orgId);
+  const launched = async () => { // at Ask first the launch itself takes a yes, each run
+    const r = await o.a('domain.launch', { domain, target });
+    assert.equal(r.status, 'approval_required', JSON.stringify(r));
+    const done = await decideApproval(app, o.orgId, o.human, (r as any).approvalId, true);
+    assert.equal(done.status, 'ok', JSON.stringify(done));
+    return (done as any).output;
+  };
+  try {
+    const first = await launched();
+    assert.deepEqual(first.steps.map((s: any) => s.state), ['ok', 'ok', 'ok', 'waiting', 'waiting', 'todo', 'todo']);
+    assert.deepEqual(pending().map((a) => a.tool), ['domain.protect_email']);
+    assert.equal((await decideApproval(app, o.orgId, o.human, pending()[0]!.id, true)).status, 'ok');
+    const again = await launched();
+    assert.deepEqual(pending(), [], 'nothing asked twice, and nothing asked for a redirect Unit7 can’t set');
+    assert.equal(again.steps[4].state, 'waiting', 'not protected yet');
+    assert.match(again.steps[4].note, /^Add TXT _dmarc\.umashop\.example → v=DMARC1/);
+    assert.equal(again.steps[5].state, 'ok');
+    assert.match(again.steps[5].note, /^Fly\.io has no redirect setting, so www\.umashop\.example opens the same app/);
+  } finally { dnsLook.host = realHost; CANON.fetch = realFetch; }
 });
 
 test('a name already at this app here isn’t pointed again; one at another app is', async () => {

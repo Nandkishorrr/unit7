@@ -16,6 +16,7 @@ import { replicaNames, routeService, type ServiceConfig, type ServiceRow } from 
 import { vercel } from '../connectors/clouds.ts';
 import { netlify } from '../connectors/hosts.ts';
 import { canonicalOnCoolify } from './redirects.ts';
+import { dnsDeps } from './clouds-dns.ts';
 
 const TLDS = ['com', 'io', 'co', 'app', 'dev', 'net', 'org', 'xyz'];
 export const LAUNCH = { pollMs: 15_000, waitMs: 3 * 60_000 }; // how long it waits for the domain and HTTPS (tests shorten it)
@@ -175,12 +176,18 @@ async function pointedAlready(ctx: Ctx, hostname: string, t: Record<string, any>
   return (st.verified && !st.misconfigured) || (wentIn && st.records.every((r) => wrote.some((w) => w.type === r.type && w.content === r.content)));
 }
 
-// A person said yes to this very step and it ran, within the hours a setup takes: an AI's next run carries on instead of filing the
-// same approval. For the steps with nothing to read back: a move that hasn't shown in public DNS yet, email protection that hasn't
-// spread, and a redirect on a host with no setting for one, which writes nothing down.
-const YES_HOURS = 6;
-const yesRan = (ctx: Ctx, tool: string, input: Record<string, unknown>) => all<{ input: string }>(ctx.db, `SELECT input FROM approvals WHERE org_id = ? AND tool = ? AND status = 'done' AND result = 'success' AND decided_at > ?`, ctx.orgId, tool, new Date(Date.now() - YES_HOURS * 3600_000).toISOString())
-  .some((r) => isDeepStrictEqual(json(r.input, {}), input));
+// A person said yes to this very step and it ran, lately: an AI's next run takes that run's own answer instead of filing the
+// same approval. For a step public DNS can't show yet: a move (its nameservers can take a day), or a record that hasn't spread.
+const YES_HOURS = 6, MOVE_HOURS = 48;
+function yesRan(ctx: Ctx, tool: string, input: Record<string, unknown>, hours = YES_HOURS) {
+  const yes = all<{ id: string; input: string }>(ctx.db, `SELECT id, input FROM approvals WHERE org_id = ? AND tool = ? AND status = 'done' AND result = 'success' AND decided_at > ? ORDER BY decided_at DESC`, ctx.orgId, tool, new Date(Date.now() - hours * 3600_000).toISOString())
+    .find((r) => isDeepStrictEqual(json(r.input, {}), input));
+  if (!yes) return undefined;
+  const answer = get<{ output: string | null }>(ctx.db, `SELECT output FROM audit WHERE org_id = ? AND approval_id = ? AND result = 'success'`, ctx.orgId, yes.id)?.output;
+  let output: any = {};
+  try { output = json(answer, {}); } catch { /* a very long answer is cut short in the log */ }
+  return { ok: true as const, output };
+}
 
 export async function launch(ctx: Ctx, i: { domain: string; target: Record<string, unknown>; dns: 'keep' | 'cloudflare'; prefer?: 'apex' | 'www' },
   call: Call = (tool, input) => execute(ctx.app, ctx.orgId, ctx.actor, tool, input, { reason: `launch ${i.domain}`, signal: ctx.signal })) {
@@ -232,9 +239,10 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
   // 2. DNS
   if (i.dns === 'cloudflare') {
     set('dns', 'running');
-    const r = yesRan(ctx, 'domain.move_dns', { domain }) ? { ok: true as const, output: { next: 'Moved after your OK.' } } : said(await call('domain.move_dns', { domain }));
-    if (!r.ok && r.code !== 'already') return stop('dns', r);
-    set('dns', 'ok', r.ok ? r.output?.next : 'Already on Cloudflare.');
+    const there = (await dnsDeps.host(domain).catch(() => undefined))?.host === 'cloudflare'; // asking then would only fail with "already"
+    const r = there ? undefined : yesRan(ctx, 'domain.move_dns', { domain }, MOVE_HOURS) ?? said(await call('domain.move_dns', { domain }));
+    if (r && !r.ok && r.code !== 'already') return stop('dns', r);
+    set('dns', 'ok', r?.ok ? r.output?.next : 'Already on Cloudflare.');
   } else set('dns', 'ok', hostingerAccs.length ? 'Kept at Hostinger.' : 'Kept where it is.');
 
   // 3. point the bare domain at the app
@@ -259,7 +267,8 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
 
   // 5. nobody can send email pretending to be this domain
   set('email', 'running');
-  const e = yesRan(ctx, 'domain.protect_email', { domain }) ? { ok: true as const, output: { dmarc: 'already set' } } : said(await call('domain.protect_email', { domain }));
+  const dmarc = (await dnsDeps.answers(`_dmarc.${domain}`, 'TXT')).some((t) => /^v=DMARC1/i.test(t));
+  const e = dmarc ? { ok: true as const, output: { dmarc: 'already set' } } : yesRan(ctx, 'domain.protect_email', { domain }) ?? said(await call('domain.protect_email', { domain }));
   if (!e.ok) return stop('email', e);
   const emailWait = needsYou(e.output);
   set('email', emailWait ? 'waiting' : 'ok', emailWait ?? (e.output?.dmarc === 'already set' ? 'Already protected.' : 'Nobody can send email pretending to be you.'));
@@ -274,9 +283,12 @@ export async function launch(ctx: Ctx, i: { domain: string; target: Record<strin
     const wwwWait = needsYou(w.output);
     // domain.canonical writes this down once it's set, so a run after a person's OK doesn't file it again
     const [main, other] = i.prefer === 'www' ? [`www.${domain}`, domain] : [domain, `www.${domain}`];
-    const redirect = json<{ redirectTo?: string }>(get<{ target: string | null }>(ctx.db, 'SELECT target FROM domains WHERE hostname = ? AND org_id = ?', other, ctx.orgId)?.target, {}).redirectTo;
-    const pick = { domain, prefer: i.prefer ?? 'apex' };
-    const c = redirect === main || yesRan(ctx, 'domain.canonical', pick) ? { ok: true as const, output: { note: 'Already set.' } } : said(await call('domain.canonical', pick));
+    const saved = (h: string) => json<{ kind?: string; redirectTo?: string }>(get<{ target: string | null }>(ctx.db, 'SELECT target FROM domains WHERE hostname = ? AND org_id = ?', h, ctx.orgId)?.target, {});
+    const { kind } = saved(main), pick = { domain, prefer: i.prefer ?? 'apex' };
+    const c = saved(other).redirectTo === main ? { ok: true as const, output: { note: 'Already set.' } }
+      // no setting at that host: nothing can change, so there's nothing for a person to OK
+      : kind && HOST_NAME[kind] ? { ok: true as const, output: await hostRedirect(kind, main, other) }
+      : yesRan(ctx, 'domain.canonical', pick) ?? said(await call('domain.canonical', pick));
     if (!c.ok) return stop('www', c);
     set('www', wwwWait || c.output?.state === 'waiting' ? 'waiting' : 'ok', wwwWait ?? c.output?.note);
   }
@@ -329,6 +341,16 @@ export async function redirectCheck(from: string, to: string, scheme = 'https'):
   } catch { return { answered: false, ok: false }; }
 }
 
+// a host in HOST_NAME has nothing Unit7 can set: Render does it by itself; the others have no setting (the app itself can redirect)
+async function hostRedirect(kind: string | undefined, main: string, other: string) {
+  const check = await redirectCheck(other, main);
+  const host = HOST_NAME[kind ?? ''] ?? 'Its host';
+  return { main, redirects: other, how: kind ?? 'unknown', set: check.ok, check, state: 'ok',
+    note: check.ok ? `${other} sends visitors to ${main}.` : kind === 'render'
+      ? `Render sends www and the bare domain to whichever was added first. To make ${main} the main one, remove both in Render and add ${main} first.`
+      : `${host} has no redirect setting, so ${other} opens the same app. Your app can send visitors to ${main} itself.` };
+}
+
 export async function setCanonical(ctx: Ctx, raw: string, prefer: 'apex' | 'www') {
   const apex = domainOf(raw);
   const main = prefer === 'www' ? `www.${apex}` : apex, other = prefer === 'www' ? apex : `www.${apex}`;
@@ -375,14 +397,9 @@ export async function setCanonical(ctx: Ctx, raw: string, prefer: 'apex' | 'www'
     await netlify.setPrimary(ctx, t.accountId!, t.site!, main, other);
     mark(m); mark(o, main);
   } else {
-    // nothing Unit7 can set: Render does it by itself; the others have no setting (the app itself can redirect)
-    const check = await redirectCheck(other, main);
-    const host = HOST_NAME[kind ?? ''] ?? 'Its host';
-    if (check.ok) { mark(m); mark(o, main); }
-    return { main, redirects: other, how: kind ?? 'unknown', set: check.ok, check, state: 'ok',
-      note: check.ok ? `${other} sends visitors to ${main}.` : kind === 'render'
-        ? `Render sends www and the bare domain to whichever was added first. To make ${main} the main one, remove both in Render and add ${main} first.`
-        : `${host} has no redirect setting, so ${other} opens the same app. Your app can send visitors to ${main} itself.` };
+    const r = await hostRedirect(kind, main, other);
+    if (r.check.ok) { mark(m); mark(o, main); }
+    return r;
   }
   const check = await redirectCheck(other, main, scheme);
   ctx.emit('domain.canonical', `${other} now sends visitors to ${main}`, { severity: 'info', resource: main });
