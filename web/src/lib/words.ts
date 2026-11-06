@@ -95,6 +95,11 @@ Object.assign(TOOL_WORDS, {
   'part.backup': 'Back up a database on a server', 'part.backup_schedule': 'Back up a database every day', 'part.backups': 'See a server’s database backups', 'part.restore': 'Bring back a database from a backup',
   'snooze.set': 'Hide something for now', 'snooze.list': 'See what’s hidden', 'snooze.clear': 'Bring something back',
 });
+// a database found on a server (tools/data.ts)
+Object.assign(TOOL_WORDS, {
+  'part.tables': 'See a database’s tables', 'part.query': 'Run a query on a database', 'part.import': 'Load a file into a database', 'part.export': 'Download a database or a table',
+  'part.restore_files': 'Bring back a project’s files', 'part.upgrade_plan': 'Plan a database upgrade', 'part.upgrade_run': 'Test a database on a new version', 'part.upgrade_switch': 'Move a database to a new version',
+});
 // the five Autopilot levels, as people say them (Autopilot shows these with a longer explanation)
 export const LEVEL_NAMES = ['Watch only', 'Suggest', 'Ask first', 'Fix itself, ask for risky', 'Full autopilot'];
 // the server's own tool title (from /api/tools) is the next best thing to a hand-written line
@@ -278,6 +283,13 @@ Object.assign(NAMED, {
   'file.write': (x: string, i: any) => `Save ${i.path} on ${x}`, 'file.upload': (x: string, i: any) => `Upload ${i.path} to ${x}`,
   'file.move': (x: string, i: any) => `Move ${i.path} on ${x}`, 'file.remove': (x: string, i: any) => `Move ${i.path} on ${x} to the trash`,
 });
+Object.assign(NAMED, {
+  'part.query': (x: string, i: any) => (i.write ? `Change data in ${x}` : `Run a query on ${x}`),
+  'part.import': (x: string, i: any) => (i.into === 'live' ? `Load a file into ${x}` : `Load a file into a side copy of ${x}`),
+  'part.restore_files': (x: string, i: any) => (i.into === 'live' ? `Put ${x}’s files back` : `Unpack ${x}’s files into a folder`),
+  'part.upgrade_run': (x: string) => `Test ${x} on a new version`,
+  'part.upgrade_switch': (x: string) => `Move ${x} to its new version`,
+});
 export function changeWords(tool: string, input: any = {}, name: (id?: string) => string | undefined = () => undefined): string {
   const i = input ?? {};
   const app = name(i.serviceId) ?? 'the app';
@@ -329,6 +341,11 @@ export function changeWords(tool: string, input: any = {}, name: (id?: string) =
     case 'part.backup_schedule': return i.off ? `${partName(i.part)} isn’t backed up by Unit7 any more. Copies already made stay.` : `${partName(i.part)} is copied every day (the first copy now), the last ${i.keep ?? 7} kept, encrypted off the server. Nothing in the database changes.`;
     case 'part.restore': return i.into === 'live' ? `${partName(i.part)} goes back to the backup. Newer changes are lost; Unit7 backs it up as it is now first.` : `A test copy of ${partName(i.part)} starts next to it from the backup. The live one doesn’t change.`;
     case 'part.backup': return `${partName(i.part)} is copied now and the copy goes off the server, encrypted. Nothing in the database changes.`;
+    case 'part.query': return `One statement runs on ${partName(i.part)}, after a fresh backup: ${String(i.sql ?? '').slice(0, 200)}`;
+    case 'part.import': return i.into === 'live' ? `The file goes into the live ${partName(i.part)}${i.table ? `, table ${i.table}` : ''}, after a fresh backup.` : `The file goes into a new side copy of ${partName(i.part)}. The live one doesn’t change.`;
+    case 'part.restore_files': return i.into === 'live' ? `${partName(i.part)}’s files go back to that copy. What uses them stops for as long as it takes, and what was there moves aside.` : `${partName(i.part)}’s files are unpacked into a new folder on the server. Nothing that runs is touched.`;
+    case 'part.upgrade_run': return `A fresh backup of ${partName(i.part)} goes into the new version, next to the live one. The live one doesn’t change.`;
+    case 'part.upgrade_switch': return `Apps can’t reach ${partName(i.part)} while it moves to the tested version. The old files stay on the server.`;
   }
   return `${toolWords(tool)}.`;
 }

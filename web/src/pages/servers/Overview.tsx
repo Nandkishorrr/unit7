@@ -17,7 +17,7 @@ import { AppsTile, AttentionTile, RoomDetail, RoomTile, TrafficTile } from './Ti
 import type { Item, ServerWatch } from './Attention';
 import type { LifecycleItem } from '../lifecycle';
 
-export type TabId = 'overview' | 'apps' | 'traffic' | 'health' | 'changes' | 'advanced';
+export type TabId = 'overview' | 'apps' | 'data' | 'traffic' | 'health' | 'changes' | 'advanced';
 
 // the page's shared state: the open project, the Coolify connect and Room pop-ups, and the cards' context
 export function useServerPage(sx: ServerXray, serverName: string, human: boolean) {
@@ -259,7 +259,7 @@ function RestoreModal({ serverId, b, onClose, onDone }: { serverId: string; b: P
           <fieldset className="space-y-2">
             <legend className="mb-1.5 text-[13px] font-medium">Where to</legend>
             {opt('copy', 'Into a test copy (safest)', 'A new copy starts next to it from this backup. The live one doesn’t change, and Undo in Activity removes the copy.')}
-            {opt('live', 'Over the live one', 'It goes back to this backup and newer changes are lost. Unit7 backs it up as it is now first, so you can go back.', b.canRestoreOverLive ? undefined : 'Postgres backups come back as a test copy: check it, then point your app at it.')}
+            {opt('live', 'Over the live one', b.engine === 'postgres' ? 'It goes back to this backup and newer changes are lost. Unit7 tests the backup first, backs it up as it is now, and keeps apps out while it runs.' : 'It goes back to this backup and newer changes are lost. Unit7 backs it up as it is now first, so you can go back.', b.canRestoreOverLive ? undefined : 'This one comes back as a test copy: check it, then point your app at it.')}
           </fieldset>
           {into === 'live' && (
             <label className="block">

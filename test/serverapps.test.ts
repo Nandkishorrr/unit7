@@ -136,7 +136,7 @@ test('Supabase on Coolify: the exact commands, no secret on any command line, ev
   assert.equal(seen[0]!.command, supa.connect!(p).join('; '), 'Unit7 rendered it (root already, so no sudo)');
   assert.ok(seen[0]!.command.startsWith(readKeys(['supabase-kong-shopsupa01', 'supabase-studio-shopsupa01'], ['SUPABASE_ANON_KEY', 'ANON_KEY', 'SUPABASE_SERVICE_KEY', 'SERVICE_ROLE_KEY', 'SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_SECRET_KEY', 'DASHBOARD_USERNAME', 'DASHBOARD_PASSWORD', 'SUPABASE_PUBLIC_URL', 'SERVICE_URL_SUPABASEKONG', 'SERVICE_URL_SUPABASEKONG_8000', 'SERVICE_FQDN_SUPABASEKONG', 'API_EXTERNAL_URL'])), 'only the named settings, from kong and studio');
   assert.ok(seen[0]!.command.includes(`'supabase-db-shopsupa01' '${PSQL_SUPABASE}'`), 'the read-only role is made by psql inside the stack’s own database');
-  assert.match(plain(seen[0]!.command), /ALTER ROLE unit7_read WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s'/);
+  assert.match(plain(seen[0]!.command), /ALTER ROLE unit7_read WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS PASSWORD '%s'/);
   assert.match(plain(seen[0]!.command), /SET log_statement = 'none'/, 'the password never lands in the server log');
   assert.match(seen[0]!.command, /ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO unit7_read/);
   noSecrets(seen.map((x) => x.command + x.stdin).join('\n'), 'what Unit7 sent');

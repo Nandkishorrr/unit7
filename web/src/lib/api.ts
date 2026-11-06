@@ -51,6 +51,13 @@ export async function sendFile(file: File): Promise<string> {
   if (!res.ok) throw await refused(res);
   return (await res.json()).uploadId;
 }
+// a file for a tool to use (part.import): the raw bytes, then the tool gets its id
+export async function upload(file: File): Promise<{ uploadId: string; size: number }> {
+  const res = await fetch('/api/uploads', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-unit7-bind': bind() }, body: file, credentials: 'same-origin' });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(data?.error?.code ?? 'http_error', data?.error?.message ?? `The upload failed (${res.status}).`, res.status);
+  return data;
+}
 
 // --- live events: one SSE connection, many listeners ---
 export interface LiveEvent { id: string; type: string; severity: 'info' | 'success' | 'warning' | 'critical'; message: string; data: any; created_at: string; live?: boolean; project_id?: string | null; environment_id?: string | null; resource?: string | null

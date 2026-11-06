@@ -13,6 +13,7 @@ import { useServerXray, CoolifyChip } from './servers/Xray';
 import { size as xsize, type Xray } from './servers/shape';
 import { BackupsTab, Overview, useServerPage, type TabId } from './servers/Overview';
 import { AppsTab, type AppsView } from './servers/Apps';
+import { DataTab } from './servers/Data';
 import { AttentionList, AttentionModal, countsLine, useServerWatch, type Item } from './servers/Attention';
 import { FirstKeyButton, PrepStatus, RebootWindowCard } from './servers/Automation';
 import { FirstKeyModal } from './servers/Automation';
@@ -269,11 +270,11 @@ export function ConnectServer({ open, onClose, stay, onConnected }: { open: bool
 }
 
 // ---------------------------------------------------------------------------------------------
-// One server, calm: a header with its health in one word and three small rings, then six tabs. Overview is four
-// tiles; Apps the projects; Traffic the graph; Health what needs a look, usage over time, security and backups;
+// One server, calm: a header with its health in one word and three small rings, then seven tabs. Overview is four
+// tiles; Apps the projects; Data its databases; Traffic the graph; Health what needs a look, usage over time, security and backups;
 // Changes what changed and who did it; Advanced the raw things. Each fact sits in one place.
 const TABS: { value: TabId; label: string }[] = [
-  { value: 'overview', label: 'Overview' }, { value: 'apps', label: 'Apps' }, { value: 'traffic', label: 'Traffic' }, { value: 'health', label: 'Health' }, { value: 'changes', label: 'Changes' }, { value: 'advanced', label: 'Advanced' },
+  { value: 'overview', label: 'Overview' }, { value: 'apps', label: 'Apps' }, { value: 'data', label: 'Data' }, { value: 'traffic', label: 'Traffic' }, { value: 'health', label: 'Health' }, { value: 'changes', label: 'Changes' }, { value: 'advanced', label: 'Advanced' },
 ];
 // the old tabs' links still land in the right place
 const LEGACY: Record<string, [TabId, AppsView?]> = { map: ['apps'], domains: ['apps', 'domains'], databases: ['apps', 'databases'], jobs: ['apps', 'jobs'], backups: ['health'] };
@@ -400,6 +401,7 @@ export function ServerDetail({ id }: { id: string }) {
         {tab === 'overview' && <PrepStatus serverId={id} status={base.status} facts={f} onChanged={() => { graph.reload(); void load(); }} />}
         {tab === 'overview' && <Overview sx={sx} page={page} w={w} serverName={name} doctor={doctor} problem={!!problem} onTab={go} onItem={setAtt} />}
         {tab === 'apps' && <AppsTab sx={sx} page={page} serverName={name} view={view} onView={(v) => go('apps', v)} />}
+        {tab === 'data' && <DataTab sx={sx} serverId={id} />}
         {tab === 'traffic' && <ServerTrafficTab serverId={id} />}
         {tab === 'health' && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">

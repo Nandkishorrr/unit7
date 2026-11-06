@@ -122,11 +122,12 @@ export const firstUrl = (v?: string) => { const u = v?.split(',')[0]?.trim(); re
 
 // --- Postgres: a read-only role ---------------------------------------------------------------------------------
 // The session stops logging statements first (and pg_stat_statements stops keeping utility ones), so the
-// password never lands in the server's log; the role can't write, can't make roles, and still meets row-level security.
+// password never lands in the server's log; the role can't write and can't make roles. It reads past row-level security: on
+// Supabase nearly every table has it, and a login that meets it counts nothing (part.query turns that into an error, not a zero).
 const QUIET_PG = [`SET log_statement = 'none';`, `SET log_min_duration_statement = -1;`, `SET log_min_error_statement = 'panic';`, `SET pg_stat_statements.track_utility = off;`];
 const roleSql = (owner?: string) => ({
   pre: [...QUIET_PG, `SELECT 'CREATE ROLE ${ROLE}' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${ROLE}')\\gexec`].join('\n'),
-  line: `ALTER ROLE ${ROLE} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s';`,
+  line: `ALTER ROLE ${ROLE} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS PASSWORD '%s';`,
   post: [
     `SELECT format('GRANT CONNECT ON DATABASE %I TO ${ROLE}', current_database())\\gexec`,
     `GRANT USAGE ON SCHEMA public TO ${ROLE};`, `GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${ROLE};`, `GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO ${ROLE};`,
@@ -151,7 +152,7 @@ function roleGot(sec: Record<string, string>, container: string, client: string,
 
 // --- MySQL and MariaDB: a read-only user on the app databases (never MySQL's own, which holds password hashes) ---
 // signed in as root with the image's own root password, read inside the container (MYSQL_PWD: the client's environment, not its command line)
-const MYSQL_LOGIN = [
+export const MYSQL_LOGIN = [
   'p="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"',
   '[ -z "$p" ] && [ -n "${MYSQL_ROOT_PASSWORD_FILE:-}" ] && p=$(cat "$MYSQL_ROOT_PASSWORD_FILE")',
   '[ -n "$p" ] && export MYSQL_PWD="$p"',
@@ -254,7 +255,7 @@ const supabase: Adapter = {
     if (secretKey) creds.push({ name: 'sb-secret-key', label: 'Secret key', value: secretKey, scope: 'full access: the newer form of the service key; server code only', made: false, env: 'SUPABASE_SECRET_KEY' });
     const pass = first(keys, [k], 'DASHBOARD_PASSWORD');
     if (pass) creds.push({ name: 'dashboard-password', label: 'Dashboard login', value: pass, scope: 'signs a person in to Supabase Studio', made: false, user: first(keys, [k], 'DASHBOARD_USERNAME') ?? 'supabase', people: true });
-    const role = roleGot(sec, supaDb(p)!, PSQL_SUPABASE, 'read-only: tables in the public schema; row-level security still applies', 'postgres');
+    const role = roleGot(sec, supaDb(p)!, PSQL_SUPABASE, 'read-only: tables in the public schema, past row-level security so counts are right; it can’t write', 'postgres');
     return { creds: [...creds, ...role.creds], revoke: role.revoke, facts: { ...(url && { url }) }, ...(!anon && !publishable && { problem: 'Unit7 didn’t find the stack’s public (anon) key in its settings.' }), ...(role.problem && { note: role.problem }) };
   },
   health: (p) => probe(kong(p)!, 8000, '/rest/v1/'),

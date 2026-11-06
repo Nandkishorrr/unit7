@@ -6,7 +6,7 @@
 // Activity with Undo, which stops the schedule (a person only: backups are the undo for everything else).
 import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
-import { defineTool, type Ctx } from './runtime.ts';
+import { defineTool, execute, type Ctx } from './runtime.ts';
 import { all, get, id, json, now, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid, requireHuman } from './helpers.ts';
@@ -23,7 +23,7 @@ import { canDump } from '../discovery/findings.ts';
 
 const FREQ = { hourly: 3600_000, daily: 86400_000, weekly: 7 * 86400_000 } as const;
 const PART = z.string().trim().min(1).max(300).describe('The database’s id from server.xray (or its exact name)');
-const asRoot = (s: ServerRow) => (json<{ sudo?: string }>(s.facts, {}).sudo === 'yes' ? 'sudo -n ' : '');
+export const asRoot = (s: ServerRow) => (json<{ sudo?: string }>(s.facts, {}).sudo === 'yes' ? 'sudo -n ' : '');
 type Schedule = { id: string; frequency: string; keep: number; last_run_at: string | null };
 const due = (r: Pick<Schedule, 'frequency' | 'last_run_at'>, nowMs = Date.now()) => !r.last_run_at || nowMs - Date.parse(r.last_run_at) >= (FREQ[r.frequency as keyof typeof FREQ] ?? FREQ.daily) - 60_000;
 // Only Warden's own scheduled run prunes old backups: decided here from who asks and the schedule row, never from input
@@ -258,13 +258,13 @@ export function proofOf(want: Table[], got: Map<string, number>, said: string[] 
   return short.length ? { ok: false, note: `${short.length} of ${want.length} tables came back short: ${short.slice(0, 5).map((t) => `${t.table} (${count(t) === undefined ? 'missing' : `${count(t)!.toLocaleString('en-US')} of ${t.rows.toLocaleString('en-US')} rows`})`).join(', ')}${why.length ? `. Postgres said: ${why.join('; ')}` : ''}` }
     : { ok: true, note: `all ${want.length} table${want.length === 1 ? '' : 's'} and ${rows.toLocaleString('en-US')} row${rows === 1 ? '' : 's'} came back` };
 }
-const SUPABASE = /(^|\/)supabase\/postgres(:|$)/;
+export const SUPABASE = /(^|\/)supabase\/postgres(:|$)/;
 const pgAs = (image: string) => (SUPABASE.test(image) ? '-h 127.0.0.1 -U supabase_admin' : '-U postgres');
-export async function provePostgres(ctx: Ctx, s: ServerRow, name: string, image: string, file: string, said: string[]) {
+export async function provePostgres(ctx: Ctx, s: ServerRow, name: string, image: string, file: string, said: string[], as = pgAs(image)) {
   const want = parseManifest(await ssh(ctx.app).check(s, asRoot(s) + script(PG_MANIFEST, file), { what: 'Reading the backup', timeoutMs: 30 * 60_000, maxBytes: 16 * 1024 * 1024, signal: ctx.signal })), got = new Map<string, number>();
   for (const db of [...new Set(want.map((t) => t.db))]) {
     const tables = want.filter((t) => t.db === db);
-    const r = await ssh(ctx.app).exec(s, asRoot(s) + script(`docker exec -i "$1" psql ${pgAs(image)} -d "$2" -AtqX -F '|'`, name, db), { stdin: countsSql(tables), timeoutMs: 20 * 60_000, maxBytes: 16 * 1024 * 1024, signal: ctx.signal });
+    const r = await ssh(ctx.app).exec(s, asRoot(s) + script(`docker exec -i "$1" psql ${as} -d "$2" -AtqX -F '|'`, name, db), { stdin: countsSql(tables), timeoutMs: 20 * 60_000, maxBytes: 16 * 1024 * 1024, signal: ctx.signal });
     for (const [t, n] of parseCounts(r.stdout)) got.set(`${db}\t${t}`, n);
   }
   return proofOf(want, got, said);
@@ -358,6 +358,64 @@ const OVER: Record<string, string> = {
   redis: `set -e; d=$(docker exec "$2" sh -c 'export REDISCLI_AUTH="\${REDIS_PASSWORD:-$REDISCLI_AUTH}"; redis-cli CONFIG GET dir | tail -n 1'); f=$(docker exec "$2" sh -c 'export REDISCLI_AUTH="\${REDIS_PASSWORD:-$REDISCLI_AUTH}"; redis-cli CONFIG GET dbfilename | tail -n 1'); gunzip -c "$1" > "$1.rdb"; docker stop "$2" >/dev/null; docker cp "$1.rdb" "$2":"\${d:-/data}/\${f:-dump.rdb}"; docker start "$2" >/dev/null; rm -f "$1.rdb"`,
 };
 OVER.mariadb = OVER.mysql!;
+// Postgres: pg_dumpall's file only adds, so each database in it goes first, then it's read back the way a test copy is (a role that
+// exists already just says so, and carries on). The proof decides, not psql's exit status. The dump's own \connect lines name the
+// databases; a name that isn't plain stops it here, before anything is dropped. $1 the file, $2 the container, $3 psql's login (pgIn).
+OVER.postgres = String.raw`set -e; set -f; f=$1; c=$2; q=$3
+run() { docker exec -i "$c" sh -c "$q" unit7 "$@"; }
+dbs=$(gunzip -c "$f" | awk '/^\\connect /{print $2}' | tr -d '"' | sort -u | grep -v -x -e template0 -e template1 || true)
+for d in $dbs; do case "$d" in *[!A-Za-z0-9_-]*) echo "the backup holds a database with a name Unit7 won't put in a command: $d" >&2; exit 3;; esac; done
+n=$(echo 'show server_version_num' | run -At); force=''; [ "$n" -ge 130000 ] && force=' WITH (FORCE)'
+for d in $dbs; do printf 'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid();\nDROP DATABASE IF EXISTS "%s"%s;\n' "'$d'" "$d" "$force"; done | run -v ON_ERROR_STOP=1 >/dev/null
+case " $(echo $dbs) " in *' postgres '*) echo 'CREATE DATABASE postgres TEMPLATE template0;' | run -v ON_ERROR_STOP=1 >/dev/null;; esac
+gunzip -c "$f" | run 2>&1 >/dev/null | ${PG_SAID} || true`;
+// psql in a live database's own container, as its own superuser, on template1 (the one database a restore never drops)
+const pgIn = (image: string) => `export PGPASSWORD="\${POSTGRES_PASSWORD:-}"; exec psql -X -q ${SUPABASE.test(image) ? '-h 127.0.0.1 -U supabase_admin' : '-U "\${POSTGRES_USER:-postgres}"'} -d template1 "$@"`;
+// Nothing from outside the container can connect while it's restored: reject lines go on top of pg_hba.conf, and a reload takes them.
+// No restart. The file comes back from the copy kept next to it, and a closed database opens again from Activity if Unit7 lost the connection.
+const PG_CLOSE = String.raw`set -e; c=$1; q=$2
+f=$(echo 'show hba_file' | docker exec -i "$c" sh -c "$q" unit7 -At)
+docker exec -i "$c" sh -c '[ -e "$1.unit7" ] || cp -p "$1" "$1.unit7"; { printf "host all all 127.0.0.1/32 trust\nhost all all ::1/128 trust\nhost all all all reject\n"; cat "$1.unit7"; } > "$1.new"; cat "$1.new" > "$1"; rm -f "$1.new"' unit7 "$f"
+echo 'select pg_reload_conf()' | docker exec -i "$c" sh -c "$q" unit7 -At >/dev/null`;
+const PG_OPEN = String.raw`set -e; c=$1; q=$2
+f=$(echo 'show hba_file' | docker exec -i "$c" sh -c "$q" unit7 -At)
+docker exec -i "$c" sh -c 'if [ -e "$1.unit7" ]; then cat "$1.unit7" > "$1"; rm -f "$1.unit7"; fi' unit7 "$f"
+echo 'select pg_reload_conf()' | docker exec -i "$c" sh -c "$q" unit7 -At >/dev/null`;
+export const openPgCommand = (s: ServerRow, c: string, image: string) => asRoot(s) + script(PG_OPEN, c, pgIn(image));
+export const closePg = (ctx: Ctx, s: ServerRow, c: string, image: string, name: string) => ssh(ctx.app).check(s, asRoot(s) + script(PG_CLOSE, c, pgIn(image)), { what: `Closing ${name} to apps`, timeoutMs: 60_000, signal: ctx.signal });
+// its superuser, as the proof signs in: a Compose or Coolify Postgres can have its own
+async function pgLogin(ctx: Ctx, s: ServerRow, c: string, image: string) {
+  if (SUPABASE.test(image)) return undefined;
+  const u = (await ssh(ctx.app).check(s, asRoot(s) + script(`docker exec "$1" sh -c 'printf %s "\${POSTGRES_USER:-postgres}"'`, c), { what: 'Reading its superuser' })).trim();
+  if (!/^[a-zA-Z_][\w$-]{0,62}$/.test(u)) throw new Unit7Error('unsafe_name', `The superuser “${u.slice(0, 60)}” has characters Unit7 won’t put in a command.`, 400);
+  return `-U ${shq(u)}`;
+}
+// one file, over what's there, proven against that same file
+export async function replayPg(ctx: Ctx, s: ServerRow, c: string, image: string, file: string) {
+  const r = await ssh(ctx.app).exec(s, asRoot(s) + script(OVER.postgres!, file, c, pgIn(image)), { timeoutMs: 60 * 60_000, signal: ctx.signal });
+  if (r.code !== 0) return { ok: false, note: (r.stderr || r.stdout).trim().slice(-300) || `exit ${r.code}` };
+  return provePostgres(ctx, s, c, image, file, r.stderr.split('\n').filter(Boolean), await pgLogin(ctx, s, c, image));
+}
+// Over a live Postgres. If the file doesn't come back whole, the fresh backup goes back the same way. If that fails too it stays
+// closed: apps writing into a half-restored database is the one thing worse than being down.
+async function overPostgres(ctx: Ctx, s: ServerRow, p: Part, c: string, image: string, file: string, safety: string) {
+  const open = openPgCommand(s, c, image), changeId = id('chg');
+  run(ctx.db, 'INSERT INTO changes (id, org_id, server_id, part, verb, summary, undo, status, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', changeId, ctx.orgId, s.id, p.id, 'restore_open', `Closed ${p.name} to apps while it was restored`, JSON.stringify({ steps: [open] }), 'done', ctx.actor.name);
+  await closePg(ctx, s, c, image, p.name);
+  const done = await replayPg(ctx, s, c, image, file).catch((e: Error) => ({ ok: false, note: e.message.slice(0, 300) }));
+  if (!done.ok) {
+    ctx.progress(`That didn’t come back whole, so ${p.name} goes back to how it was…`);
+    const back = await replayPg(ctx, s, c, image, safety).catch((e: Error) => ({ ok: false, note: e.message.slice(0, 300) }));
+    if (!back.ok) {
+      ctx.emit('backup.restore_failed', `Restoring ${p.name} on ${s.name} failed, and so did putting it back. It stays closed to apps so nothing writes into it. It needs a person.`, { severity: 'critical', resource: s.id, data: { part: p.id, changeId } });
+      throw new Unit7Error('restore_failed', `Restoring ${p.name} failed (${done.note}), and so did putting back the backup taken just before (${back.note}). It stays closed to apps. Undo in Activity opens it again.`, 502, { changeId });
+    }
+  }
+  await ssh(ctx.app).check(s, open, { what: `Opening ${p.name} to apps again`, timeoutMs: 60_000 });
+  run(ctx.db, `UPDATE changes SET status = 'kept' WHERE id = ?`, changeId);
+  if (!done.ok) throw new Unit7Error('restore_undone', `That backup didn’t come back whole (${done.note}), so ${p.name} was put back as it was just before. Nothing was lost.`, 409);
+  return done;
+}
 
 defineTool({
   name: 'part.backups', title: 'Backups of the databases on a server', risk: 'read', action: 'read',
@@ -385,7 +443,7 @@ defineTool({
   name: 'part.restore', title: 'Bring back a database from a backup',
   risk: (i) => (i.into === 'live' ? 'destructive' : 'write'), action: (i) => (i.into === 'live' ? 'restore' : 'database_create'),
   peopleOnly: (i) => i.into === 'live', timeoutMs: 65 * 60_000,
-  description: 'Restore a backup Unit7 took of a database it found on a server (part.backups lists them). into copy (the default): a new container next to the live one, from the same image, no port open to the internet; the live one is untouched, and Undo removes the copy. into live: over the live database (a person only, typing its name as confirmName), after a fresh backup so it can be undone; MySQL, MariaDB, MongoDB and Redis. Postgres backups come back as a copy.',
+  description: 'Restore a backup Unit7 took of a database it found on a server (part.backups lists them). into copy (the default): a new container next to the live one, from the same image, no port open to the internet; the live one is untouched, and Undo removes the copy. into live: over the live database (a person only, typing its name as confirmName), after a fresh backup so it can be undone. Postgres and Supabase also pass a test restore first, stay closed to apps while it runs, and go back by themselves if the result doesn’t match the file.',
   input: z.object({ serverId: fid('srv'), part: PART, backupId: fid('bak').optional().describe('Which backup; the newest by default'), into: z.enum(['copy', 'live']).default('copy'), confirmName: z.string().max(300).optional() }),
   async run(ctx, i) {
     const s = serverRow(ctx, i.serverId);
@@ -406,12 +464,17 @@ defineTool({
     if (!sum || (b.checksum && sum !== b.checksum)) throw new Unit7Error('bad_backup', 'That backup file is missing on the server, damaged, or isn’t the one Unit7 made. Nothing was changed.', 409);
     const when = new Date(b.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
     if (i.into === 'live') {
-      const c = liveContainer(p);
+      const c = liveContainer(p), pg = p.engine === 'postgres', image = imageOf(p) ?? '';
       if (!c) throw new Unit7Error('not_found', `Unit7 couldn’t tell which container is ${p.name}’s database.`, 409);
+      if (pg) {
+        const t = await execute(ctx.app, ctx.orgId, ctx.actor, 'part.verify', { serverId: s.id, part: p.id, backupId: b.id }, { reason: 'before a restore over the live one', signal: ctx.signal });
+        if (t.status !== 'ok') throw new Unit7Error('test_failed', `That backup didn’t pass its test restore, so the live ${p.name} wasn’t touched: ${t.status === 'error' ? t.error.message : t.status === 'denied' ? t.why : 'it waits for approval'}`, 409);
+      }
       ctx.progress(`Backing up ${p.name} as it is now, first…`);
       const safety = await takePartBackup(ctx, s, p, 'before a restore');
       ctx.progress(`Restoring ${p.name} from ${when}…`);
-      await ssh(ctx.app).check(s, asRoot(s) + script(OVER[p.engine]!, b.location, c), { what: `Restoring ${p.name}`, timeoutMs: 60 * 60_000, signal: ctx.signal });
+      if (pg) await overPostgres(ctx, s, p, c, image, b.location, safety.location);
+      else await ssh(ctx.app).check(s, asRoot(s) + script(OVER[p.engine]!, b.location, c), { what: `Restoring ${p.name}`, timeoutMs: 60 * 60_000, signal: ctx.signal });
       ctx.emit('backup.restored', `${ctx.actor.name} restored ${p.name} on ${s.name} from the backup of ${when}`, { severity: 'warning', resource: s.id, data: { backupId: b.id, part: p.id, safetyBackup: safety.backupId } });
       return { restored: p.name, into: 'live', from: when, safetyBackup: safety.backupId, undo: `To go back, restore the backup taken just before (${safety.backupId}) the same way.` };
     }
@@ -445,9 +508,9 @@ defineTool({
 // --- open a past copy ------------------------------------------------------------------------------------------------------
 // part.restore into a copy gives yesterday's data as a side copy with no public port. These read it: look at a table, pull
 // one table out to a file, and put it away. Nothing here touches the live database, and these only ever act on a container
-// Unit7 made as a copy, known by its label and its name. Nothing removes one by itself: an app may run on it by now, because
-// Postgres backups only come back this way. After two days a person is reminded, once.
-const OPEN_COPY = /^[a-z0-9][a-z0-9_.-]*-copy-\d{8}-[a-z0-9]{4}$/;
+// Unit7 made as a copy, known by its label and its name. Nothing removes one by itself: an app may run on it by now. After
+// two days a person is reminded, once.
+export const OPEN_COPY = /^[a-z0-9][a-z0-9_.-]*-copy-\d{8}-[a-z0-9]{4}$/;
 const COPY_REF = z.string().regex(OPEN_COPY, 'a copy’s name, from part.copies');
 const COPY_DAYS = 2;
 const copyLine = (l: string) => { const [name = '', of = '', at = ''] = l.split('|'); return { name, of, at: new Date(at.replace(/ [A-Z]+$/, '').replace(' ', 'T').replace(' ', '')).toISOString() }; };

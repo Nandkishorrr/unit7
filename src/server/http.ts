@@ -8,7 +8,9 @@ import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { existsSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -18,6 +20,7 @@ import { Unit7Error, forbidden } from '../errors.ts';
 import { ROLES, canGrant, isAdmin, type Role } from '../policy.ts';
 import * as auth from '../auth.ts';
 import { execute, decideApproval, tools, viewInput } from '../tools/runtime.ts';
+import { exportsDir } from '../tools/data.ts';
 import { getTool, hardToUndo } from '../tools/runtime.ts';
 import type { DB } from '../db.ts';
 import { tierOf } from '../policy.ts';
@@ -100,7 +103,8 @@ export function createHttp(app: App) {
 
   // Callback pages providers send the browser to: a navigation can't carry the session header, and each is
   // tied to its own one-time state instead.
-  const NAVIGATION = /^\/api\/(oauth\/callback|connect\/[a-z0-9-]+\/done\/|connect\/github\/(created|installed|form\/))/;
+  // (A download is a navigation too: its name nobody can guess is the state, and it works once.)
+  const NAVIGATION = /^\/api\/(oauth\/callback|connect\/[a-z0-9-]+\/done\/|connect\/github\/(created|installed|form\/)|exports\/)/;
 
   // who is calling: a session cookie (browser) or a bearer token (CLI, MCP, CI)
   http.use('/api/*', async (c, next) => {
@@ -205,6 +209,16 @@ export function createHttp(app: App) {
     return c.json(await saveDrop(app, p.org.id, p.user.id, parts, zip instanceof File ? zip.name : String(form.get('name') ?? '')));
   });
   http.get('/api/live/hosts', (c) => { me(c); return c.json(allHosts().map((h) => ({ id: h.id, name: h.name }))); });
+  // --- a database or table a person exported (part.export): one download, then the file is gone ---
+  http.get('/api/exports/:name', (c) => {
+    const p = person(c), name = c.req.param('name'), file = join(exportsDir(app.home, p.org.id), name);
+    if (!isAdmin(p.role)) throw forbidden('Only owners and admins can download exports.');
+    if (!/^[a-f0-9]{24}-[a-zA-Z0-9_.-]{1,160}$/.test(name) || !existsSync(file)) throw new Unit7Error('not_found', 'That download is gone: each one works once. Export it again.', 404);
+    authAudit({ orgId: p.org.id, userId: p.user.id, name: p.user.name }, 'part.export_download', 'success', { file: name.slice(25) });
+    const body = createReadStream(file);
+    body.once('close', () => rmSync(file, { force: true }));
+    return c.body(Readable.toWeb(body) as ReadableStream, 200, { 'content-type': 'application/octet-stream', 'content-length': String(statSync(file).size), 'content-disposition': `attachment; filename="${name.slice(25)}"`, 'cache-control': 'no-store' });
+  });
 
   // --- MCP endpoint for external AI agents (Claude Code, Cursor). Bearer token only. ---
   http.post('/mcp', async (c) => {

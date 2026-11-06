@@ -80,6 +80,7 @@ import './alerts.ts';
 import './snooze.ts';
 import './partbackup.ts';
 import './wordpress.ts';
+import './data.ts';
 import './recheck.ts';
 import './fleet.ts';
 import './release.ts';
