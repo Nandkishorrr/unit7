@@ -1,0 +1,345 @@
+---
+import Base from '../layouts/Base.astro';
+import Code from '../components/Code.astro';
+import { REPO_URL, SIGNULL_URL, COFFEE_URL } from '../site';
+
+const prompt = `Set up Unit 7 for me from ${REPO_URL}
+
+1. Check that Node.js 24.22 or newer is installed. If not, install it (nvm, or Homebrew on macOS).
+2. Clone the repo into ~/unit7, then run \`npm install\` and \`npm run build\` there.
+3. Run \`node bin/unit7.mjs service start\` to run Unit 7 in the background, and check that http://localhost:4800 answers.
+4. Tell me to open http://localhost:4800 and create my owner account, and wait until I say I'm done.
+5. Run \`node bin/unit7.mjs connect claude\` so Claude Code can use Unit 7, then tell me to restart Claude Code.
+
+Never ask me for passwords, SSH keys or API keys in this chat. I'll add those myself in the Unit 7 web app.
+If a step fails, show me the error and fix it before moving on.`;
+
+const byHand = `git clone ${REPO_URL}.git && cd unit7
+npm install
+npm run build
+node src/main.ts serve`;
+
+const keepRunning = `node bin/unit7.mjs service start
+node bin/unit7.mjs connect`;
+
+const replay = byHand.split('\n');
+
+const facts = [['1', 'Node process'], ['1', 'SQLite file'], ['30+', 'providers'], ['1,000+', 'automated tests']];
+
+const faq = [
+  ['Is it free?', 'Yes. Apache 2.0. Use it, change it and build on it, at work or for clients. Keep the licence and notice.'],
+  ['Do I need AI?', 'No. AI adds the plain-words chat and the explanations. Connect Claude Code, Cursor or Codex over MCP, or add an API key.'],
+  ['Does it replace Coolify?', "No. It sits next to Coolify, and restart, deploy, logs and settings go through Coolify's own API. Coolify stays in charge."],
+  ['Can my AI see my keys?', 'No. It only ever sees references like <code>credential://stripe/client-a/key</code>.'],
+  ['Does it keep watching when my laptop is closed?', 'Only with help. It stops when the computer it runs on sleeps, unless you run it on a small server. Outpost, one small script on the server, keeps measuring, alerting and copying, but it can\'t investigate or fix anything.'],
+  ['Is it ready for real work?', "It's early. It runs on our own servers, and you should expect rough edges. Start with something you can afford to break."],
+];
+
+const help = [
+  { href: REPO_URL, t: 'Star the repo.', l: "It's how other people find it." },
+  { href: `${REPO_URL}/issues`, t: 'Open an issue.', l: 'Every install problem is a bug in our docs.' },
+  { href: `${REPO_URL}/pulls`, t: 'Send a pull request.', l: 'PRs are welcome.' },
+  { href: COFFEE_URL, t: 'Buy a coffee.', l: 'Unit 7 is free, and a coffee keeps it going.' },
+];
+---
+<Base title="Install Unit 7: free and open source" description="Free, open source, and it runs on your machine. Apache 2.0. One Node process and one SQLite file. Nothing to sign up for." theme="day">
+  <section class="oh" data-mood="day">
+    <div class="wrap oh__in">
+      <div class="oh__copy">
+        <h1 class="d1" data-intro>Free. Open source. <em>Runs on your machine.</em></h1>
+        <p class="lede lede--wide" data-intro>Apache 2.0. One Node process and one SQLite file. Nothing to sign up for.</p>
+        <p class="small" data-intro>Unit 7 is early. Expect rough edges, and please open an issue when you hit one.</p>
+      </div>
+      <div class="oh__run">
+        <figure class="term oh__term">
+          <figcaption class="term__bar">
+            <span>Terminal</span>
+            <button class="copy" type="button" data-copy={byHand} aria-label="Copy the install commands">
+              <span class="no">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.25" y="5.25" width="8.5" height="8.5" rx="1.75" /><path d="M10.75 5.25v-1.5a1.5 1.5 0 0 0-1.5-1.5h-5.5a1.5 1.5 0 0 0-1.5 1.5v5.5a1.5 1.5 0 0 0 1.5 1.5h1.5" /></svg>
+                <span class="sr">Copy</span>
+              </span>
+              <span class="yes">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" /></svg>
+                Copied
+              </span>
+            </button>
+          </figcaption>
+          <pre tabindex="0"><code>{replay.map((line) => <span class="oh__l"><i aria-hidden="true">$ </i><span class="oh__t">{line}</span><svg class="oh__ok" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M3.5 8.5 6.6 11.6 12.5 5" /></svg></span>)}<span class="oh__l oh__out">Unit7 is running at http://127.0.0.1:4800<i class="oh__cursor" aria-hidden="true"></i></span></code></pre>
+        </figure>
+        <p class="mock-label oh__label">The install, with its output trimmed.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="inst sec" id="install" data-warden="Copy this. I'll wait.">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>Get it running.</h2>
+      <div class="inst__tabs" role="tablist" aria-label="How to install">
+        <button role="tab" id="t-claude" aria-controls="p-claude" aria-selected="true" type="button">Let Claude Code set it up</button>
+        <button role="tab" id="t-hand" aria-controls="p-hand" aria-selected="false" type="button">By hand</button>
+      </div>
+      <div class="inst__p" role="tabpanel" id="p-claude" aria-labelledby="t-claude">
+        <h3 class="inst__h">Let Claude Code set it up</h3>
+        <p>Open Claude Code in any folder, paste this, and it does the rest.</p>
+        <Code code={prompt} label="Paste into Claude Code" wrap />
+      </div>
+      <div class="inst__p" role="tabpanel" id="p-hand" aria-labelledby="t-hand">
+        <h3 class="inst__h">By hand</h3>
+        <Code code={byHand} label="Install" />
+        <p>Open http://localhost:4800. The first visitor sets it up and becomes the owner. Then add a server over SSH, or connect a provider.</p>
+        <p class="inst__then">To keep it running and let your AI use it:</p>
+        <Code code={keepRunning} label="Keep it running" />
+        <p><code>connect</code> asks which AI: claude, cursor, antigravity, windsurf, claude-desktop or codex.</p>
+      </div>
+      <p class="small inst__needs">Needs Node 24.22 or newer, on macOS or Linux. A one-command install is written and still being tested.</p>
+    </div>
+  </section>
+
+  <section class="steps sec">
+    <ol class="wrap steps__row">
+      <li><span class="num">1</span><h3>Create your owner account.</h3><p>The first visitor at <code>localhost:4800</code> becomes the owner.</p></li>
+      <li><span class="num">2</span><h3>Add a server or a provider.</h3><p>A fresh server gets set up for you. One that already runs things is shared, never reconfigured.</p></li>
+      <li><span class="num">3</span><h3>Ask it something.</h3><p>"What's running on my server?"</p></li>
+    </ol>
+  </section>
+
+  <section class="how sec">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>One engine. <em>Three ways in.</em></h2>
+      <p class="lede lede--wide how__sub">The web app, the command line and the MCP server all drive the same engine, through the same gate.</p>
+
+      <figure class="flow" aria-label="The web app, the command line and the MCP server all pass through one gate to reach your servers over SSH, Docker, Coolify and provider APIs.">
+        <ul class="flow__in">
+          <li>Web app</li>
+          <li>CLI</li>
+          <li>MCP</li>
+        </ul>
+        <svg class="flow__lines" viewBox="0 0 120 100" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 16.7C70 16.7 50 50 120 50M0 50H120M0 83.3C70 83.3 50 50 120 50" />
+        </svg>
+        <p class="flow__gate">One gate</p>
+        <svg class="flow__lines flow__lines--out" viewBox="0 0 120 100" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 50H120" />
+        </svg>
+        <p class="flow__out">Your servers over SSH, Docker, Coolify, provider APIs</p>
+      </figure>
+
+      <ul class="facts">
+        {facts.map(([n, l]) => <li><span class="num">{n}</span><span>{l}</span></li>)}
+      </ul>
+      <p class="small facts__note">The infrastructure tests run against a real, throwaway SSH and Docker server.</p>
+    </div>
+  </section>
+
+  <section class="sm sec">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>What it defends against. <em>And what it can't.</em></h2>
+      <div class="sm__grid">
+        <div>
+          <h3 class="d3">Defends</h3>
+          <ul>
+            <li><b>Websites in your browser.</b> It listens on your own computer only, ignores foreign hosts, and every browser write must come from its own page.</li>
+            <li><b>AI agents and scripts with a token.</b> Tokens never approve, never see revealed values and never run people-only actions.</li>
+            <li><b>Secrets at rest.</b> Files are owner-only, secrets are encrypted with a key kept in the macOS Keychain, and deleted credentials are overwritten. On other systems the key is a protected file, or one you provide.</li>
+          </ul>
+        </div>
+        <div class="sm__cant">
+          <h3 class="d3">Can't</h3>
+          <ul>
+            <li><b>A program running as your own user</b> can read the Keychain item and the database, the same way Unit 7 does. Treat malware on your computer as having your Unit 7.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="small sm__note">Found a security problem? Please don't open a public issue. Report it privately on GitHub: <a href={`${REPO_URL}/security`} rel="noopener">Security → Report a vulnerability</a>.</p>
+    </div>
+  </section>
+
+  <section class="faq sec">
+    <div class="wrap faq__grid">
+      <h2 class="d2" data-wipe>Questions.</h2>
+      <div class="faq__list">
+        {faq.map(([q, a]) => (
+          <details>
+            <summary>{q}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 6l5 5 5-5" /></svg></summary>
+            <p set:html={a} />
+          </details>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="inv sec">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>Help it grow.</h2>
+      <ul class="inv__list">
+        {help.map((h) => <li><a href={h.href} rel="noopener"><b>{h.t}</b><span>{h.l}</span></a></li>)}
+      </ul>
+    </div>
+  </section>
+
+  <section class="by sec">
+    <div class="wrap by__grid">
+      <div class="by__marks" aria-hidden="true">
+        <img src="/brand/unit7-mark.svg" width="180" height="180" alt="" />
+        <img src="/brand/signull-mark-ink.svg" width="176" height="180" alt="" />
+      </div>
+      <div>
+        <h2 class="d2" data-wipe>Made by Signull.</h2>
+        <p class="lede lede--wide by__text">Signull is a studio in Jodhpur, India. We build brands, software and AI systems. Unit 7 started as the tool we needed for our own servers. <a href={SIGNULL_URL} rel="noopener">signull.in <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8h9.5M8.5 4l4 4-4 4" /></svg></a></p>
+        <p class="small by__small">Copyright 2026 Signull. Licensed under Apache 2.0.</p>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<script>
+  import { pageIntro, MOTION, gsap, ScrollTrigger, wipe, u } from '../scripts/motion';
+  pageIntro();
+  if (MOTION) {
+    // The real install, replayed once. Monospace, so stepping a clip types it, and nothing reflows.
+    const lines = gsap.utils.toArray<HTMLElement>('.oh__term .oh__l');
+    const out = lines.pop()!;
+    gsap.set(lines, { autoAlpha: 0 });
+    gsap.set('.oh__ok', { opacity: 0 });
+    gsap.set(out, { autoAlpha: 0 });
+    const tl = gsap.timeline({ delay: 1 });
+    lines.forEach((line, i) => {
+      const text = line.querySelector<HTMLElement>('.oh__t')!, n = text.textContent!.length;
+      tl.set(line, { autoAlpha: 1 })
+        .fromTo(text, { clipPath: 'inset(0 100% -10% 0)' }, { clipPath: 'inset(0 0% -10% 0)', ease: `steps(${n})`, duration: Math.min(1.1, n * .03) })
+        .to(line.querySelector('.oh__ok'), { opacity: 1, duration: .15 }, `+=${[.4, .75, .6, .3][i]}`);
+    });
+    tl.to(out, { autoAlpha: 1, duration: .25 }, '+=.15');
+
+    // The diagram assembles in the order a request travels.
+    const parts = gsap.utils.toArray<HTMLElement>('.flow__in li, .flow__gate, .flow__out');
+    gsap.set(parts, { visibility: 'hidden' });
+    gsap.set('.flow__lines path', { attr: { pathLength: 1, 'stroke-dasharray': 1, 'stroke-dashoffset': 1 } });
+    ScrollTrigger.create({
+      trigger: '.flow', start: 'top 78%', once: true,
+      onEnter: () => {
+        if (u.pause) { gsap.set(parts, { visibility: 'visible' }); gsap.set('.flow__lines path', { attr: { 'stroke-dashoffset': 0 } }); return; }
+        parts.forEach((el, i) => wipe(el, { delay: i < 3 ? i * .14 : i === 3 ? .95 : 1.45, dur: .6, block: true }));
+        gsap.to('.flow__lines:not(.flow__lines--out) path', { attr: { 'stroke-dashoffset': 0 }, duration: .6, delay: .42, ease: 'power2.inOut' });
+        gsap.to('.flow__lines--out path', { attr: { 'stroke-dashoffset': 0 }, duration: .4, delay: 1.15, ease: 'power2.inOut' });
+      },
+    });
+  }
+</script>
+
+<style is:global>
+  .motion [data-intro] { visibility: hidden; }
+  .oh { display: flex; align-items: flex-end; min-height: 84svh; padding-block: clamp(6.5rem, 15vh, 10rem) clamp(3rem, 7vh, 5rem); }
+  .oh__in { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 2.5rem clamp(2rem, 4vw, 5rem); align-items: end; }
+  .oh__copy { display: grid; gap: clamp(1rem, 2.4vh, 1.75rem); }
+  .oh .d1 { font-size: clamp(3rem, 5.6vw, 6.75rem); text-wrap: wrap; }
+  .oh .d1 em { display: block; }
+  .oh .small { color: var(--muted); }
+  .oh__term pre { padding-block: 1.1rem 1.3rem; white-space: pre-wrap; overflow-wrap: anywhere; font-size: clamp(.75rem, .92vw, 1rem); }
+  .oh__term code { display: grid; gap: .35rem; }
+  .oh__l { display: flex; align-items: baseline; gap: .55em; min-height: 1.7em; }
+  .motion .oh__l { visibility: hidden; }   /* so the finished terminal doesn't flash before its replay */
+  .oh__l > i { flex: none; color: #8C8C96; font-style: normal; }
+  .oh__t { flex: 0 1 auto; }
+  .oh__ok { flex: none; width: 1em; height: 1em; align-self: center; color: var(--lime); }
+  .oh__out { color: var(--lime); }
+  .oh__cursor { display: inline-block; width: .55em; height: 1.05em; margin-left: .15em; background: var(--lime); translate: 0 .16em; }
+  .motion .oh__cursor { animation: oh-blink 1.1s steps(1) infinite; }
+  @keyframes oh-blink { 50% { opacity: 0; } }
+  .oh__label { color: var(--muted); }
+  @media (max-width: 899px) { .oh__in { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 620px) {
+    .oh__term pre { font-size: min(.75rem, 2.72vw); }   /* the prompt and tick take room, so this keeps the URL on one line */
+    .js .inst__tabs { width: 100%; flex-wrap: nowrap; }
+    .inst__tabs button { flex: 1 1 auto; min-height: 2.5rem; padding-inline: .6rem; font-size: .8125rem; white-space: nowrap; }
+  }
+
+  .inst__tabs { display: none; }
+  .js .inst__tabs { display: flex; flex-wrap: wrap; gap: .25rem; width: fit-content; max-width: 100%; margin-top: clamp(1.75rem, 3vw, 2.5rem); padding: .3rem; border: 1px solid var(--line-2); border-radius: 999px; background: var(--surface); }
+  .inst__tabs button { min-height: 2.75rem; padding: 0 1.25rem; border: 0; border-radius: 999px; background: none; color: var(--muted); font-size: 1rem; font-weight: 500; cursor: pointer; transition: color .2s, background-color .2s; }
+  .inst__tabs button:hover { color: var(--text); }
+  .inst__tabs button[aria-selected='true'] { background: var(--ink-1); color: #F2F2F4; font-weight: 600; }
+  .inst__p { margin-top: 1.5rem; display: grid; gap: 1rem; max-width: 62rem; }
+  .inst__p + .inst__p { margin-top: 3rem; }
+  .js .inst__p + .inst__p { margin-top: 1.5rem; }
+  .inst__p[hidden] { display: none; }
+  .inst__h { font: 680 1.5rem/1.1 var(--display); letter-spacing: -.02em; }
+  .js .inst__h { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .inst__then { margin-top: .75rem; font-weight: 600; }
+  .inst__needs { margin-top: 1.25rem; color: var(--muted); }
+
+  .steps { padding-block: 0; }
+  .steps__row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem clamp(1.5rem, 4vw, 4rem); padding-block: clamp(2.5rem, 5vw, 4rem); border-block: 1px solid var(--line-2); }
+  .steps__row .num { display: block; font-size: clamp(4.5rem, 8.5vw, 9rem); color: var(--blue); }
+  .steps__row h3 { margin-top: .9rem; font: 680 clamp(1.25rem, 1.8vw, 1.75rem)/1.1 var(--display); letter-spacing: -.02em; }
+  .steps__row p { margin-top: .4rem; color: var(--muted); }
+  @media (max-width: 760px) { .steps__row { grid-template-columns: 1fr; } }
+
+  .how__sub { margin-top: 1.25rem; }
+  .flow { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, .9fr) minmax(0, .95fr) minmax(0, .5fr) minmax(0, 1.5fr); align-items: center; gap: 0; margin-top: clamp(2.5rem, 5vw, 4.5rem); padding: clamp(1.25rem, 3vw, 2.5rem); border: 1px solid var(--line-2); border-radius: 24px; background: var(--surface); }
+  .flow__in { display: grid; gap: .75rem; }
+  .flow__in li { position: relative; isolation: isolate; padding: .65rem .5rem; text-align: center; font: 640 clamp(.9375rem, 1.3vw, 1.25rem)/1.1 var(--display); }
+  .flow__in li::before { content: ''; position: absolute; inset: 0 .9rem; z-index: -1; transform: skewX(var(--skew)); box-shadow: inset 0 0 0 1.5px var(--line-3); border-radius: 2px; }
+  .flow__lines { width: 100%; height: 11rem; overflow: visible; }
+  .flow__lines path { fill: none; stroke: var(--text); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .flow__lines--out { height: 2rem; }
+  .flow__gate { position: relative; isolation: isolate; display: grid; place-items: center; min-height: 4.5rem; color: var(--on-lime); font: 720 clamp(1rem, 1.5vw, 1.5rem)/1.05 var(--display); text-align: center; }
+  .flow__gate::before { content: ''; position: absolute; inset: 0 1.1rem; z-index: -1; transform: skewX(var(--skew)); background: var(--lime); border-radius: 2px; }
+  .flow__out { position: relative; isolation: isolate; display: grid; place-items: center; min-height: 6rem; padding: .6rem 3.4rem; color: #F2F2F4; font: 640 clamp(.9375rem, 1.3vw, 1.3125rem)/1.2 var(--display); letter-spacing: -.012em; text-align: center; }
+  .flow__out::before { content: ''; position: absolute; inset: 0 1.9rem; z-index: -1; transform: skewX(var(--skew)); background: var(--ink-1); border-radius: 2px; }
+  @media (max-width: 760px) {
+    .flow { grid-template-columns: 1fr; gap: 1.1rem; }
+    .flow__in { grid-template-columns: repeat(3, 1fr); gap: .25rem; }
+    .flow__lines { display: none; }
+    .flow__gate { min-height: 3.75rem; }
+    .flow__out { padding-inline: 3rem; }
+  }
+
+  .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 3fr)) minmax(0, 4fr) minmax(0, 6fr); gap: 1.5rem clamp(1rem, 3vw, 3rem); margin-top: clamp(3rem, 6vw, 5rem); }
+  .facts .num { display: block; font-size: clamp(5rem, 12vw, 13rem); color: var(--text); }
+  .facts span:last-child { display: block; margin-top: .9rem; color: var(--muted); font-size: clamp(1rem, 1.4vw, 1.25rem); }
+  .facts__note { margin-top: 1.25rem; color: var(--muted); }
+  @media (max-width: 760px) { .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } .facts .num { font-size: 4.25rem; } }
+
+  .sm__grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 2.5rem clamp(2rem, 5vw, 6rem); margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .sm__grid h3 { margin-bottom: .75rem; }
+  .sm__grid li { padding-block: .9rem; border-top: 1px solid var(--line-2); color: var(--muted); }
+  .sm__grid li:last-child { border-bottom: 1px solid var(--line-2); }
+  .sm__grid b { color: var(--text); font-weight: 600; }
+  .sm__note { margin-top: 1.75rem; color: var(--muted); }
+  .sm__note a { color: var(--link); text-underline-offset: .2em; }
+  @media (max-width: 860px) { .sm__grid { grid-template-columns: 1fr; } }
+
+  .faq__grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2rem clamp(2rem, 5vw, 6rem); }
+  .faq details { border-top: 1px solid var(--line-2); }
+  .faq details:last-child { border-bottom: 1px solid var(--line-2); }
+  .faq summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: 1.05rem; font: 640 clamp(1.125rem, 1.6vw, 1.5rem)/1.2 var(--display); letter-spacing: -.015em; cursor: pointer; list-style: none; }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary svg { flex: none; width: 1.1rem; color: var(--muted); transition: transform .3s var(--ease); }
+  .faq details[open] summary svg { transform: rotate(180deg); }
+  .faq details p { padding-bottom: 1.15rem; color: var(--muted); max-width: 44em; }
+  @supports (interpolate-size: allow-keywords) {
+    .motion .faq details { interpolate-size: allow-keywords; }
+    .motion .faq details::details-content { block-size: 0; overflow: clip; transition: block-size .35s var(--ease), content-visibility .35s allow-discrete; }
+    .motion .faq details[open]::details-content { block-size: auto; }
+  }
+  @media (max-width: 860px) { .faq__grid { grid-template-columns: 1fr; } }
+
+  .inv__list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.5rem clamp(1rem, 3vw, 3rem); margin-top: clamp(2rem, 4vw, 3.5rem); }
+  .inv__list a { display: grid; gap: .4rem; padding-top: 1rem; border-top: 2px solid var(--text); text-decoration: none; }
+  .inv__list b { font: 680 clamp(1.25rem, 1.7vw, 1.625rem)/1.1 var(--display); letter-spacing: -.02em; }
+  .inv__list span { color: var(--muted); }
+  .inv__list a:hover b { color: var(--link); }
+  @media (max-width: 900px) { .inv__list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 480px) { .inv__list { grid-template-columns: 1fr; } }
+
+  .by__grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2.5rem clamp(2rem, 5vw, 6rem); align-items: center; }
+  .by__marks { display: flex; align-items: center; gap: clamp(1.5rem, 3.5vw, 3.5rem); }
+  .by__marks img { width: clamp(6.5rem, 13vw, 12rem); height: auto; }
+  .by__text { margin-top: 1.25rem; color: var(--text); }
+  .by__text a { display: inline-flex; align-items: center; gap: .3em; color: var(--link); font-weight: 600; text-underline-offset: .2em; white-space: nowrap; }
+  .by__text a svg { width: .85em; height: .85em; }
+  .by__small { margin-top: 1rem; color: var(--muted); }
+  @media (max-width: 860px) { .by__grid { grid-template-columns: 1fr; } }
+</style>

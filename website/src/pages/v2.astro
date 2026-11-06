@@ -1,0 +1,782 @@
+---
+import Base from '../layouts/Base.astro';
+import { REPO_URL } from '../site';
+
+type S = 'Done' | 'In testing' | 'In progress';
+// Every finished part of V2 uses this. Newer work carries its own status.
+const BUILT: S = 'Done';
+const status = (s: S) => `<span class="status ${{ Done: 'done', 'In testing': 'test', 'In progress': 'prog' }[s]}">${s}</span>`;
+
+const rows: { now: string; name: string; line: string; s: S }[] = [
+  { now: 'It only happens if someone writes a long prompt.', name: 'Check-up.', line: 'One button, or it runs by itself.', s: BUILT },
+  { now: 'It stops when your computer sleeps.', name: 'Always on.', line: 'A small guard stays on the server.', s: BUILT },
+  { now: 'Some numbers were wrong, and it never said what it skipped.', name: 'Truth pass.', line: "Real numbers, and every report says what wasn't checked.", s: 'Done' },
+  { now: 'The result ends as text in a chat.', name: 'Give this to my AI.', line: 'Then Unit 7 proves the fix worked in production.', s: BUILT },
+  { now: 'A backup fix marked "safe" just sits there.', name: 'Safety Net.', line: 'Anything that only creates or copies runs by itself.', s: BUILT },
+];
+
+const stats = [
+  { n: '128', tail: 'of 131', line: 'critical "site down" alerts came from a Mac losing its connection, not from the sites.' },
+  { n: '13', tail: 'of 13', line: '"error" alerts were normal lines with a word like "exceptions" in the URL.' },
+  { n: '618', tail: 'MB', line: 'of a 748 MB database was one repeated call.' },
+  { n: '59', tail: 'of 61', line: 'CPU and network alerts cleared by themselves within an hour.' },
+];
+
+// Example times, labelled as examples on the page.
+const ladder = [
+  ['Checks free disk and how busy the server is', '02:10:04'],
+  ['Copies the database', '02:10:09'],
+  ["Checks the copy isn't empty or damaged", '02:11:02'],
+  ['Sends an encrypted copy off the server', '02:11:15'],
+  ['Turns on daily copies', '02:13:40'],
+  ["Copies uploaded files, settings and Coolify's config", '02:13:44'],
+  ['Restores into a throwaway copy, counts the rows, removes the throwaway', '02:16:31'],
+  ['Tells you', '02:19:08'],
+];
+
+const levels = [
+  ['Unprotected', 'no copy anywhere'],
+  ['Weak', 'copies, but only on this server'],
+  ['Protected', 'a copy off the server'],
+  ['Proven', 'that copy restored in a test this week'],
+];
+
+const bands = [
+  { c: 'green', word: 'Green.', title: 'Only creates or copies.', eg: 'Backups, off-server copies, test restores.', who: 'Unit 7, by itself.' },
+  { c: 'yellow', word: 'Yellow.', title: 'A reversible change.', eg: 'Restart, memory cap, closing a port.', who: 'Your autonomy level, with undo.' },
+  { c: 'red', word: 'Red.', title: 'Can lose something, or costs money.', eg: 'Delete, cleanup, overwrite, restore over live data, DNS, spending.', who: 'Always a person.' },
+];
+
+const digest = [
+  'Your site asks the same question every 5 seconds.',
+  'Your page asks for the same thing twice in a row.',
+  'One page makes 40 calls to fetch 40 items.',
+  "Part of your app keeps asking for something it can't have.",
+  'When your server struggled, your app called it over and over.',
+  'Your app calls itself through the internet. It could stay inside the server.',
+  'Each page asks the database the same small thing 40 times.',
+  'This page downloads 2 MB every visit.',
+];
+
+// One tick per hour of a week. The laptop sleeps about ten hours a night: 70 of 168 is the measured 42%.
+const week = Array.from({ length: 168 }, (_, i) => { const h = i % 24; return h >= 21 || h <= 6; });
+
+const groups = [
+  { title: 'Safer around your AI', items: [
+    ['What did my AI do?', 'Every change each AI made, with undo.'],
+    ['Seat belt for your AI.', 'A fresh copy before Claude Code runs a risky database command.'],
+    ['Try it on a copy first.', 'Rehearses risky changes on a throwaway copy.'],
+    ["Can't be tricked by logs.", 'Seven only proposes. Fixed code decides what runs, and a claim from a log can at most become a question.'],
+  ] },
+  { title: 'Deep security', items: [
+    ['What can a stranger do?', 'Tests your own apps from outside, as nobody.'],
+    ['Have I been hacked?', 'Looks for signs of a break-in.'],
+    ['Fire drill.', 'Times a real restore on a throwaway copy.'],
+    ['Database door rules.', 'Checks open tables and risky policies on self-hosted Supabase.'],
+  ] },
+  { title: 'For a bad day', items: [
+    ["Help, something's wrong.", 'One button: safety copy, clear next step, customer message.'],
+    ['Lifeboat.', 'Danger spotted? An emergency copy leaves the server.'],
+    ['Open a past copy.', "Yesterday's data beside the live one. Pull back one table."],
+    ['Telegram alerts.', 'Alerts and replies where you already are.'],
+  ] },
+];
+
+const jobs = ['Is everything OK?', 'Why is it slow?', 'Reduce my server', 'What changed?', 'Have I been hacked?', 'Why did my bill go up?', 'Am I ready for real users?', 'Will my emails arrive?', 'Can Google see my site?', 'Prove my backups work', 'If this server died today?', 'Hand this project over'];
+
+const limits: { verb: string; rest: string; s: S }[] = [
+  { verb: 'checks', rest: 'everything by itself, every day. Most of this needs no AI.', s: BUILT },
+  { verb: 'protects', rest: 'by itself. Anything that only creates or copies runs with no approval.', s: BUILT },
+  { verb: 'explains', rest: 'what it found, and says "not sure" when it isn\'t.', s: BUILT },
+  { verb: 'fixes safe things', rest: 'by itself, with undo, and proves they worked.', s: BUILT },
+  { verb: 'proposes one fix', rest: 'for risky things, and you say yes.', s: BUILT },
+];
+
+const phases: { t: string; s: S; done: string; still?: string }[] = [
+  { t: 'Truth pass.', s: 'Done', done: "the brief's numbers match reality, and a network drop on your computer raises no critical alert." },
+  { t: 'Safety Net and Check-up.', s: 'In testing', done: 'every important database reaches Proven with no click and nothing existing changes.', still: 'test restores on full Supabase stacks.' },
+  { t: 'Give this to my AI.', s: BUILT, done: 'a finding goes to Cursor in two clicks, and Unit 7 later says Fixed or Still happening by itself.' },
+  { t: 'Call Inspector.', s: 'In testing', done: 'it finds real wasteful calls with few false alarms.', still: 'tuning on real traffic.' },
+  { t: 'Always on.', s: 'In testing', done: 'no reading gap over 10 minutes for a week with the computer asleep.', still: 'a full week on a real server.' },
+  { t: 'Smarter, safer agent: Seven.', s: 'In testing', done: 'automatic looks run on an API key inside a budget.', still: 'a first run on a real API key, and a first shift that acts on a real server.' },
+  { t: 'Deep security.', s: BUILT, done: 'it tells you what a stranger can do on your real apps.' },
+  { t: 'Ready for everyone.', s: 'In testing', done: 'a stranger installs it in one command and tries it in 5 minutes.', still: 'scoped server access, and a first full run of the installer.' },
+];
+
+const sevenRules = [
+  ['It looks every 6 hours.', "A deeper review once a day, and right after a failed deploy, a serious alert or a fix that didn't hold."],
+  ['Alone, it only creates or copies.', 'Backups, tests of them, swap and a renewed certificate. Fixed code decides that, not the AI.'],
+  ['Everything else is a question.', 'Restarts, memory caps, blocks and clean-ups wait for your yes, unless you taught it that fix.'],
+  ['Told no means no.', 'For 30 days. Pause stops it, and so does its own switch, which only a person can use.'],
+];
+
+const fresh = [
+  ['Put this live.', 'Drop a folder or a ZIP, or pick a GitHub repo. It picks the best host you have connected, from 16, including Vercel, Netlify, Cloudflare Pages, Coolify and your own server.'],
+  ['Your real databases.', 'Tables, safe queries, import and export on any Postgres, MySQL, MariaDB, Redis or MongoDB it finds on your server, Supabase included. Personal columns stay hidden from an AI.'],
+  ['Supabase and Neon.', 'Projects, SQL, functions, secrets, auth, storage and logs, hosted or self-hosted.'],
+  ['Domains and DNS.', 'Records, redirects, wildcards and one-step domains on Coolify apps. Mail records wait for a person.'],
+  ['Files.', 'Browse, edit, upload and download on a server. A removed file waits 7 days in a trash.'],
+  ['Server care.', 'Snapshots, ports, SSH keys, users and moving to a new server. Buying and deleting stay with a person.'],
+  ['WordPress.', 'Sites on your server. A broken site? It finds the plugin and offers to switch it off.'],
+  ['Coolify, with no setup.', 'Its servers, apps and projects, plus deploy on push, previews, storage and scaling.'],
+  ['One-click tools.', 'More than 30 open-source tools, with the admin login claimed first, and any Coolify template one search away.'],
+];
+
+const wont = [
+  ['A coding agent.', 'You already have one.'],
+  ['An AI model.', 'Bring your own.'],
+  ['Multi-agent swarms.', ''],
+  ['Percent-confidence scores.', "Nothing shows they're calibrated."],
+  ['A hosted cloud holding your root keys.', ''],
+  ['Restoring over live data by itself.', 'That always waits for a person.'],
+];
+---
+<Base title="Unit 7 V2.1: already done when you open the app" description="V1 does the job when you ask. V2 has already done it when you open the app. V2.1 adds Seven, an agent on shift. An honest status on every part." theme="dawn">
+  <section class="vh" data-mood="dawn" data-power=".7">
+    <div class="wrap vh__in">
+      <p class="vh__pill" data-intro><i></i>V2.1 is the latest version.</p>
+      <h1 class="d1" data-intro>V1 does the job when you ask. <em>V2 has already done it when you open the app.</em></h1>
+      <p class="lede lede--wide" data-intro>It checks by itself, protects by itself and proves its fixes, while you get on with building. V2.1 adds Seven, an agent on shift.</p>
+      <p class="small" data-intro>Each part below says where it stands. No dates, no promises we can't keep.</p>
+    </div>
+  </section>
+
+  <section class="sev sec" id="seven" data-mood="dawn">
+    <div class="wrap">
+      <Fragment set:html={status('In testing')} />
+      <h2 class="d1 vs" data-wipe>Seven. <em>The agent on shift.</em></h2>
+      <p class="lede lede--wide sev__sub">New in V2.1. There's no chat box. It looks at everything, does the safe work and asks one clear question when it must. When nothing has changed, it spends nothing and says nothing.</p>
+      <div class="sev__grid">
+        <ul class="sev__rules">
+          {sevenRules.map(([a, b]) => <li><b>{a}</b> {b}</li>)}
+        </ul>
+        <figure class="sevm">
+          <header><b>Seven</b><span><i></i>On shift</span></header>
+          <p class="sevm__calm">Nothing needs you. I looked 12 minutes ago.</p>
+          <h3>Should I?</h3>
+          <div class="sevm__q">
+            <p>Give Demo CRM a memory cap of 768 MB?</p>
+            <small>It has no limit, so one leak could take your other apps down. Nothing restarts. You can undo it.</small>
+            <div aria-hidden="true"><span class="cum__btn cum__btn--blue">Yes, do it</span><span class="cum__btn">No</span></div>
+          </div>
+          <h3>Done for you</h3>
+          <p class="sevm__done"><time>03:12</time>Copied Demo Postgres off the server and proved it restores</p>
+          <p class="sevm__done"><time>08:05</time>Renewed the certificate for nestly.example</p>
+        </figure>
+      </div>
+      <p class="mock-label sev__label">Demo workspace. Numbers are examples.</p>
+      <p class="small sev__note">Routine shifts use fixed rules until you connect an API key or a local model. With one, each shift stays inside a daily budget, $1 by default.</p>
+    </div>
+  </section>
+
+  <section class="nw sec" id="new" data-mood="night">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>New since V2.1. <em>Now it can start things too.</em></h2>
+      <p class="lede lede--wide nw__sub">It used to look after what already exists. These are the jobs people need in their first week.</p>
+      <ul class="nw__list">
+        {fresh.map(([name, line]) => (
+          <li><p><b>{name}</b> {line}</p><Fragment set:html={status('In testing')} /></li>
+        ))}
+      </ul>
+      <p class="small nw__note">All of this is built and tested against fake servers. First runs on real accounts come next.</p>
+    </div>
+  </section>
+
+  <section class="vt sec" data-mood="night">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>V1 and <em>V2.</em></h2>
+      <div class="vt__labels mono" aria-hidden="true"><span>V1</span><span>V2</span></div>
+      <ul class="vt__rows">
+        {rows.map((r) => (
+          <li class="vt__row">
+            <p class="vt__now"><span class="sr">V1: </span><span class="vt__txt" data-t={r.now}>{r.now}</span></p>
+            <i class="vt__slash" aria-hidden="true"></i>
+            <div class="vt__next">
+              <p><span class="sr">V2: </span><b>{r.name}</b> {r.line}</p>
+              <Fragment set:html={status(r.s)} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  </section>
+
+  <section class="vtr sec" data-mood="alert">
+    <div class="wrap">
+      <Fragment set:html={status('Done')} />
+      <h2 class="d2 vs" data-wipe>First we checked our own numbers. <em>Many were wrong.</em></h2>
+      <p class="lede lede--wide vtr__sub">Measured on a real install. So this came first, before anything new.</p>
+      <ul class="vtr__stats">
+        {stats.map((s) => (
+          <li>
+            <p class="vtr__n num"><span data-count={s.n}>{s.n}</span> <small>{s.tail}</small></p>
+            <p class="vtr__line">{s.line}</p>
+          </li>
+        ))}
+      </ul>
+      <p class="vtr__end lede lede--wide">Now it asks a neutral site and the server itself before it alerts, says when it wasn't watching, and says how many apps each report really covered.</p>
+    </div>
+  </section>
+
+  <section class="net" id="safety-net" data-mood="safe" data-warden="I made a copy. Nothing else changed.">
+    <div class="net__stage">
+      <div class="wrap net__in">
+        <div class="net__head">
+          <Fragment set:html={status(BUILT)} />
+          <h2 class="d2 vs">If it matters and has no safe copy, <em>Unit 7 makes one.</em></h2>
+          <p class="lede lede--wide">It doesn't suggest a backup and wait. It makes one, proves it works and tells you in one line.</p>
+        </div>
+        <div class="net__grid">
+          <div>
+            <ol class="ladder">
+              {ladder.map(([step, time]) => (
+                <li>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M3.5 8.5 6.6 11.6 12.5 5" /></svg>
+                  <span>{step}</span>
+                  <time>{time}</time>
+                </li>
+              ))}
+            </ol>
+            <p class="net__label mono">Demo workspace. Numbers are examples.</p>
+          </div>
+          <div class="net__right">
+            <ol class="meter">
+              {levels.map(([name, line], i) => (
+                <li style={`--h:${25 * (i + 1)}%`}>
+                  <span class="meter__bar" aria-hidden="true"><i></i></span>
+                  <b>{name}</b>
+                  <span class="meter__line">{line}</span>
+                </li>
+              ))}
+            </ol>
+            <div class="net__says">
+              <svg viewBox="0 0 48 48" aria-hidden="true" class="warden-face" style="--mood:#C6F432">
+                <circle cx="24" cy="26" r="15" fill="#eef0f3" />
+                <rect x="12.5" y="21.5" width="23" height="9.5" rx="4.75" fill="#0b0f19" />
+                <g class="warden-eyes"><circle cx="19.5" cy="26.2" r="2.1" fill="var(--mood)" /><circle cx="28.5" cy="26.2" r="2.1" fill="var(--mood)" /></g>
+                <path d="M10.5 17 Q24 3 37.5 17 L37.5 19.5 L10.5 19.5 Z" fill="#1f5bff" />
+                <path d="M8.5 19.5 Q24 15.5 40 20 Q38.5 23 24 22 Q11 21.5 8.5 19.5 Z" fill="#0e0e12" />
+                <circle cx="24" cy="12.5" r="2.2" fill="#c6f432" />
+              </svg>
+              <p>nestly had no safe copy. I made one and proved it. Nothing else changed.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="bands sec" data-mood="deep">
+    <div class="wrap">
+      <ul class="bands__list">
+        {bands.map((b) => (
+          <li class={`band band--${b.c}`}>
+            <h3 class="d3"><span>{b.word}</span> {b.title}</h3>
+            <p class="band__eg">{b.eg}</p>
+            <p class="band__who"><span class="mono">Who decides:</span> {b.who}</p>
+          </li>
+        ))}
+      </ul>
+      <p class="bands__note small">Green actions need no AI. Fixed rules run them, so nothing in a log can talk it into anything.</p>
+    </div>
+  </section>
+
+  <section class="cu sec" data-mood="night">
+    <div class="wrap">
+      <Fragment set:html={status(BUILT)} />
+      <h2 class="d2 vs" data-wipe>Your whole setup. <em>One tap. About a minute.</em></h2>
+      <p class="lede lede--wide cu__sub">Room, protection, safety and how your apps behave. It works with no AI and costs nothing. A connected AI adds the explanation.</p>
+
+      <figure class="cum">
+        <header class="cum__top">
+          <p>Check-up · everything · 58 seconds ago</p>
+          <span class="cum__btn" aria-hidden="true">Run again</span>
+        </header>
+        <div class="cum__verdict">
+          <p class="cum__big">Healthy. Nothing urgent. 3 things worth doing.</p>
+          <p class="cum__since">Since last time: 2 fixed · 1 new · 3 the same</p>
+        </div>
+        <ul class="cum__tiles">
+          <li><h3>Room</h3><p class="cum__v">Plenty</p><p>RAM <span data-count="37" data-count-manual>37</span>%, peak <span data-count="54" data-count-manual>54</span>%</p></li>
+          <li><h3>Protection</h3><p class="cum__v"><span data-count="3" data-count-manual>3</span> of 4 proven</p><p>Last copy 02:10</p></li>
+          <li><h3>Safety</h3><p class="cum__v"><span data-count="1" data-count-manual>1</span> thing to do</p><p>No open doors</p></li>
+          <li><h3>App behaviour</h3><p class="cum__v"><span data-count="4" data-count-manual>4</span> wasteful calls</p><p><span data-count="1400" data-count-manual>1,400</span> extra calls a day</p></li>
+        </ul>
+        <p class="cum__cover"><span>Checked 23 of 27 · 4 skipped: Coolify log access</span><span class="cum__btn" aria-hidden="true">Give access</span></p>
+        <div class="cum__block">
+          <h3>Done for you</h3>
+          <p>Copied 3 databases off the server and proved they restore. Nothing else changed.</p>
+        </div>
+        <div class="cum__block">
+          <h3>Do these first</h3>
+          <ol class="cum__todo">
+            <li><span>Your app asks "who is this user?" too often</span><b>Your AI</b><span class="cum__btn cum__btn--blue" aria-hidden="true">Give this to my AI</span></li>
+            <li><span>An outside service refuses every call</span><b>Only you</b><span class="cum__btn" aria-hidden="true">Write my support ticket</span></li>
+            <li><span>Choose where copies go</span><b>Only you</b><span class="cum__btn" aria-hidden="true">Choose a place</span></li>
+          </ol>
+        </div>
+      </figure>
+      <p class="cu__label">Demo workspace. Numbers are examples.</p>
+    </div>
+  </section>
+
+  <section class="ai sec" data-mood="night">
+    <div class="wrap">
+      <Fragment set:html={status(BUILT)} />
+      <h2 class="d2 vs" data-wipe>It finds the problem. Your AI fixes it. <em>Unit 7 proves it worked.</em></h2>
+      <p class="lede lede--wide ai__sub">One button sends the evidence and a strong prompt to the AI that built your app. After your next deploy, Unit 7 measures again. Only Unit 7 can mark it fixed.</p>
+
+      <ol class="rail">
+        <li>Open</li>
+        <li>Sent to my AI</li>
+        <li>Deployed, watching</li>
+        <li class="rail__fixed">Fixed</li>
+        <li class="rail__alt">Still happening</li>
+      </ol>
+      <ul class="chips" aria-label="Where a finding can go">
+        {['Copy', 'Cursor', 'Claude Code', 'Codex', 'Lovable', 'Claude on the web'].map((c) => <li>{c}</li>)}
+      </ul>
+
+      <div class="depth">
+        <h3 class="d3">One finding, three depths.</h3>
+        <div class="depth__tabs" role="tablist" aria-label="How deep to go">
+          <button role="tab" id="t-vibe" aria-controls="p-vibe" aria-selected="true" type="button">Vibe coder</button>
+          <button role="tab" id="t-normal" aria-controls="p-normal" aria-selected="false" type="button">Normal coder</button>
+          <button role="tab" id="t-adv" aria-controls="p-adv" aria-selected="false" type="button">Advanced</button>
+        </div>
+        <div class="depth__panels">
+          <div class="depth__p" role="tabpanel" id="p-vibe" aria-labelledby="t-vibe" tabindex="0">
+            <p>Your app asks "who is this user?" far too often. That's 6,625 calls in 7 days for only a few people. It's wasted work, and it slows pages.</p>
+            <div class="depth__btns" aria-hidden="true"><span class="cum__btn cum__btn--blue">Give this to my AI</span></div>
+          </div>
+          <div class="depth__p" role="tabpanel" id="p-normal" aria-labelledby="t-normal" tabindex="0">
+            <p><code>GET /auth/v1/user</code>: 6,625 calls in 7 days, likely <code>getUser()</code> running on every route change. Search for <code>getUser(</code> and your middleware. Cache the session and check it once per interval.</p>
+            <div class="depth__btns" aria-hidden="true"><span class="cum__btn cum__btn--blue">Open in Cursor</span><span class="cum__btn">GitHub issue</span></div>
+          </div>
+          <div class="depth__p" role="tabpanel" id="p-adv" aria-labelledby="t-adv" tabindex="0">
+            <p>The route, counts per client, hourly chart, status split and the check Unit 7 will run after your deploy, as JSON, with exact commands.</p>
+            <p class="depth__cmd"><code>unit7 finding auth-user-3f2a --json</code></p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="ci sec" data-mood="alert">
+    <div class="wrap">
+      <Fragment set:html={status('In testing')} />
+      <h2 class="d2 vs" data-wipe>It finds the calls <em>nobody meant to make.</em></h2>
+      <p class="lede lede--wide ci__sub">Repeated, wrong and wasteful calls, found in your proxy log and your database's own counters, with nothing to install.</p>
+      <div class="ci__grid">
+        <div class="logs" aria-label="The same call, GET /auth/v1/user, repeated 6,625 times, collapsed into one row." role="img">
+          <div class="logs__stream" aria-hidden="true">
+            {Array.from({ length: 11 }).map(() => <code>GET /auth/v1/user <b>200</b></code>)}
+          </div>
+          <p class="logs__one" aria-hidden="true"><code>GET /auth/v1/user <b>200</b></code><span class="num">× <span class="logs__count">6,625</span></span></p>
+        </div>
+        <ul class="ci__digest">
+          {digest.map((d) => <li>{d}</li>)}
+        </ul>
+      </div>
+      <p class="small ci__note">The first week is silent, so false alarms get caught before you ever see one.</p>
+    </div>
+  </section>
+
+  <section class="on sec" data-mood="deep">
+    <div class="wrap">
+      <Fragment set:html={status(BUILT)} />
+      <h2 class="d2 vs" data-wipe>Your laptop sleeps. <em>Your server shouldn't lose its guard.</em></h2>
+      <p class="lede lede--wide on__sub">Outpost is one small, readable script on the server. It keeps measuring, takes scheduled copies and sends phone alerts by itself. No open port. One click to install or remove.</p>
+      <div class="on__read">
+        <p class="on__num num"><span class="on__pct">58</span>%</p>
+        <p class="on__label"><span class="mono">Hours watched</span><span class="on__tag">measured</span></p>
+      </div>
+      <ul class="on__week" aria-label="One week, hour by hour. 42% of the hours are gaps where nothing was watching.">
+        {week.map((gap) => <li class:list={[{ gap }]}></li>)}
+      </ul>
+      <p class="on__key mono"><span><i></i>Watched</span><span><i class="gap"></i>Not watching</span></p>
+      <p class="small on__note">If the server and your computer both go silent, an outside heartbeat tells you.</p>
+    </div>
+  </section>
+
+  <section class="els sec" data-mood="night">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>Everything <em>else.</em></h2>
+      <div class="els__groups">
+        {groups.map((g) => (
+          <div class="els__g">
+            <h3 class="d3">{g.title}</h3>
+            <ul>
+              {g.items.map(([name, line, state]) => (
+                <li><p><b>{name}</b> {line}</p><Fragment set:html={status((state ?? BUILT) as S)} /></li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+    <div class="jobs">
+      <div class="wrap jobs__head"><h3 class="d3">More than 30 ready-made jobs.</h3><Fragment set:html={status(BUILT)} /></div>
+      <div class="jobs__rows">
+        {[jobs.slice(0, 6), jobs.slice(6)].map((row, r) => (
+          <div class:list={['jobs__row', { 'jobs__row--back': r === 1 }]}>
+            {[0, 1].map((c) => (
+              <ul aria-hidden={c === 1 ? 'true' : undefined}>
+                {row.map((j) => <li>{j}</li>)}
+              </ul>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="lim sec" data-mood="deep">
+    <div class="wrap">
+      <p class="eyebrow">What "by itself" really means</p>
+      <h2 class="d2 vs" data-wipe>An honest limit.</h2>
+      <p class="lede lede--wide lim__text">Independent tests put today's AI at about 20-60% on finding the true cause of hard production problems. So Unit 7 doesn't pretend. <span class="lim__src small"><a href="https://arxiv.org/abs/2606.27154" rel="noopener">OpenRCA 2.0</a> · <a href="https://arxiv.org/html/2605.07161v1" rel="noopener">SREGym</a></span></p>
+      <ul class="lim__list">
+        {limits.map((l) => (
+          <li><p>It <b>{l.verb}</b> {l.rest}</p><Fragment set:html={status(l.s)} /></li>
+        ))}
+      </ul>
+      <p class="d2 lim__big" data-wipe>Spending money, deleting data and changing real DNS <em>stay with a person.</em></p>
+    </div>
+  </section>
+
+  <section class="bo sec" data-mood="night">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>The build <em>order.</em></h2>
+      <ol class="bo__list">
+        {phases.map((p, i) => (
+          <li>
+            <details class="phase" open={i === 0}>
+              <summary>
+                <span class="phase__n num">{i}</span>
+                <span class="phase__t">{p.t}</span>
+                <Fragment set:html={status(p.s)} />
+                <svg class="phase__c" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 6l5 5 5-5" /></svg>
+              </summary>
+              <p class="phase__done"><span class="mono">Done when:</span> {p.done}</p>
+              {p.still && <p class="phase__done phase__still"><span class="mono">Still to come:</span> {p.still}</p>}
+            </details>
+          </li>
+        ))}
+      </ol>
+    </div>
+  </section>
+
+  <section class="wb sec" data-mood="deep">
+    <div class="wrap wb__grid">
+      <h2 class="d2" data-wipe>What we <em>won't</em> build.</h2>
+      <ul class="wb__list">
+        {wont.map(([a, b]) => <li><b>{a}</b>{b && ` ${b}`}</li>)}
+      </ul>
+    </div>
+  </section>
+
+  <section class="vc sec" data-mood="dawn">
+    <div class="wrap">
+      <h2 class="d1" data-wipe>Follow the build.</h2>
+      <div class="cta">
+        <a class="btn" href="/open-source/#install">Get Unit 7 today</a>
+        <a class="btn btn--ghost" href={REPO_URL} rel="noopener">Watch on GitHub</a>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<script src="../scripts/v2.ts"></script>
+
+<style is:global>
+  .vs { margin-top: 1.1rem; }
+  .motion [data-intro] { visibility: hidden; }
+
+  .vh { position: relative; display: flex; align-items: flex-start; min-height: 100svh; padding-block: clamp(6.5rem, 15vh, 10rem) clamp(8rem, 22vh, 14rem); }
+  .vh__in { display: grid; gap: clamp(1rem, 2.4vh, 1.75rem); }
+  .vh .d1 { max-width: 12.5em; }
+  .vh .lede, .vh .small { color: var(--text); }
+  .vh__pill { display: inline-flex; align-items: center; gap: .6rem; justify-self: start; padding: .4rem .9rem; border: 1px solid var(--line-2); border-radius: 999px; font: 500 .8125rem/1.3 var(--mono); color: var(--text); }
+  .vh__pill i { width: .5rem; height: .5rem; border-radius: 50%; background: var(--lime); }
+  .motion .vh__pill i { animation: vh-pulse 2.4s ease-in-out infinite; }
+  @keyframes vh-pulse { 50% { box-shadow: 0 0 0 .35rem rgb(198 244 50 / .16); } }
+
+  /* Seven */
+  .sev__sub { margin-top: 1.25rem; color: var(--text); }
+  .sev__grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(2rem, 5vw, 5rem); align-items: start; margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .sev__rules li { padding-block: 1.1rem; border-top: 1px solid var(--line-2); color: var(--muted); font-size: clamp(1rem, 1.25vw, 1.25rem); line-height: 1.35; }
+  .sev__rules li:last-child { border-bottom: 1px solid var(--line-2); }
+  .sev__rules b { display: block; margin-bottom: .2rem; color: var(--text); font: 680 clamp(1.125rem, 1.6vw, 1.5rem)/1.15 var(--display); letter-spacing: -.015em; }
+  .sevm { padding: clamp(1.25rem, 2.4vw, 2.25rem); border: 1px solid var(--line-2); border-radius: clamp(16px, 2vw, 26px); background: var(--ink-2); box-shadow: 0 50px 100px -60px #000; }
+  .sevm header { display: flex; align-items: center; justify-content: space-between; font: 720 clamp(1.5rem, 2.2vw, 2.25rem)/1 var(--display); letter-spacing: -.03em; }
+  .sevm header span { display: inline-flex; align-items: center; gap: .5rem; color: var(--ok); font: 550 .9375rem/1 var(--sans); letter-spacing: 0; }
+  .sevm header i { width: .55rem; height: .55rem; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  .sevm__calm { margin-top: .6rem; color: var(--muted); }
+  .sevm h3 { margin: 1.5rem 0 .6rem; font: 600 .8125rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .sevm__q { padding: 1.15rem; border-radius: 16px; background: var(--ink-3); }
+  .sevm__q p { font-weight: 650; font-size: clamp(1.0625rem, 1.5vw, 1.375rem); line-height: 1.2; }
+  .sevm__q small { display: block; margin-top: .4rem; color: var(--muted); font-size: .9375rem; line-height: 1.35; }
+  .sevm__q div { display: flex; gap: .6rem; margin-top: .9rem; }
+  .sevm__done { display: grid; grid-template-columns: 3.4rem 1fr; gap: .5rem; padding-block: .4rem; font-size: .9375rem; line-height: 1.35; }
+  .sevm__done time { font-family: var(--mono); color: var(--faint); }
+  .sev__label { margin-top: .75rem; text-align: right; }
+  .sev__note { margin-top: 1.25rem; max-width: 60ch; color: var(--text); }
+  @media (max-width: 899px) { .sev__grid { grid-template-columns: 1fr; } }
+
+  /* New since V2.1 */
+  .nw__sub { margin-top: 1.25rem; }
+  .nw__list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 clamp(2rem, 5vw, 5rem); margin-top: clamp(2rem, 4vw, 3.5rem); }
+  .nw__list li { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: flex-start; justify-content: space-between; padding-block: 1.15rem; border-top: 1px solid var(--line-2); }
+  .nw__list p { max-width: 34em; color: var(--muted); line-height: 1.4; }
+  .nw__list b { display: block; margin-bottom: .2rem; color: var(--text); font: 680 clamp(1.125rem, 1.6vw, 1.5rem)/1.15 var(--display); letter-spacing: -.015em; }
+  .nw__note { margin-top: 1.25rem; color: var(--text); }
+  @media (max-width: 899px) { .nw__list { grid-template-columns: 1fr; } }
+
+  /* V1 and V2 */
+  .vt__labels { display: none; }
+  .vt__rows { margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .vt__row { display: grid; gap: .6rem; padding-block: 1.3rem; border-top: 1px solid var(--line-2); }
+  .vt__row:last-child { border-bottom: 1px solid var(--line-2); }
+  .vt__now { color: var(--muted); max-width: 30em; font-size: clamp(1rem, 1.25vw, 1.25rem); line-height: 1.35; }
+  .vt__txt { position: relative; display: inline-block; }
+  .vt__next { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; align-items: center; justify-content: space-between; }
+  .vt__next p { font-size: clamp(1.125rem, 1.75vw, 1.75rem); line-height: 1.22; letter-spacing: -.01em; max-width: 24em; }
+  .vt__next b { font-family: var(--display); font-weight: 700; color: var(--lime); }
+  .vt__slash { display: none; }
+  @media (min-width: 900px) {
+    .vt__labels { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 4rem; margin-top: clamp(2.5rem, 5vw, 4rem); font-size: .8125rem; color: var(--faint); text-transform: uppercase; letter-spacing: .12em; }
+    .vt__rows { margin-top: .9rem; }
+    .vt__next { flex-wrap: nowrap; }
+    .vt__row { position: relative; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 4rem; align-items: center; padding-block: clamp(1.1rem, 2vw, 1.75rem); }
+    .vt__slash { display: block; position: absolute; top: calc(50% - 1.5rem); left: calc((100% - 4rem) * 5 / 12 + .85rem); width: 2px; height: 3rem; background: var(--lime); transform: skewX(var(--skew)) scaleY(var(--f, 1)); transform-origin: bottom left; }
+    .motion .vt__txt::after { content: attr(data-t); position: absolute; inset: 0; text-decoration: line-through; text-decoration-thickness: 1.5px; text-decoration-color: var(--faint); color: transparent; clip-path: polygon(0 0, calc(var(--s, 0) * 112%) 0, calc(var(--s, 0) * 112% - 2em) 100%, 0 100%); }
+  }
+
+  /* Truth pass */
+  .vtr__sub { margin-top: 1.25rem; }
+  .vtr__stats { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: clamp(2rem, 4vw, 4rem) clamp(1rem, 3vw, 3rem); margin-top: clamp(3rem, 6vw, 5.5rem); }
+  .vtr__stats li:nth-child(1) { grid-column: span 7; } .vtr__stats li:nth-child(2) { grid-column: span 5; }
+  .vtr__stats li:nth-child(3) { grid-column: span 5; } .vtr__stats li:nth-child(4) { grid-column: span 7; }
+  .vtr__n { font-size: clamp(5.5rem, 15.5vw, 19rem); white-space: nowrap; }
+  .vtr__n span { display: inline-block; }
+  .vtr__n small { font-size: .42em; font-weight: 800; color: var(--muted); letter-spacing: -.01em; }
+  .vtr__line { margin-top: .75rem; max-width: 30em; color: var(--muted); font-size: clamp(1rem, 1.25vw, 1.25rem); line-height: 1.35; }
+  .vtr__end { margin-top: clamp(3rem, 6vw, 5.5rem); color: var(--text); }
+  @media (max-width: 899px) { .vtr__stats li { grid-column: 1 / -1 !important; } .vtr__n { font-size: clamp(5.5rem, 27vw, 9rem); } }
+
+  /* Safety Net */
+  .net { position: relative; padding-block: clamp(4rem, 9vw, 7rem); }
+  .net__head .lede { margin-top: .9rem; }
+  .net__head .d2 { font-size: clamp(2.25rem, 4.3vw, 5.25rem); max-width: 15em; }
+  .net__grid { display: grid; gap: 2.5rem; margin-top: 2rem; }
+  .ladder li { display: grid; grid-template-columns: 1.4rem minmax(0, 1fr) auto; gap: .75rem; align-items: center; padding-block: .52rem; border-top: 1px solid var(--line-2); line-height: 1.25; }
+  .ladder li:last-child { border-bottom: 1px solid var(--line-2); }
+  .ladder svg { width: 1.2rem; height: 1.2rem; padding: .16rem; border-radius: 50%; color: var(--on-lime); background: var(--lime); }
+  .ladder time { font: 450 .8125rem/1 var(--mono); color: var(--faint); }
+  .net__label { margin-top: .75rem; color: var(--faint); font-size: .8125rem; }
+  /* Bars lean out to the right as they rise, so the row keeps room for the tallest one's tip. */
+  .meter { --tall: clamp(9rem, 27vh, 20rem); padding-right: calc(var(--tall) * .25); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: clamp(1rem, 2vw, 2rem); }
+  /* Parallel bars never touch, so each can lean as far as its height takes it. */
+  .meter__bar { position: relative; display: block; height: var(--tall); margin-bottom: .9rem; }
+  .meter__bar::before, .meter__bar i { content: ''; position: absolute; left: 0; bottom: 0; width: 46%; height: var(--h); transform: skewX(var(--skew)); transform-origin: bottom left; }
+  .meter__bar::before { background: var(--line); box-shadow: inset 0 0 0 1px var(--line-2); }
+  .meter__bar i { background: var(--c, var(--lime)); clip-path: inset(calc(100% - var(--f, 100%)) 0 0 0); }
+  .meter li:nth-child(1) { --c: var(--bad); } .meter li:nth-child(2) { --c: var(--warn); } .meter li:nth-child(3) { --c: var(--ok); } .meter li:nth-child(4) { --c: var(--lime); }
+  .meter b { display: block; font-family: var(--display); font-size: clamp(.9375rem, 1.1vw, 1.1875rem); font-weight: 700; letter-spacing: -.015em; }
+  .meter__line { display: block; margin-top: .15rem; color: var(--muted); font-size: .875rem; line-height: 1.3; }
+  .net__says { display: flex; align-items: center; gap: .75rem; margin-top: 1.75rem; padding: .7rem 1rem .7rem .7rem; border: 1px solid var(--line-2); border-radius: 18px; background: var(--ink-2); line-height: 1.3; }
+  .net__says svg { flex: none; width: 2.6rem; height: 2.6rem; }
+  .ladder li, .meter li { transition: opacity .25s; }
+  @media (min-width: 900px) {
+    .net__grid { grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: clamp(2rem, 5vw, 6rem); align-items: start; }
+    .motion .net { height: 300svh; padding: 0; }
+    .motion .net__stage { position: sticky; top: 0; display: flex; align-items: center; height: 100svh; }
+    .motion .net__in { padding-top: 2.5rem; }
+    .motion .net__grid { margin-top: clamp(1rem, 3vh, 2rem); }
+  }
+  @media (min-width: 1400px) and (min-height: 800px) {
+    .ladder li { padding-block: .66rem; font-size: 1.0625rem; }
+    .net__says { font-size: 1.0625rem; }
+  }
+  @media (max-width: 899px) { .meter { --tall: 6.5rem; padding-right: 0; gap: .5rem; } .meter b { font-size: .75rem; letter-spacing: -.02em; } .meter__line { font-size: .75rem; } }
+
+  /* The three bands */
+  .bands__list { display: grid; gap: .75rem; }
+  .band { --c: var(--ok); position: relative; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) minmax(0, 3fr); gap: .75rem 2.5rem; align-items: start; padding: clamp(1.25rem, 2.4vw, 2rem) clamp(1.25rem, 2.6vw, 2.25rem); border-radius: 18px; background: linear-gradient(100deg, color-mix(in srgb, var(--c) 17%, var(--ink-1)), var(--ink-1) 62%); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 30%, transparent); }
+  .band--yellow { --c: var(--warn); } .band--red { --c: var(--bad); }
+  .band .d3 span { color: var(--c); }
+  .band__eg { color: var(--muted); }
+  .band__who span { display: block; margin-bottom: .2rem; color: var(--faint); font-size: .75rem; }
+  .bands__note { margin-top: 1.25rem; }
+  @media (max-width: 899px) { .band { grid-template-columns: 1fr; } }
+
+  /* Check-up mock: rounded, because that's how the product looks */
+  .cu__sub { margin-top: 1.25rem; }
+  .cum { margin-top: clamp(2.5rem, 5vw, 4rem); padding: clamp(1rem, 2.4vw, 2rem); border: 1px solid var(--line); border-radius: 26px; background: var(--ink-1); box-shadow: 0 50px 100px -60px rgb(0 0 0 / .9); }
+  .cum__top, .cum__cover { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; color: var(--muted); font-size: .9375rem; }
+  .cum__btn { display: inline-flex; align-items: center; min-height: 2.25rem; padding: 0 .95rem; border: 1px solid var(--line-2); border-radius: 999px; color: var(--text); font-size: .875rem; font-weight: 500; white-space: nowrap; }
+  .cum__btn--blue { border-color: transparent; background: var(--product-blue); color: #fff; }
+  .cum__verdict { margin-top: 1.25rem; }
+  .cum__big { font: 680 clamp(1.5rem, 2.8vw, 2.75rem)/1.08 var(--display); letter-spacing: -.025em; }
+  .cum__since { margin-top: .4rem; color: var(--muted); }
+  .cum__tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; margin-top: 1.5rem; }
+  .cum__tiles li { padding: 1rem 1.1rem; border-radius: 18px; background: var(--ink-2); }
+  .cum__tiles h3, .cum__block h3 { font: 500 .75rem/1.3 var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--faint); }
+  .cum__v { margin-top: .5rem; font-size: clamp(1.125rem, 1.6vw, 1.5rem); font-weight: 600; letter-spacing: -.015em; }
+  .cum__v span, .cum__tiles p span { display: inline-block; font-variant-numeric: tabular-nums; }
+  .cum__tiles li p:last-child { margin-top: .15rem; color: var(--muted); font-size: .9375rem; }
+  .cum__cover { margin-top: 1rem; padding: .7rem 1.1rem; border-radius: 16px; background: var(--ink-2); }
+  .cum__block { margin-top: 1.5rem; }
+  .cum__block > p { margin-top: .4rem; }
+  .cum__todo { counter-reset: t; margin-top: .4rem; }
+  .cum__todo li { counter-increment: t; display: grid; grid-template-columns: 1.75rem minmax(0, 1fr) auto auto; gap: .5rem 1rem; align-items: center; padding-block: .7rem; border-top: 1px solid var(--line); }
+  .cum__todo li::before { content: counter(t); font: 500 .875rem/1 var(--mono); color: var(--faint); }
+  .cum__todo b { font-weight: 500; color: var(--muted); font-size: .9375rem; }
+  .cu__label { margin-top: 1rem; font-weight: 600; }
+  @media (max-width: 899px) {
+    .cum__tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cum__todo li { grid-template-columns: 1.5rem minmax(0, 1fr); }
+    .cum__todo b, .cum__todo .cum__btn { grid-column: 2; justify-self: start; }
+  }
+
+  /* Give this to my AI */
+  .ai__sub { margin-top: 1.25rem; }
+  .rail { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: clamp(3rem, 6vw, 5rem); padding-top: 4.25rem; }
+  .rail li { position: relative; padding-top: 1.15rem; font-family: var(--display); font-size: clamp(1rem, 1.5vw, 1.5rem); font-weight: 680; letter-spacing: -.015em; }
+  .rail li::before { content: ''; position: absolute; top: -.2rem; left: 0; width: 1.2rem; height: .5rem; background: var(--c, var(--lime)); transform: skewX(var(--skew)); }
+  .rail li::after { content: ''; position: absolute; top: .02rem; left: 1.2rem; right: .2rem; height: 1px; background: var(--c, var(--lime)); transform-origin: left; transform: scaleX(var(--f, 1)); }
+  .rail .rail__fixed::after { display: none; }
+  /* The second branch leaves the rail along the slash and lands above Fixed. */
+  .rail__alt { --c: var(--warn); position: absolute !important; left: 75%; top: 0; padding: 0 0 0 1.75rem !important; color: var(--warn); font-size: clamp(.9375rem, 1.3vw, 1.25rem); }
+  .rail .rail__alt::before { top: .32rem; left: 0; }
+  .rail .rail__alt::after { top: .55rem; left: calc(-3.72rem * var(--slash)); right: auto; width: 1.5px; height: 3.72rem; transform-origin: bottom left; transform: skewX(var(--skew)); }
+  .chips { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 2rem; }
+  .chips li { padding: .3rem .8rem; border: 1px solid var(--line-2); border-radius: 999px; color: var(--muted); font-size: .875rem; }
+  .depth { margin-top: clamp(3.5rem, 7vw, 6rem); }
+  .depth__tabs { display: flex; flex-wrap: wrap; gap: .25rem; width: fit-content; margin-top: 1.25rem; padding: .3rem; border: 1px solid var(--line-2); border-radius: 999px; background: var(--ink-1); }
+  .js .depth__tabs { display: flex; }
+  html:not(.js) .depth__tabs { display: none; }
+  .depth__tabs button { min-height: 2.5rem; padding: 0 1.1rem; border: 0; border-radius: 999px; background: none; color: var(--muted); font-size: .9375rem; font-weight: 500; cursor: pointer; transition: color .2s, background-color .2s; }
+  .depth__tabs button:hover { color: var(--text); }
+  .depth__tabs button[aria-selected='true'] { background: #F2F2F4; color: #0E0E12; font-weight: 600; }
+  .depth__panels { margin-top: 1rem; }
+  .depth__p { padding: clamp(1.25rem, 2.6vw, 2.25rem); border: 1px solid var(--line); border-radius: 22px; background: var(--ink-1); font-size: clamp(1.0625rem, 1.5vw, 1.5rem); line-height: 1.38; }
+  .depth__p + .depth__p { margin-top: .75rem; }
+  .js .depth__p + .depth__p { margin-top: 0; }
+  .depth__p code { font-size: .86em; padding: .05em .3em; border-radius: 6px; background: rgb(255 255 255 / .07); }
+  .depth__btns { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+  .depth__cmd { margin-top: 1rem; }
+  @media (max-width: 899px) {
+    .rail { grid-template-columns: 1fr; gap: 1.1rem; padding-top: 0; padding-left: .2rem; }
+    .rail li::after { display: none; }
+    .rail__alt { position: relative !important; left: 0; padding: 1.15rem 0 0 0 !important; }
+    .rail .rail__alt::before { top: -.2rem; }
+    .rail .rail__alt::after { display: none; }
+  }
+
+  /* Call Inspector */
+  .ci__sub { margin-top: 1.25rem; }
+  .ci__note { margin-top: 1.25rem; color: var(--muted); }
+  .ci__grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2rem clamp(2rem, 5vw, 6rem); align-items: start; margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  /* A fixed height: the stream collapses inside the box, so nothing below it moves. */
+  .logs { display: flex; flex-direction: column; justify-content: center; height: 27rem; padding: 1rem 1.25rem; overflow: hidden; border: 1px solid var(--line-2); border-radius: 20px; background: var(--ink-1); }
+  .logs__stream { display: flex; flex-direction: column; justify-content: flex-end; flex: 0 1 auto; min-height: 0; gap: .3rem; overflow: hidden; }
+  .logs code { display: block; flex: none; font-size: .9375rem; color: var(--muted); }
+  .logs code b { color: var(--ok); font-weight: 500; }
+  .logs__one { flex: none; display: grid; gap: .4rem; margin-top: .4rem; padding-top: .7rem; border-top: 1px solid var(--line-2); }
+  .logs__one code { color: var(--text); }
+  .logs__one .num { font-size: clamp(5.5rem, 12.5vw, 13.5rem); color: var(--text); white-space: nowrap; }
+  .ci__digest li { padding-block: .7rem; border-top: 1px solid var(--line-2); font-size: clamp(1.0625rem, 1.5vw, 1.4375rem); line-height: 1.25; letter-spacing: -.01em; }
+  .ci__digest li:last-child { border-bottom: 1px solid var(--line-2); }
+  @media (max-width: 899px) { .ci__grid { grid-template-columns: 1fr; } .logs { height: 22rem; } }
+
+  /* Always on */
+  .on__sub { margin-top: 1.25rem; }
+  .on__read { display: flex; align-items: flex-end; gap: 1.25rem; margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .on__num { font-size: clamp(6rem, 15vw, 16rem); }
+  .on__label { display: grid; gap: .2rem; padding-bottom: .55rem; color: var(--muted); }
+  .on__tag { color: var(--text); font-weight: 600; }
+  .on__week { display: grid; grid-template-columns: repeat(168, minmax(0, 1fr)); gap: 2px; margin-top: 1.25rem; }
+  .on__week li { height: clamp(3rem, 6vw, 5.5rem); border-radius: 1px; background: var(--lime); }
+  .on__week li.gap { background: rgb(248 113 113 / .22); }
+  .on__key { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; margin-top: .8rem; color: var(--muted); font-size: .8125rem; }
+  .on__key span { display: inline-flex; align-items: center; gap: .5rem; }
+  .on__key i { width: .55rem; height: 1rem; background: var(--lime); }
+  .on__key i.gap { background: rgb(248 113 113 / .4); }
+  .on__note { margin-top: 1.5rem; }
+  @media (max-width: 899px) { .on__week { grid-template-columns: repeat(24, minmax(0, 1fr)); } .on__week li { height: 1.1rem; } }
+
+  /* Everything else */
+  .els__groups { display: grid; gap: clamp(2.5rem, 5vw, 4.5rem); margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .els__g { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 1rem 2rem; }
+  .els__g li { display: flex; align-items: baseline; justify-content: space-between; gap: 1.25rem; padding-block: .8rem; border-top: 1px solid var(--line-2); }
+  .els__g li:last-child { border-bottom: 1px solid var(--line-2); }
+  .els__g li p { color: var(--muted); max-width: 44em; }
+  .els__g b { color: var(--text); font-weight: 600; }
+  .jobs { margin-top: clamp(4.5rem, 9vw, 8rem); }
+  .jobs__head { display: flex; align-items: center; gap: 1.1rem; }
+  .jobs__rows { display: grid; gap: .35rem; margin-top: 1.5rem; }
+  .jobs__row { display: flex; width: max-content; }
+  .jobs__row ul { display: flex; flex: none; }
+  .jobs__row li { padding-right: 1.1em; font: 740 clamp(2.25rem, 6vw, 7rem)/1.14 var(--display); font-stretch: 100%; letter-spacing: -.035em; white-space: nowrap; color: var(--text); }
+  .jobs__row li::after { content: '/'; margin-left: 1.1em; color: var(--lime); font-style: italic; }
+  .jobs__rows { overflow: hidden; }
+  .motion .jobs__row { animation: marq 80s linear infinite; }
+  .motion .jobs__row--back { animation: marq-back 92s linear infinite; }
+  @keyframes marq { to { transform: translateX(-50%); } }
+  @keyframes marq-back { from { transform: translateX(-50%); } to { transform: none; } }
+  html:not(.motion) .jobs__row { width: auto; padding-inline: var(--gut); }
+  html:not(.motion) .jobs__row ul { flex-wrap: wrap; flex: 1; }
+  html:not(.motion) .jobs__row ul[aria-hidden] { display: none; }
+  html:not(.motion) .jobs__row li { font-size: clamp(1.75rem, 3.4vw, 3.5rem); white-space: normal; }
+  @media (max-width: 899px) { .els__g { grid-template-columns: 1fr; } .els__g li { flex-direction: column; gap: .4rem; } }
+
+  /* An honest limit */
+  .lim__text { margin-top: 1.5rem; }
+  .lim__src { display: block; margin-top: .5rem; }
+  .lim__src a { color: var(--soft-blue); text-underline-offset: .2em; }
+  .lim__list { margin-top: clamp(2.5rem, 5vw, 4rem); }
+  .lim__list li { display: flex; align-items: baseline; justify-content: space-between; gap: 1.25rem; padding-block: .95rem; border-top: 1px solid var(--line-2); font-size: clamp(1.125rem, 1.8vw, 1.75rem); line-height: 1.25; letter-spacing: -.012em; color: var(--muted); }
+  .lim__list li:last-child { border-bottom: 1px solid var(--line-2); }
+  .lim__list b { color: var(--text); font-weight: 600; }
+  .lim__big { margin-top: clamp(3.5rem, 7vw, 6.5rem); max-width: 13em; font-size: var(--h1); font-weight: 760; line-height: .95; }
+  .els, .lim, .bo, .wb { padding-block: clamp(4rem, 7.5vw, 7rem); }
+  @media (max-width: 620px) { .lim__list li { flex-direction: column; gap: .4rem; } }
+
+  /* Build order */
+  .bo__list { margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .bo__list > li { border-top: 1px solid var(--line-2); }
+  .bo__list > li:last-child { border-bottom: 1px solid var(--line-2); }
+  .phase summary { display: grid; grid-template-columns: clamp(4rem, 9vw, 10rem) minmax(0, 1fr) auto 1.25rem; gap: 1rem; align-items: center; padding-block: clamp(.6rem, 1.1vw, 1rem); cursor: pointer; list-style: none; transition: color .2s; }
+  .phase summary::-webkit-details-marker { display: none; }
+  .phase__n { font-size: clamp(3.5rem, 7.8vw, 8.75rem); color: var(--muted); transition: color .25s; }
+  .phase[open] .phase__n, .phase summary:hover .phase__n { color: var(--lime); }
+  .phase__t { font: 700 clamp(1.25rem, 2.7vw, 3rem)/1.05 var(--display); letter-spacing: -.028em; }
+  .phase__c { width: 1.1rem; color: var(--faint); transition: transform .3s var(--ease); }
+  .phase[open] .phase__c { transform: rotate(180deg); }
+  .phase__done { padding: 0 0 clamp(1rem, 2vw, 1.75rem) calc(clamp(4rem, 9vw, 10rem) + 1rem); color: var(--muted); font-size: clamp(1rem, 1.3vw, 1.25rem); max-width: 64em; }
+  .phase__done .mono { color: var(--text); font-size: .85em; }
+  .phase__done:has(+ .phase__still) { padding-bottom: .3rem; }
+  @supports (interpolate-size: allow-keywords) {
+    .motion .phase { interpolate-size: allow-keywords; }
+    .motion .phase::details-content { block-size: 0; overflow: clip; transition: block-size .4s var(--ease), content-visibility .4s allow-discrete; }
+    .motion .phase[open]::details-content { block-size: auto; }
+  }
+  @media (max-width: 620px) {
+    .phase summary { grid-template-columns: 3.25rem minmax(0, 1fr) 1.1rem; }
+    .phase .status { grid-column: 2; grid-row: 2; justify-self: start; margin: -.5rem 0 .2rem .4rem; }
+    .phase__c { grid-column: 3; grid-row: 1; }
+    .phase__done { padding-left: 0; }
+  }
+
+  /* What we won't build */
+  .wb__grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2rem clamp(2rem, 5vw, 6rem); }
+  .wb__list li { padding-block: clamp(.7rem, 1.2vw, 1.1rem); border-top: 1px solid var(--line-2); font-size: clamp(1.25rem, 2.3vw, 2.5rem); line-height: 1.16; letter-spacing: -.02em; color: var(--muted); }
+  .wb__list li:last-child { border-bottom: 1px solid var(--line-2); }
+  .wb__list b { color: var(--text); font-family: var(--display); font-weight: 680; }
+  @media (max-width: 899px) { .wb__grid { grid-template-columns: 1fr; } }
+
+  .vc { padding-block: clamp(7rem, 15vw, 14rem) clamp(9rem, 20vw, 18rem); }
+  .vc .cta { margin-top: 2.25rem; }
+</style>

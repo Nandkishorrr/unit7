@@ -1,0 +1,171 @@
+---
+// Section B: one app, three environments. The real table is the content; the switcher only shows one column of it.
+const envs = ['Production', 'Staging', 'Dev'];
+const rows = [
+  ['Address', '<code>nestly.example</code>', '<code>staging.nestly.example</code>', 'a free test address'],
+  ['Version', 'v42', 'v43', 'v44'],
+  ['Database', '<code>nestly · db</code>', '<code>nestly · db-staging</code> <span class="envx__tag">Copy, names replaced</span>', '<code>nestly · db-dev</code>'],
+  ['Stripe key', '<code>credential://<wbr />stripe/live/key</code>', '<code>credential://<wbr />stripe/test/key</code>', '<code>credential://<wbr />stripe/test/key</code>'],
+  ['Autonomy', 'Fix itself', 'Autopilot', 'Autopilot'],
+];
+const list = [
+  ['Settings that inherit.', 'Set a value for the whole organisation, a project, an environment or one app. Unit 7 shows where each value comes from.'],
+  ['Every version kept.', 'Change a setting, then bring back any older one.'],
+  ['Its own accounts.', 'Production can use your live Stripe and Staging a test one. Each environment picks one account per provider.'],
+  ['Freedom it has to earn.', 'An environment can move up a level after a clean run, and drops back after a mistake.'],
+];
+// The small map: address -> app -> database, one route per environment. Curves are in the viewBox's own units.
+const y = [40, 110, 180];
+const addr = ['nestly.example', 'staging.nestly.example', 'a free test address'];
+const dbs = ['nestly · db', 'nestly · db-staging', 'nestly · db-dev'];
+---
+<section class="env sec" id="environments" data-mood="night">
+  <div class="wrap">
+    <p class="eyebrow">Environments</p>
+    <h2 class="d1 env__h" data-wipe>Stop testing on <em>your live app.</em></h2>
+    <p class="lede lede--wide env__sub">Give every app its own Production, Staging and Dev. Each gets its own database, keys, address and rules, all in one place.</p>
+
+    <div class="envx" data-at="0">
+      <div class="envx__top">
+        <p class="envx__app">nestly</p>
+        <fieldset class="envx__pick">
+          <legend class="sr">Choose an environment of nestly</legend>
+          <span class="envx__pill" aria-hidden="true"></span>
+          {envs.map((e, i) => <label><input type="radio" name="env" value={i} checked={i === 0} /><span>{e}</span></label>)}
+        </fieldset>
+      </div>
+      <div class="envx__body">
+        <table class="envx__t">
+          <thead><tr><td></td>{envs.map((e) => <th scope="col">{e}</th>)}</tr></thead>
+          <tbody>
+            {rows.map(([label, ...vals]) => (
+              <tr><th scope="row">{label}</th>{vals.map((v) => <td set:html={v} />)}</tr>
+            ))}
+          </tbody>
+        </table>
+        <svg class="envx__map" viewBox="0 0 430 220" role="img" aria-label="A small map: each environment's address leads to the same app, and on to that environment's own database.">
+          <g class="envx__lines">
+            {y.map((yy, i) => (
+              <>
+                <path data-e={i} pathLength="1" d={`M146 ${yy} C176 ${yy} 176 110 200 110`} />
+                <path data-e={i} pathLength="1" d={`M272 110 C296 110 296 ${yy} 322 ${yy}`} />
+              </>
+            ))}
+          </g>
+          {addr.map((a, i) => <g class="envx__n" data-e={i}><rect x="0" y={y[i] - 15} width="146" height="30" rx="10" /><text x="73" y={y[i] + 4.5} text-anchor="middle">{a}</text></g>)}
+          <g class="envx__app-n"><rect x="200" y="86" width="72" height="48" rx="12" /><text x="236" y="106" text-anchor="middle">nestly</text><text x="236" y="122" text-anchor="middle" class="envx__sub">web</text></g>
+          {dbs.map((d, i) => <g class="envx__n" data-e={i}><rect x="322" y={y[i] - 15} width="108" height="30" rx="10" /><text x="376" y={y[i] + 4} text-anchor="middle" class="envx__db">{d}</text></g>)}
+        </svg>
+      </div>
+      <p class="mock-label envx__label">Demo workspace. Numbers are examples.</p>
+    </div>
+
+    <ol class="envs">
+      <li>
+        <div class="tiny tiny--ask" aria-hidden="true"><span class="tiny__b">make a test copy of my app</span><span class="tiny__plan"><i></i>Plan</span><span class="tiny__env">Staging</span></div>
+        <h3 class="d3"><span class="num">1</span>Say "make a test copy of my app".</h3>
+        <p>Unit 7 shows the plan first. Then it builds Staging: the same apps, fresh databases, your settings and a copy of your data from a fresh backup. Names, emails and phones are replaced. Production is never touched.</p>
+        <p class="small">Live-looking keys like <code>sk_live_</code> are left out unless you choose them.</p>
+      </li>
+      <li>
+        <div class="tiny tiny--lvl" aria-hidden="true"><p><span>Production</span><b>Fix itself</b></p><p><span>Staging</span><b class="on">Autopilot</b></p></div>
+        <h3 class="d3"><span class="num">2</span>Break things there.</h3>
+        <p>Staging can run on Autopilot while Production stays on Fix itself. Your AI can try risky ideas where they can't hurt anyone.</p>
+      </li>
+      <li>
+        <div class="tiny tiny--ship" aria-hidden="true"><span class="tiny__old">v42</span><span class="tiny__arrow"></span><span class="tiny__new">v43</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3.5 8.5 6.6 11.6 12.5 5" /></svg></div>
+        <h3 class="d3"><span class="num">3</span>Ship what worked.</h3>
+        <p>Promote sends the same commit to Production. It's built and health-checked beside the live version, then switched. The old version stays ready to roll back.</p>
+      </li>
+    </ol>
+
+    <dl class="specs__list env__list">
+      {list.map(([label, line]) => <div><dt class="d3">{label}</dt><dd>{line}</dd></div>)}
+    </dl>
+  </div>
+</section>
+
+<style is:global>
+  .env__h { margin-top: 1.1rem; max-width: 10.5em; }
+  .env__sub { margin-top: 1.5rem; }
+  .envx { margin-top: clamp(2.5rem, 5vw, 4.5rem); padding: clamp(1.1rem, 2.6vw, 2.25rem); border: 1px solid var(--line); border-radius: 28px; background: var(--ink-1); box-shadow: 0 50px 100px -60px rgb(0 0 0 / .9); }
+  .envx__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem 2rem; }
+  .envx__app { font: 720 clamp(1.75rem, 3vw, 3.25rem)/1 var(--display); letter-spacing: -.03em; }
+  .envx__pick { display: none; }
+  .js .envx__pick { --at: 0; position: relative; display: grid; grid-template-columns: repeat(3, minmax(6.25rem, 1fr)); gap: .25rem; padding: .3rem; border: 1px solid var(--line-2); border-radius: 999px; background: var(--ink-0); }
+  .envx__pick label { position: relative; cursor: pointer; }
+  .envx__pick input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+  .envx__pick span:not(.envx__pill) { position: relative; display: grid; place-items: center; min-height: 2.75rem; padding-inline: .9rem; border-radius: 999px; color: var(--muted); font-size: .9375rem; font-weight: 500; transition: color .25s; }
+  .envx__pick label:has(input:checked) span { color: #0E0E12; font-weight: 600; }
+  .envx__pick label:hover:not(:has(input:checked)) span { color: var(--text); }
+  .envx__pick label:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 999px; }
+  .envx__pill { position: absolute; inset: .3rem auto .3rem .3rem; width: calc((100% - .6rem - .5rem) / 3); border-radius: 999px; background: #F2F2F4; transform: translateX(calc(var(--at) * (100% + .25rem))); transition: transform .42s var(--ease); }
+  .envx[data-at='1'] .envx__pick { --at: 1; } .envx[data-at='2'] .envx__pick { --at: 2; }
+
+  .envx__body { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 1.5rem clamp(1.5rem, 4vw, 4rem); align-items: center; margin-top: clamp(1.25rem, 2.6vw, 2.25rem); }
+  .envx__t { width: 100%; border-collapse: collapse; font-size: clamp(.9375rem, 1.15vw, 1.125rem); }
+  .envx__t th, .envx__t td { padding: .7rem .75rem .7rem 0; border-top: 1px solid var(--line-2); text-align: left; vertical-align: baseline; font-weight: 400; }
+  .envx__t thead td, .envx__t thead th { border-top: 0; color: var(--muted); font-size: .8125rem; font-family: var(--mono); }
+  .envx__t tbody th { width: 7.5rem; color: var(--faint); font: 450 .8125rem/1.4 var(--mono); white-space: nowrap; }
+  .envx__t code { font-size: .92em; overflow-wrap: anywhere; }
+  .envx__tag { display: inline-block; margin-left: .35rem; padding: .05rem .5rem; border-radius: 999px; background: rgb(198 244 50 / .13); color: var(--lime); font-size: .8em; white-space: nowrap; }
+  /* The switcher shows one column of the real table. */
+  .js .envx__t thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .js .envx__t tbody tr:first-child th, .js .envx__t tbody tr:first-child td { border-top: 0; }
+  .js .envx[data-at='0'] td:nth-of-type(n+2), .js .envx[data-at='1'] td:not(:nth-of-type(2)), .js .envx[data-at='2'] td:not(:nth-of-type(3)) { display: none; }
+
+  .envx__map { width: 100%; height: auto; overflow: visible; font-size: 11.5px; font-family: var(--sans); }
+  .envx__lines path { fill: none; stroke: var(--soft-blue); stroke-width: 1.5; stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset .55s var(--ease); }
+  .envx__n rect, .envx__app-n rect { fill: var(--ink-2); stroke: var(--line-2); transition: stroke .3s, fill .3s; }
+  .envx__n text { fill: var(--faint); transition: fill .3s; }
+  .envx__app-n rect { fill: var(--ink-3); }
+  .envx__app-n text { fill: var(--text); font-weight: 600; font-size: 13px; }
+  .envx__app-n .envx__sub { fill: var(--muted); font-weight: 400; font-size: 11px; }
+  .envx__db { font-size: 10.5px; }
+  .envx[data-at='0'] [data-e='0'], .envx[data-at='1'] [data-e='1'], .envx[data-at='2'] [data-e='2'] { --on: 1; stroke-dashoffset: 0; }
+  .envx__n { --on: 0; }
+  .envx[data-at='0'] .envx__n[data-e='0'] rect, .envx[data-at='1'] .envx__n[data-e='1'] rect, .envx[data-at='2'] .envx__n[data-e='2'] rect { stroke: var(--lime); fill: rgb(198 244 50 / .09); }
+  .envx[data-at='0'] .envx__n[data-e='0'] text, .envx[data-at='1'] .envx__n[data-e='1'] text, .envx[data-at='2'] .envx__n[data-e='2'] text { fill: var(--text); }
+  html:not(.js) .envx__map { display: none; }
+  .envx__label { margin-top: 1rem; }
+  html:not(.js) .envx__body { grid-template-columns: 1fr; }
+  /* The tag takes its own line here, and every environment keeps that room, so the switcher never moves the page. */
+  @media (max-width: 620px) {
+    .envx__tag { display: block; width: fit-content; margin: .2rem 0 0; }
+    .js .envx__t tbody tr:nth-child(3) > * { height: 4.5rem; }
+    .envx__t td { padding-right: 0; }
+  }
+  @media (max-width: 899px) {
+    .envx__body { grid-template-columns: 1fr; }
+    .js .envx__pick { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .envx__pick span:not(.envx__pill) { padding-inline: .25rem; }
+    .envx__t tbody th { width: 5.25rem; }
+    html:not(.js) .envx__t { font-size: .8125rem; }
+  }
+
+  .envs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2.5rem clamp(1.5rem, 3.5vw, 3.5rem); margin-top: clamp(3.5rem, 7vw, 6rem); }
+  .envs p { margin-top: .6rem; color: var(--muted); }
+  .envs .small { color: var(--faint); }
+  .envs .d3 { margin-top: 1.1rem; }
+  .envs .num { display: block; margin-bottom: .4rem; color: var(--lime); font-size: clamp(3rem, 5vw, 5.5rem); }
+  .tiny { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-height: 5.75rem; padding: .85rem; border: 1px solid var(--line); border-radius: 18px; background: var(--ink-1); font-size: .8125rem; }
+  .tiny p { margin: 0; color: var(--text); }
+  .tiny__b { padding: .4rem .7rem; border-radius: 12px 12px 3px 12px; background: #F2F2F4; color: #0E0E12; }
+  .tiny__plan { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); }
+  .tiny__plan i { width: 1.25rem; height: 1px; background: var(--soft-blue); }
+  .tiny__env { padding: .3rem .65rem; border-radius: 999px; background: rgb(198 244 50 / .14); color: var(--lime); font-weight: 600; }
+  .tiny--lvl { display: grid; gap: .35rem; }
+  .tiny--lvl p { display: flex; justify-content: space-between; gap: 1rem; }
+  .tiny--lvl span { color: var(--muted); }
+  .tiny--lvl b { font-weight: 600; }
+  .tiny--lvl b.on { color: var(--lime); }
+  .tiny--ship { gap: .6rem; }
+  .tiny__old, .tiny__new { position: relative; isolation: isolate; padding: .3rem 1rem; font: 600 .875rem/1.2 var(--mono); }
+  .tiny__old::before, .tiny__new::before { content: ''; position: absolute; inset: 0; z-index: -1; transform: skewX(var(--skew)); box-shadow: inset 0 0 0 1px var(--line-3); }
+  .tiny__new { color: var(--on-lime); }
+  .tiny__new::before { background: var(--lime); box-shadow: none; }
+  .tiny__arrow { width: 1.75rem; height: 1px; background: var(--line-3); }
+  .tiny--ship svg { width: 1.3rem; height: 1.3rem; padding: .18rem; border-radius: 50%; color: var(--ok); background: rgb(74 222 128 / .14); }
+  .env__list { margin-top: clamp(3rem, 6vw, 5rem); }
+  @media (max-width: 899px) { .envs { grid-template-columns: 1fr; } }
+</style>

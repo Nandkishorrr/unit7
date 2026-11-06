@@ -1,0 +1,761 @@
+---
+import { Picture } from 'astro:assets';
+import Base from '../layouts/Base.astro';
+import Code from '../components/Code.astro';
+import RealUse from '../components/RealUse.astro';
+import Environments from '../components/Environments.astro';
+import TalkToMap from '../components/TalkToMap.astro';
+import logos from '../data/logos.json';
+import map from '../assets/screens/map.png';
+import coolify from '../assets/screens/coolify.png';
+import projects from '../assets/screens/projects.png';
+import connections from '../assets/screens/connections.png';
+import autopilot from '../assets/screens/autopilot.png';
+import routines from '../assets/screens/routines.png';
+import { REPO_URL } from '../site';
+
+const panels = [
+  { img: map, title: 'The Map.', line: 'Every domain, the app behind it and the database behind that, across all your providers. Anything pointing the wrong way shows up red.', alt: 'The Map: domains on the left, apps and databases on the right, joined by lines. One dashed red line marks a domain pointing elsewhere.' },
+  { img: coolify, title: 'Inside Coolify.', line: 'It finds every project, domain, database and cron job from Docker labels, with zero setup. Coolify stays in charge.', alt: 'The server page for vps-01, showing the projects it found inside Coolify, each with its domains.' },
+  { img: projects, title: 'Projects.', line: 'Production, staging and dev side by side. A new version takes traffic only after it passes a health check. One click to go back.', alt: 'Project cards for shipfast, nestly, playground and scratch, each with its environments and recent deploys.' },
+  { img: connections, title: 'Connections.', line: 'One click per provider. Your keys stay encrypted on your machine. The AI only ever sees a reference, never the key.', alt: 'The Connections page: your AI at the top, then tiles for hosting providers such as Hostinger, Vercel and Netlify.' },
+  { img: autopilot, title: 'Autopilot.', line: 'Pick how much it does alone, per environment. Hold one button to pause everything.', alt: 'The Autopilot page: a Hold to pause everything button, and a level picker for production, staging and development.' },
+  { img: routines, title: 'Routines.', line: '"Every Monday at 9, send me a health report." Same approvals as when you ask.', alt: 'The Routines page: a list of scheduled jobs, each with when it last worked and when it runs next.' },
+];
+
+const specs = [
+  ['Deploys.', 'Any app from a git repo or a folder: Next, Vite, Node, FastAPI, Django, Go, Rust, PHP, static or Docker.'],
+  ['Databases.', 'Postgres, MySQL, Redis and Mongo as private containers. The password goes in the vault, the address goes in your app.'],
+  ['Domains and HTTPS.', '<code>point app.example.com at production</code> sets the DNS, the route and the certificate.'],
+  ['Backups.', 'Encrypted, copied off the server, with scheduled test restores so you know they work.'],
+  ['Warden.', 'A guard with no AI in the loop. It restarts what crashed, rolls back bad deploys and blocks scanners. When a disk fills up, it asks you.'],
+  ['Security.', 'SSH keys only, a firewall, automatic security updates, IP blocking and a full audit trail.'],
+  ['Put a site live.', 'Drop a folder or a ZIP, or pick a GitHub repo. It picks the best host you have connected, from 16.'],
+  ['Your real databases.', 'Tables, safe queries, import and export on any Postgres, MySQL, MariaDB, Redis or MongoDB it finds on your server.'],
+  ['Files and server care.', 'Browse and edit files, take snapshots, open ports, manage SSH keys and users, and move to a new server.'],
+  ['WordPress, Supabase, Neon.', 'Plugins and new sites on your server. Projects, SQL, auth, storage and logs, hosted or self-hosted.'],
+  ['One-click tools.', 'More than 30 open-source tools, with the admin login claimed before anyone else can reach it.'],
+];
+
+const nodes = [
+  ['who', "Who's asking?", 'tenant check'],
+  ['role', 'Are they allowed?', 'role'],
+  ['place', 'What does this place allow?', 'environment policy'],
+  ['person', 'Does it need a person?', ''],
+  ['approve', 'Approval', 'web or phone'],
+  ['backup', 'Backup first', 'if destructive'],
+  ['run', 'Run', 'secrets resolved here only'],
+  ['redact', 'Hide secrets', 'redact'],
+  ['audit', 'Write it down', 'audit'],
+];
+
+const routes = [
+  ['read', 'Read the logs.', 'Read-only. It runs right away.'],
+  ['restart', 'Restart the app.', 'Reversible. At Fix itself it just happens, with an undo.'],
+  ['delete', 'Delete a database.', 'Waits for a person. A backup comes first.'],
+];
+
+const levels = [
+  { name: 'Watch', line: 'Unit 7 watches and tells you. It changes nothing.' },
+  { name: 'Suggest', line: 'Unit 7 suggests each fix. You say yes to every one.' },
+  { name: 'Ask first', line: 'Small, safe fixes happen on their own. Anything that touches your live app waits for you.' },
+  { name: 'Fix itself', line: 'Unit 7 keeps your live app running by itself. Deleting things and other risky steps wait for you.', rec: 'Recommended for production' },
+  { name: 'Autopilot', line: "Unit 7 does it all. Only spending money and things you've ruled out wait for you.", rec: 'Recommended for test copies' },
+];
+
+const row1 = ['coolify', 'docker', 'hostinger', 'cloudflare', 'vercel', 'netlify', 'render', 'railway', 'fly', 'heroku', 'digitalocean', 'hetzner', 'gcp', 'firebase', 'aws', 'azure'];
+const row2 = ['supabase', 'neon', 'postgres', 'mysql', 'redis', 'mongodb', 'github', 'claude', 'cursor', 'windsurf', 'codex', 'antigravity'];
+const names: Record<string, string> = { coolify: 'Coolify', docker: 'Docker', hostinger: 'Hostinger', cloudflare: 'Cloudflare', vercel: 'Vercel', netlify: 'Netlify', render: 'Render', railway: 'Railway', fly: 'Fly.io', heroku: 'Heroku', digitalocean: 'DigitalOcean', hetzner: 'Hetzner', gcp: 'Google Cloud', firebase: 'Firebase', aws: 'AWS', azure: 'Azure', supabase: 'Supabase', neon: 'Neon', postgres: 'PostgreSQL', mysql: 'MySQL', redis: 'Redis', mongodb: 'MongoDB', github: 'GitHub', claude: 'Claude', cursor: 'Cursor', windsurf: 'Windsurf', codex: 'Codex', antigravity: 'Antigravity' };
+const logo = (k: string) => (logos as Record<string, { w: number; h: number; body: string; mono?: boolean }>)[k];
+
+const install = `git clone ${REPO_URL}.git && cd unit7
+npm install
+npm run build
+node src/main.ts serve`;
+---
+<Base
+  title="Unit 7 by Signull: the backend developer your AI coding agent never had"
+  description="Unit 7 is a free, open-source control room for your servers, apps, domains, databases and backups. Talk to it in plain words. It does the work, and asks before anything risky."
+>
+  <svg class="works__sprite" aria-hidden="true" width="0" height="0">
+    <defs>
+      {[...row1, ...row2].map((k) => <symbol id={`l-${k}`} viewBox={`0 0 ${logo(k).w} ${logo(k).h}`} set:html={logo(k).body} />)}
+    </defs>
+  </svg>
+
+  <section class="hero" data-mood="night" data-power="1">
+    <div class="hero__pin">
+      <svg class="hero__seven" viewBox="5 6 22 20" aria-hidden="true">
+        <path d="M17.11 12.15h5.6L14.9 24.75H9.3z" fill="#C6F432" />
+        <path d="M9.45 7.25h16.3l-3.22 5.2H6.23z" fill="#3D73FF" />
+      </svg>
+      <div class="hero__copy wrap">
+        <p class="eyebrow" data-intro>Open source · Self-hosted · Apache 2.0</p>
+        <h1 class="d1" data-intro>The backend developer your AI coding agent <em>never had.</em></h1>
+        <p class="lede" data-intro>Talk to it in plain words. It does the work on your real servers, and asks before anything risky.</p>
+        <div class="cta" data-intro>
+          <a class="btn" href="/open-source/#install">Get Unit 7</a>
+          <a class="btn btn--ghost" href="#film">Watch the 60-second film</a>
+        </div>
+        <p class="small" data-intro>Unit 7 is early. Expect rough edges.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="problem sec" data-mood="alert">
+    <div class="wrap">
+      <h2 class="d1" data-wipe>AI writes the code in minutes. <em>Everything after that still eats your evenings.</em></h2>
+      <ul class="problem__list">
+        <li>The VPS.</li>
+        <li>The Coolify stacks.</li>
+        <li>DNS spread over three providers.</li>
+        <li>Backups you hope work.</li>
+        <li>The port you forgot was open.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="film sec" id="film" data-mood="night">
+    <div class="wrap">
+      <h2 class="d1" data-wipe>Your AI writes the code. <em>Unit&nbsp;7 runs the rest.</em></h2>
+      <figure class="film__box">
+        <video id="filmv" controls preload="none" playsinline width="1920" height="1080" poster="/film/poster.jpg" aria-label="The Unit 7 launch film, 60 seconds, with a voiceover.">
+          <source src="/film/unit7-launch.mp4" type="video/mp4" />
+        </video>
+        <button class="btn film__play" type="button" hidden>Play with sound</button>
+      </figure>
+      <p class="mock-label">60 seconds. Demo workspace.</p>
+    </div>
+  </section>
+
+  <RealUse />
+
+  <section class="demo" id="demo" data-mood="night">
+    <div class="demo__stage">
+      <div class="wrap demo__grid">
+        <div class="demo__left">
+          <h2 class="d2">Ask. It looks. It asks. <em>You decide.</em></h2>
+          <ol class="demo__texts">
+            <li style="--o:1"><h3 class="d3">Ask in plain words.</h3><p>No dashboards to learn. Say it the way you'd say it to a person.</p></li>
+            <li style="--o:3"><h3 class="d3">It looks at the real thing.</h3><p>Your logs, your deploys, your database. Then it tells you what it found.</p></li>
+            <li style="--o:5"><h3 class="d3">It asks before anything risky.</h3><p>Every risky step says what it will do and how to undo it. Nothing happens until you say yes.</p></li>
+            <li style="--o:7"><h3 class="d3">You keep the undo.</h3><p>It does the work, checks the app is healthy and writes it all down.</p></li>
+          </ol>
+          <div class="demo__ticks" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        </div>
+        <div class="chat">
+          <div class="chat__top" aria-hidden="true">
+            <img src="/brand/unit7-mark.svg" width="22" height="22" alt="" />
+            <span>Unit 7</span>
+            <span class="chat__where">nestly · Production</span>
+          </div>
+          <div class="chat__main">
+            <div class="chat__part chat__q" style="--o:2">
+              <p class="bubble"><span class="sr">Why do some listing pages crash since this morning?</span><span class="bubble__t" aria-hidden="true">Why do some listing pages crash since this morning?</span></p>
+            </div>
+            <div class="chat__part chat__a" style="--o:4">
+              <div class="step">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3.5 8.5 6.6 11.6 12.5 5" /></svg>
+                <span>Errors, in plain words</span>
+                <code>38ms</code>
+              </div>
+              <div class="answer__sk" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+              <p class="answer">Deploy #42 of web reads <code>listing.city</code>, but listings created before the September import have no address yet, so those pages throw <code>TypeError: Cannot read properties of null (reading 'city')</code> (37 times so far). The fix is a null check in app/listings/[id]/page.tsx:42. Want me to roll production back to #41 while I fix it?</p>
+            </div>
+            <div class="chat__input" aria-hidden="true">Reply to Unit 7…</div>
+          </div>
+          <div class="chat__side">
+            <div class="chat__glance" aria-hidden="true">
+              <h4>At a glance</h4>
+              <ul>
+                <li><span>Apps<small><i class="dot dot--bad"></i>2 need a look</small></span><b>11</b></li>
+                <li><span>Servers<small><i class="dot dot--ok"></i>All good</small></span><b>1</b></li>
+                <li><span>Domains<small><i class="dot dot--bad"></i>4 need a look</small></span><b>7</b></li>
+              </ul>
+            </div>
+            <div class="chat__wait">
+              <h4 aria-hidden="true">Waiting for you</h4>
+              <p class="chat__none" aria-hidden="true">Nothing happens until you say yes.</p>
+              <div class="chat__part chat__c" style="--o:6">
+                <div class="card">
+                  <h4>Go back to the previous version</h4>
+                  <p class="card__meta">Production</p>
+                  <dl>
+                    <div><dt>It will:</dt><dd>The app goes back to the version before this one.</dd></div>
+                    <div><dt>To undo:</dt><dd>Deploy the newer version again from the app's page.</dd></div>
+                  </dl>
+                  <div class="card__btns" aria-hidden="true"><span class="pill">Not now</span><span class="pill pill--blue">Approve</span></div>
+                </div>
+              </div>
+              <div class="chat__part chat__r" style="--o:8">
+                <p class="receipt">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3.5 8.5 6.6 11.6 12.5 5" /></svg>
+                  <span>nestly · web is back on #41. Health check passed.</span>
+                  <span class="receipt__undo">Undo</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="demo__cap wrap mono">Demo workspace. Numbers are examples.</p>
+    </div>
+  </section>
+
+  <Environments />
+
+  <TalkToMap />
+
+  <section class="gallery" data-mood="night">
+    <div class="gallery__stage">
+      <div class="gallery__track">
+        <header class="gallery__intro">
+          <h2 class="d1">Everything after <em>the code.</em></h2>
+        </header>
+        {panels.map((p, i) => (
+          <article class="shot">
+            <header class="shot__head">
+              <p class="shot__n mono">0{i + 1} / 06</p>
+              <h3 class="shot__title">{p.title}</h3>
+              <p class="shot__line">{p.line}</p>
+            </header>
+            <div class="shot__frame">
+              <Picture class="shot__img" src={p.img} formats={['avif', 'webp']} fallbackFormat="png" widths={[720, 1080, 1440, 2160]} sizes="(min-width: 900px) min(74vw, 1500px), 86vw" alt={p.alt} loading="lazy" decoding="async" />
+            </div>
+          </article>
+        ))}
+      </div>
+      <div class="gallery__bar" aria-hidden="true"><i></i></div>
+    </div>
+  </section>
+
+  <section class="specs sec">
+    <dl class="wrap specs__list">
+      {specs.map(([label, line]) => <div><dt class="d3">{label}</dt><dd set:html={line} /></div>)}
+    </dl>
+    <p class="wrap small specs__note">The last five are new since V2.1 and still in testing. <a href="/v2/#new">See where each one stands.</a></p>
+  </section>
+
+  <section class="gate sec" data-mood="deep" data-warden="I ask before anything risky.">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>Every action goes through <em>one gate.</em></h2>
+      <p class="lede lede--wide gate__sub">The web app, the command line, your AI agent and Unit 7 itself all pass the same checks. A read-only token can only read. Anything risky still needs you.</p>
+
+      <ul class="gate__routes">
+        {routes.map(([id, label, result], i) => (
+          <li class:list={[{ on: i === 0 }]}>
+            <button class="gate__pick" type="button" data-route={id} aria-pressed={i === 0 ? 'true' : 'false'}>{label}</button>
+            <p class="gate__result">{result}</p>
+          </li>
+        ))}
+      </ul>
+
+      <div class="gate__map">
+        <svg class="gate__svg" aria-hidden="true"><g class="gate__rails"></g><path class="gate__trail" /><circle class="gate__pulse" r="6" /></svg>
+        <ol class="gate__nodes">
+          {nodes.map(([id, label, tech]) => (
+            <li data-node={id}>
+              <i class="gate__dot"></i>
+              <span class="gate__txt"><b>{label}</b>{tech && <code>{tech}</code>}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      <div class="never">
+        <h3 class="d2" data-wipe>Five things it never does on its own.</h3>
+        <ol class="never__list">
+          <li>Destroy data.</li>
+          <li>Delete servers, volumes or backups.</li>
+          <li>Leak a secret.</li>
+          <li>Spend past a cap.</li>
+          <li>Raise its own autonomy.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="auto sec" id="autonomy">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>You pick <em>how brave it is.</em></h2>
+      <p class="lede auto__sub">Per environment. Spending money always waits for you.</p>
+
+      <div class="auto__row">
+        <fieldset class="levels">
+          <legend class="sr">How much Unit 7 does alone</legend>
+          <div class="levels__track">
+            <span class="levels__pill" aria-hidden="true"></span>
+            {levels.map((l, i) => (
+              <label class:list={[{ rec: l.rec }]}>
+                <input type="radio" name="level" value={i} checked={i === 3} />
+                <span>{l.name}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div class="hold">
+          <button class="holdbtn" id="hold" type="button">
+            <span class="holdbtn__fill" aria-hidden="true"></span>
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="2.5" width="3.4" height="11" rx="1" /><rect x="9.1" y="2.5" width="3.4" height="11" rx="1" /></svg>
+            <span class="holdbtn__t">Hold to pause everything</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="says" aria-live="polite">
+        {levels.map((l, i) => (
+          <div class="says__one" data-l={i}>
+            <p class="says__line">{l.line}</p>
+            {l.rec && <p class="says__rec"><i></i>{l.rec}</p>}
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="proof">
+    <div class="proof__gate">
+      <div class="proof__open" data-open>
+        <div class="wrap proof__ask">
+          <p class="eyebrow">A real run on our own server · 5 November 2026</p>
+          <h2 class="d1">We asked it three things.</h2>
+          <ol class="proof__qs">
+            <li>Is the server using too much, and how do we reduce it?</li>
+            <li>Is there a security issue right now?</li>
+            <li>What's wrong or repeated in how my apps behave?</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+    <div class="proof__rest" data-opaque data-warden="95 seconds. Not bad.">
+      <div class="wrap">
+        <dl class="proof__nums">
+          <div><dt>seconds</dt><dd class="num" data-count="95">95</dd></div>
+          <div><dt>tool calls</dt><dd class="num" data-count="16">16</dd></div>
+          <div><dt>real problems found</dt><dd class="num" data-count="11">11</dd></div>
+        </dl>
+        <div class="proof__found">
+          <h3 class="d3">What it found:</h3>
+          <ul>
+            <li>A sync loop that ignored its own 15-minute wait</li>
+            <li><code>/auth/v1/user</code> called 6,625 times in 7 days</li>
+            <li>An outside service refusing every call with a 403</li>
+            <li>One request per item where one call would do</li>
+          </ul>
+        </div>
+        <p class="proof__end d2">Then a Docker cleanup and a closed port, in two clicks.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="works sec" data-mood="night">
+    <div class="wrap">
+      <h2 class="d2" data-wipe>Sits next to <em>what you already use.</em></h2>
+      <p class="lede lede--wide works__sub">Coolify runs your apps. Unit 7 watches Coolify, your domains, your backups and your AI agents.</p>
+    </div>
+    <div class="works__rows">
+      {[row1, row2].map((row, r) => (
+        <div class:list={['marq', { 'marq--back': r === 1 }]}>
+          <div class="marq__track">
+            {[0, 1].map((copy) => (
+              <ul aria-hidden={copy === 1 ? 'true' : undefined}>
+                {row.map((k) => (
+                  <li title={names[k]} data-k={k}>
+                    <svg style={`aspect-ratio:${logo(k).w}/${logo(k).h}`} role="img" aria-label={names[k]}><use href={`#l-${k}`} /></svg>
+                  </li>
+                ))}
+              </ul>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+    <p class="wrap works__line">Your AI coding agent connects over MCP. Same gate, same approvals. Or add an API key. AI is optional.</p>
+  </section>
+
+  <section class="teaser sec" data-mood="dawn">
+    <div class="wrap">
+      <p class="eyebrow">V2.1</p>
+      <p class="d1 teaser__big" data-wipe>V1 does the job when you ask. <em>V2 has already done it when you open the app.</em></p>
+      <p class="lede lede--wide teaser__sub">V2.1 adds Seven, an agent on shift. It does the safe work and asks one clear question.</p>
+      <div class="cta"><a class="btn" href="/v2/">See what's in V2.1</a></div>
+    </div>
+  </section>
+
+  <section class="close sec" data-mood="night">
+    <div class="wrap close__grid">
+      <div>
+        <h2 class="d1" data-wipe>Free. Open source. <em>Yours.</em></h2>
+        <p class="lede">One Node process and one SQLite file. Apache 2.0.</p>
+        <div class="cta"><a class="btn" href="/open-source/#install">Full setup guide</a></div>
+      </div>
+      <Code code={install} label="Install" wrap />
+    </div>
+  </section>
+</Base>
+
+<script src="../scripts/home.ts"></script>
+
+<style is:global>
+  /* Hero: the 7 is drawn by the shader. The copy sits in its counter. */
+  .hero { position: relative; }
+  .hero__pin { position: relative; display: flex; align-items: flex-end; min-height: 100svh; overflow: clip; padding-block: 5.5rem clamp(2rem, 6vh, 4.5rem); }
+  /* Ribbons drift, so the words get a little shade of their own. It leaves with them on scroll. */
+  .hero__pin::before { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: var(--scrim, 1); background: linear-gradient(90deg, rgb(5 5 6 / .66), rgb(5 5 6 / .4) 34%, transparent 58%); }
+  .hero__copy { position: relative; display: grid; gap: clamp(1rem, 2.4vh, 1.75rem); }
+  .hero .small { color: var(--muted); }
+  .hero .d1 { max-width: 9.6em; }
+  .hero .lede { max-width: 31ch; }
+  .hero__seven { display: none; position: absolute; right: -4vw; bottom: -6vh; width: auto; height: 100vh; }
+  html:not(.js) .hero__seven, .nogl .hero__seven { display: block; }
+  .motion [data-intro] { visibility: hidden; }
+  @media (min-width: 900px) {
+    .motion .hero { height: 240svh; }
+    .motion .problem { margin-top: -50svh; }   /* the headline rises as the 7 leaves, no empty screen between them */
+    .motion .hero__pin { position: sticky; top: 0; height: 100svh; }
+  }
+  @media (max-width: 899px) {
+    .hero__seven { right: 50%; top: 5.5rem; bottom: auto; height: 27vh; transform: translateX(50%); }
+    .hero__pin { padding-top: 34svh; }
+    .hero__pin::before { background: linear-gradient(to top, rgb(5 5 6 / .72) 34%, transparent 66%); }
+    .hero__copy { gap: .9rem; }
+    .hero .d1 { font-size: clamp(2.5rem, 12.2vw, 4.25rem); }
+    .hero .cta { flex-direction: column; align-items: stretch; }
+    .hero .eyebrow { font-size: clamp(.625rem, 2.9vw, .75rem); letter-spacing: .06em; white-space: nowrap; }
+  }
+
+  /* The problem: the list leans the same way as the 7 */
+  @media (min-width: 900px) { .problem { padding-top: clamp(1.5rem, 2.5vw, 3rem); } }
+  .problem .d1 { max-width: 13em; }
+  .problem__list { --lh: clamp(2.6rem, 6vw, 7rem); margin-top: clamp(4rem, 9vw, 9rem); margin-left: auto; width: fit-content; font: 680 clamp(1.75rem, 4.7vw, 5.5rem)/var(--lh) var(--display); font-stretch: 100%; letter-spacing: -.03em; }
+  .problem__list li { margin-left: calc((4 - var(--i, 0)) * var(--lh) * var(--slash)); white-space: nowrap; }
+  .problem__list li:nth-child(1) { --i: 0; } .problem__list li:nth-child(2) { --i: 1; } .problem__list li:nth-child(3) { --i: 2; } .problem__list li:nth-child(4) { --i: 3; } .problem__list li:nth-child(5) { --i: 4; }
+  @media (max-width: 899px) { .problem__list { --lh: 2.5rem; margin-left: 0; font-size: clamp(1.45rem, 6.6vw, 2.5rem); } .problem__list li { white-space: normal; margin-left: calc((4 - var(--i, 0)) * .8rem); } }
+
+  /* The film: fast to load, nothing plays until someone asks. */
+  .film .d1 { max-width: 13em; }
+  .film__box { position: relative; margin-top: clamp(2rem, 4vw, 3.5rem); overflow: hidden; border: 1px solid var(--line-2); border-radius: clamp(14px, 2vw, 28px); background: var(--ink-0); box-shadow: 0 50px 100px -60px #000; }
+  .film video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; }
+  .film__play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  .film__play[hidden] { display: none; }
+  .film .mock-label { margin-top: .75rem; }
+  .specs__note { margin-top: 1rem; color: var(--muted); }
+  .specs__note a { color: var(--text); text-underline-offset: .2em; }
+  .teaser__sub { margin-top: 1.25rem; color: var(--text); }
+
+  /* The demo. Without motion (and on a phone) the beats stack: text, then its part of the chat. */
+  .demo { position: relative; padding-block: clamp(4rem, 9vw, 7rem); }
+  .demo__grid { display: flex; flex-direction: column; gap: 1.5rem; }
+  .demo__left, .demo__texts, .chat, .chat__main, .chat__side, .chat__wait { display: contents; }
+  .demo__texts li, .chat__part { order: var(--o); }
+  .demo__texts { margin-top: 1rem; }
+  .demo__texts li p { margin-top: .5rem; color: var(--muted); max-width: 34ch; }
+  .demo__texts li { margin-top: 1.75rem; }
+  .demo__ticks, .chat__top, .chat__input, .chat__glance, .chat__wait > h4, .chat__none, .answer__sk { display: none; }
+  .chat__part { padding: 1.1rem; border: 1px solid var(--line); border-radius: 22px; background: var(--ink-2); }
+  .bubble { display: flex; justify-content: flex-end; }
+  .bubble__t { padding: .65rem 1rem; border-radius: 18px; background: #F2F2F4; color: #0E0E12; }
+  .step { display: flex; align-items: center; gap: .65rem; padding: .5rem .9rem .5rem .6rem; border: 1px solid var(--line); border-radius: 14px; background: var(--ink-1); font-size: .9375rem; }
+  .step svg { flex: none; width: 1.5rem; height: 1.5rem; padding: .25rem; border-radius: 50%; color: var(--ok); background: rgb(74 222 128 / .14); }
+  .step code { margin-left: auto; color: var(--faint); font-size: .8125rem; }
+  .answer { margin-top: .85rem; font-size: 1rem; line-height: 1.6; }
+  .answer code { padding: .1em .35em; border-radius: 6px; background: rgb(255 255 255 / .07); font-size: .85em; }
+  .card { padding: 1rem 1.1rem; border-radius: 18px; background: var(--ink-3); }
+  .card h4 { font-size: 1.0625rem; font-weight: 600; }
+  .card__meta { color: var(--muted); font-size: .875rem; }
+  .card dl { display: grid; gap: .35rem; margin-top: .7rem; font-size: .9375rem; }
+  .card dl div { display: flex; flex-wrap: wrap; gap: 0 .4em; color: var(--muted); }
+  .card dt { font-weight: 600; color: var(--text); }
+  .card dt::before { content: ''; display: inline-block; width: .5em; height: .5em; margin-right: .45em; border-radius: 50%; background: var(--warn); translate: 0 -.08em; }
+  .card dl div:last-child dt::before { background: var(--ok); }
+  .card__btns { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin-top: .9rem; }
+  .pill { display: grid; place-items: center; min-height: 2.5rem; border: 1px solid var(--line-2); border-radius: 999px; font-size: .9375rem; font-weight: 500; }
+  .pill--blue { border-color: transparent; background: var(--product-blue); color: #fff; }
+  .receipt { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .65rem; font-size: .9375rem; }
+  .receipt svg { flex: none; width: 1.5rem; height: 1.5rem; padding: .25rem; border-radius: 50%; color: var(--ok); background: rgb(74 222 128 / .14); }
+  .receipt__undo { color: var(--soft-blue); font-weight: 500; }
+  .demo__cap { margin-top: 1.25rem; color: var(--faint); font-size: .8125rem; }
+
+  @media (min-width: 900px) {
+    .motion .demo { height: 520svh; padding: 0; }
+    .motion .demo__stage { position: sticky; top: 0; display: flex; flex-direction: column; justify-content: center; height: 100svh; }
+    .motion .demo__grid { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: clamp(2rem, 4.5vw, 5.5rem); align-items: stretch; }
+    /* Heading at the card's top edge, the beat in the middle, the ticks on its bottom edge: nothing floats. */
+    .motion .demo__left { display: flex; flex-direction: column; justify-content: space-between; gap: 1.25rem; }
+    .motion .demo .d2 { font-size: clamp(2.5rem, 4.3vw, 5.25rem); }
+    .motion .demo__texts { position: relative; display: grid; margin: 0; }
+    .motion .demo__texts li { grid-area: 1 / 1; margin: 0; padding-bottom: .25rem; visibility: hidden; }
+    .motion .demo__texts li:first-child { visibility: visible; }
+    .motion .demo__ticks { display: flex; gap: .55rem; padding-left: .3rem; }
+    .demo__ticks i { width: 2.6rem; height: .35rem; background: var(--line-2); transform: skewX(var(--skew)); }
+    .demo__ticks i.on { background: var(--lime); }
+    .motion .demo__texts li { --k: 9rem; --p: 1; --q: 0; clip-path: polygon(calc((100% + var(--k)) * var(--q)) 0, calc((100% + var(--k)) * var(--p)) 0, calc((100% + var(--k)) * var(--p) - var(--k)) 100%, calc((100% + var(--k)) * var(--q) - var(--k)) 100%); }
+
+    /* The product's own layout: the conversation, and the right rail where approvals really land. */
+    .motion .chat { display: grid; grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: clamp(29rem, 72vh, 46rem); border: 1px solid var(--line); border-radius: 26px; background: var(--ink-2); overflow: hidden; font-size: clamp(.8125rem, min(1.08vw, 1.76vh), 1.1875rem); box-shadow: 0 40px 90px -50px rgb(0 0 0 / .9); }
+    .motion .chat__top { grid-column: 1 / -1; display: flex; align-items: center; gap: .6rem; height: 3.3em; padding-inline: 1.5em; border-bottom: 1px solid var(--line); font-size: .95em; font-weight: 600; }
+    .chat__where { margin-left: auto; color: var(--faint); font-weight: 400; font-size: .88em; }
+    .motion .chat__main { display: flex; flex-direction: column; gap: .85em; min-height: 0; padding: 1.25em 1.5em 1.25em; }
+    .motion .chat__part { order: 0; padding: 0; border: 0; background: none; border-radius: 0; }
+    .motion .chat__a { position: relative; }
+    .motion .bubble__t { font-size: 1em; }
+    .motion .step { font-size: .94em; }
+    .motion .answer { font-size: 1em; }
+    .motion .answer__sk { display: grid; gap: .8em; position: absolute; inset: 4.2em 0 auto; }
+    .answer__sk i { height: .72em; border-radius: 5px; background: linear-gradient(100deg, var(--ink-3), rgb(255 255 255 / .1) 42%, var(--ink-3) 58%) 0 0 / 220% 100%; }
+    .answer__sk i:nth-child(1) { width: 96%; } .answer__sk i:nth-child(2) { width: 88%; } .answer__sk i:nth-child(3) { width: 93%; } .answer__sk i:nth-child(4) { width: 58%; }
+    .motion .answer__sk i { animation: look 1.6s linear infinite; }
+    @keyframes look { to { background-position: -220% 0; } }
+    .motion .chat__input { display: flex; align-items: center; flex: none; min-height: 3.1em; margin-top: auto; padding-inline: 1.1em; border: 1px solid var(--line-2); border-radius: 16px; color: var(--faint); font-size: .94em; }
+    .motion .chat__side { display: flex; flex-direction: column; gap: .75em; min-height: 0; padding: 1em; border-left: 1px solid var(--line); background: var(--ink-1); }
+    .chat__side h4 { font-size: .94em; font-weight: 600; }
+    .motion .chat__glance { display: block; padding: .85em 1em; border-radius: 16px; background: var(--ink-2); }
+    .chat__glance li { display: flex; align-items: center; justify-content: space-between; gap: .75em; padding-top: .6em; font-size: .94em; }
+    .chat__glance small { display: flex; align-items: center; gap: .4em; color: var(--muted); font-size: .84em; }
+    .chat__glance b { font-family: var(--mono); font-size: 1.3em; font-weight: 500; }
+    @media (max-width: 1099px) { .motion .chat__glance { display: none; } }   /* the approval is what the rail is for */
+    .motion .chat__wait { display: grid; align-content: start; gap: .1em .5em; padding: .85em 1em 1em; border-radius: 16px; background: var(--ink-2); box-shadow: inset 0 0 0 1px rgb(47 102 255 / .32); }
+    .motion .chat__wait > h4 { display: block; }
+    .motion .chat__none { display: block; grid-area: 2 / 1; color: var(--muted); font-size: .86em; }
+    .motion .chat__c, .motion .chat__r { grid-area: 2 / 1; align-self: start; }
+    .motion .chat__c .card { margin-top: .5em; padding: .8em .9em; background: var(--ink-3); border-radius: 14px; }
+    .motion .card h4 { font-size: 1em; line-height: 1.25; }
+    .motion .card__meta { font-size: .86em; }
+    .motion .card dl { font-size: .9em; gap: .25em; line-height: 1.35; }
+    .motion .card dl div { display: block; }
+    .motion .card dt { display: inline; margin-right: .3em; }
+    .motion .card dd { display: inline; }
+    .motion .card__btns { margin-top: .7em; }
+    .motion .pill { min-height: 2.3em; font-size: .92em; }
+    .motion .chat__r { margin-top: .5em; padding: .75em .85em; border-radius: 14px; background: var(--ink-3); }
+    .motion .receipt { font-size: .92em; line-height: 1.35; }
+    .motion .demo__cap { margin-top: .7rem; text-align: right; }
+  }
+
+  /* Gallery. Default: a native snap carousel. With motion on a desktop: pinned, moved sideways by the scroll. */
+  .gallery { --pw: 86vw; --gap: 1rem; position: relative; padding-block: clamp(3rem, 7vw, 5rem); }
+  .gallery__intro { flex: none; width: 100%; padding-inline: var(--gut); margin-bottom: 1.5rem; }
+  .gallery__intro .d1 { font-size: clamp(2.75rem, 11vw, 5rem); max-width: 7em; }
+  .gallery__track { display: flex; flex-wrap: wrap; gap: var(--gap); }
+  .gallery__stage { position: relative; }
+  .shot { flex: 0 0 var(--pw); scroll-snap-align: center; display: grid; gap: 1rem; align-content: start; }
+  .gallery__bar { display: none; }
+  .shot__n { color: var(--faint); font-size: .8125rem; }
+  .shot__title { margin-top: .25rem; font: 740 clamp(2rem, 8vw, 3rem)/1 var(--display); font-stretch: 103%; letter-spacing: -.03em; }
+  .shot__line { margin-top: .5rem; color: var(--muted); font-size: 1rem; line-height: 1.45; max-width: 46ch; }
+  .shot__frame { overflow: hidden; aspect-ratio: 16 / 10; border: 1px solid var(--line-2); border-radius: 16px; background: var(--ink-1); }
+  .shot__frame picture, .shot__img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+  @media (max-width: 899px) {
+    .gallery__track { flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x mandatory; padding-inline: var(--gut); scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+    .gallery__track::-webkit-scrollbar { display: none; }
+    .gallery__intro { position: absolute; left: 0; top: 0; }
+    .gallery__stage { padding-top: 13rem; }
+  }
+  @media (min-width: 900px) {
+    .gallery { --pw: min(70vw, (100vh - 15rem) * 1.6); --gap: 5vw; --intro: 40vw; }
+    .gallery__track { flex-wrap: nowrap; align-items: center; width: max-content; padding-inline: var(--gut); }
+    .gallery__intro { width: var(--intro); padding: 0; margin: 0; }
+    .gallery__intro .d1 { font-size: clamp(3.75rem, 7.4vw, 9rem); }
+    .shot__head { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 2.5rem; align-items: end; }
+    .shot__n { grid-column: 1 / -1; }
+    .shot__title { font-size: clamp(2.5rem, 3.9vw, 4.75rem); white-space: nowrap; }
+    .shot__line { margin: 0 0 .15rem; justify-self: end; max-width: 50ch; font-size: clamp(.9375rem, .9rem + .2vw, 1.0625rem); }
+    html:not(.motion) .gallery__track { flex-wrap: wrap; width: auto; }
+    html:not(.motion) .gallery__intro { width: 100%; margin-bottom: 2rem; }
+    html:not(.motion) .shot { flex: 1 1 100%; max-width: 62rem; }
+
+    .motion .gallery { height: calc(100vh + var(--intro) + 6 * var(--pw) + 6 * var(--gap) + 2 * var(--gut) - 100vw); padding: 0; }
+    .motion .gallery__stage { position: sticky; top: 0; height: 100vh; overflow: clip; }
+    .motion .gallery__track { height: 100%; will-change: transform; }
+    .motion .gallery__bar { position: absolute; left: var(--gut); bottom: 1.2rem; display: block; width: 14rem; height: .42rem; background: var(--line-2); transform: skewX(var(--skew)); }
+    .gallery__bar i { display: block; height: 100%; background: var(--lime); transform: scaleX(0); transform-origin: left; }
+    .motion .shot__frame { --k: calc(var(--pw) / 1.6 * var(--slash)); clip-path: polygon(0 0, calc((100% + var(--k)) * var(--p, 1)) 0, calc((100% + var(--k)) * var(--p, 1) - var(--k)) 100%, 0 100%); }
+    .motion .shot__img { scale: 1.035; }
+  }
+
+  /* The specs list */
+  .specs { padding-top: clamp(4rem, 9vw, 8rem); }
+  .specs__list > div { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: .5rem 2rem; padding-block: clamp(1rem, 2vw, 1.6rem); border-top: 1px solid var(--line-2); align-items: baseline; }
+  .specs__list > div:last-child { border-bottom: 1px solid var(--line-2); }
+  .specs__list dd { color: var(--muted); max-width: 56ch; }
+  .specs__list dd code { color: var(--text); }
+  @media (max-width: 899px) { .specs__list > div { grid-template-columns: 1fr; } }
+
+  /* One gate */
+  .gate__sub { margin-top: 1.5rem; }
+  .gate__routes { margin-top: clamp(2.5rem, 5vw, 4rem); display: grid; gap: 1rem; }
+  .gate__pick { display: block; padding: 0; border: 0; background: none; font: 680 clamp(1.25rem, 1.9vw, 1.75rem)/1.1 var(--display); letter-spacing: -.02em; text-align: left; }
+  .gate__result { color: var(--muted); }
+  .js .gate__routes { grid-template-columns: repeat(3, auto) 1fr; gap: 0 clamp(1.5rem, 3vw, 3rem); justify-content: start; }
+  .js .gate__routes li { display: contents; }
+  .js .gate__pick { position: relative; grid-row: 1; padding-block: .6rem; color: var(--muted); cursor: pointer; transition: color .2s; }
+  .js .gate__pick::after { content: ''; position: absolute; left: .1em; bottom: 0; width: 1.6rem; height: .32rem; background: var(--lime); transform: skewX(var(--skew)) scaleX(0); transform-origin: left; transition: transform .35s var(--ease); }
+  .js .gate__pick:hover { color: var(--text); }
+  .js .gate__pick[aria-pressed='true'] { color: var(--text); }
+  .js .gate__pick[aria-pressed='true']::after { transform: skewX(var(--skew)) scaleX(1); }
+  .js .gate__pick[data-route='delete'][aria-pressed='true']::after { background: var(--warn); }
+  .js .gate__result { grid-row: 2; grid-column: 1 / -1; margin-top: .9rem; min-height: 1.6em; font: 500 clamp(1.0625rem, 1.4vw, 1.25rem)/1.35 var(--sans); color: var(--text); visibility: hidden; }
+  .js .gate__routes li.on .gate__result { visibility: visible; }
+
+  .gate__map { position: relative; margin-top: clamp(1.5rem, 3vw, 2.5rem); }
+  .gate__svg { display: none; }
+  .gate__nodes { display: grid; gap: .9rem; }
+  .gate__txt b { display: block; font-weight: 600; font-size: 1rem; line-height: 1.2; }
+  .gate__txt code { display: block; margin-top: .3rem; color: var(--faint); font-size: .75rem; line-height: 1.3; }
+  .gate__dot { display: none; }
+  .js .gate__svg { display: block; position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  .js .gate__dot { display: block; position: absolute; width: 1.15rem; height: .5rem; background: var(--ink-3); box-shadow: 0 0 0 1px var(--line-3); transform: skewX(var(--skew)); transition: background-color .25s, box-shadow .25s; }
+  .js [data-node].lit .gate__dot { background: var(--lime); box-shadow: 0 0 14px rgb(198 244 50 / .6); }
+  .js [data-node].wait .gate__dot { background: var(--warn); box-shadow: 0 0 16px rgb(251 191 36 / .7); }
+  .js [data-node] { position: relative; transition: opacity .25s; }
+  .js [data-node] b { transition: color .25s; }
+  .js [data-node].lit b { color: var(--lime); }
+  .js [data-node].wait b { color: var(--warn); }
+  .gate__rails path { fill: none; stroke: var(--line-3); stroke-width: 1.25; }
+  .gate__trail { fill: none; stroke: var(--lime); stroke-width: 2; stroke-dasharray: 1; stroke-dashoffset: 1; opacity: .85; }
+  .gate__pulse { fill: var(--lime); opacity: 0; filter: drop-shadow(0 0 7px var(--lime)); }
+  .gate__map.is-wait .gate__pulse { fill: var(--warn); filter: drop-shadow(0 0 9px var(--warn)); }
+  .gate__map.is-wait .gate__trail { stroke: var(--warn); }
+
+  @media (min-width: 900px) {
+    .js .gate__map { --dy: 9.25rem; padding-top: 1.5rem; }
+    .js .gate__nodes { grid-template-columns: repeat(9, minmax(0, 1fr)); grid-template-rows: var(--dy) auto; gap: 0 .75rem; }
+    /* The route starts low, and the fork climbs along the slash: two parallel edges of one parallelogram. */
+    .js [data-node] { grid-row: 2; padding-top: 1.35rem; }
+    .js [data-node='approve'], .js [data-node='backup'], .js [data-node='run'], .js [data-node='redact'], .js [data-node='audit'] { grid-row: 1; align-self: start; }
+    .js [data-node='approve'] { grid-column: 5; } .js [data-node='backup'] { grid-column: 6; } .js [data-node='run'] { grid-column: 7; } .js [data-node='redact'] { grid-column: 8; } .js [data-node='audit'] { grid-column: 9; }
+    .js .gate__dot { left: .1rem; top: -.25rem; }
+    .gate__txt code { font-size: .7rem; }
+  }
+  @media (max-width: 899px) {
+    .js .gate__routes { grid-template-columns: 1fr; }
+    .js .gate__routes li { display: contents; }
+    .js .gate__pick { grid-row: auto; }
+    .js .gate__result { grid-row: 4; }
+    .js .gate__map { --lane: 2.6rem; padding-left: calc(var(--lane) + 1.75rem); padding-top: 1rem; }
+    .js .gate__nodes { gap: 1.45rem; }
+    .js .gate__dot { left: calc(-1.75rem - var(--lane) - .1rem); top: .35rem; }
+    .js [data-node='approve'] .gate__dot, .js [data-node='backup'] .gate__dot, .js [data-node='run'] .gate__dot, .js [data-node='redact'] .gate__dot, .js [data-node='audit'] .gate__dot { left: calc(-1.75rem - var(--lane) - .1rem); }
+    .js [data-node='who'] .gate__dot, .js [data-node='role'] .gate__dot, .js [data-node='place'] .gate__dot, .js [data-node='person'] .gate__dot { left: calc(-1.75rem - .1rem); }
+  }
+
+  .never { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 2rem clamp(2rem, 5vw, 6rem); margin-top: clamp(5rem, 11vw, 10rem); }
+  .never .d2 { font-size: clamp(2.25rem, 4.2vw, 5rem); }
+  .never__list { font: 700 clamp(1.625rem, 3.1vw, 3.75rem)/1.06 var(--display); letter-spacing: -.03em; }
+  .never__list li { padding-block: clamp(.7rem, 1.3vw, 1.2rem); border-top: 1px solid var(--line-2); }
+  .never__list li:last-child { border-bottom: 1px solid var(--line-2); }
+  @media (max-width: 899px) { .never { grid-template-columns: 1fr; } }
+
+  /* Autonomy */
+  .auto__sub { margin-top: 1.25rem; }
+  .auto__row { display: flex; flex-wrap: wrap; gap: 1.5rem 3rem; align-items: center; justify-content: space-between; margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .levels { flex: 1 1 34rem; max-width: 46rem; }
+  .levels__track { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); gap: .25rem; padding: .3rem; border: 1px solid var(--line-2); border-radius: 999px; background: var(--ink-1); }
+  .levels__pill { position: absolute; inset: .3rem auto .3rem .3rem; width: calc((100% - .6rem - 1rem) / 5); border-radius: 999px; background: #F2F2F4; transform: translateX(calc(var(--at, 3) * (100% + .25rem))); transition: transform .42s var(--ease); }
+  .levels__track:has(label:nth-of-type(1) input:checked) { --at: 0; }
+  .levels__track:has(label:nth-of-type(2) input:checked) { --at: 1; }
+  .levels__track:has(label:nth-of-type(3) input:checked) { --at: 2; }
+  .levels__track:has(label:nth-of-type(4) input:checked) { --at: 3; }
+  .levels__track:has(label:nth-of-type(5) input:checked) { --at: 4; }
+  .levels label { position: relative; cursor: pointer; }
+  .levels input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+  .levels label span { display: grid; place-items: center; min-height: 2.75rem; padding-inline: .25rem; border-radius: 999px; color: var(--muted); font-size: clamp(.8125rem, .78rem + .22vw, 1rem); font-weight: 500; text-align: center; transition: color .25s, background-color .25s; }
+  .levels label:has(~ label input:checked) span { background: rgb(47 102 255 / .2); color: var(--soft-blue); }
+  .levels label:has(input:checked) span { color: #0E0E12; font-weight: 600; }
+  .levels label:hover:not(:has(input:checked)) span { color: var(--text); }
+  .levels label:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 999px; }
+  .levels .rec::after { content: ''; position: absolute; top: .1rem; right: .55rem; width: .55rem; height: .55rem; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 2px var(--ink-1); pointer-events: none; }
+
+  .holdbtn { position: relative; isolation: isolate; overflow: hidden; display: inline-flex; align-items: center; gap: .6rem; min-height: 3.5rem; padding: 0 1.75rem; border: 0; border-radius: 999px; background: #F2F2F4; color: #0E0E12; font-size: 1rem; font-weight: 600; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }
+  .holdbtn svg { width: 1rem; height: 1rem; }
+  .holdbtn__fill { position: absolute; inset: 0; z-index: -1; background: var(--lime); transform: scaleX(0); transform-origin: left; }
+  .holdbtn:active { translate: 0 1px; }
+  .holdbtn:focus-visible { outline: 2px solid var(--lime); outline-offset: 3px; }
+  .paused .holdbtn svg { display: none; }
+
+  .says { display: grid; margin-top: clamp(2.5rem, 5vw, 4rem); }
+  .says__one { grid-area: 1 / 1; visibility: visible; }
+  .says__line { max-width: 22em; font: 700 clamp(1.875rem, 4.1vw, 5rem)/1.04 var(--display); font-stretch: 102%; letter-spacing: -.03em; text-wrap: balance; }
+  .says__rec { display: flex; align-items: center; gap: .5rem; margin-top: 1rem; color: var(--muted); font-size: 1rem; }
+  .says__rec i { width: .55rem; height: .55rem; border-radius: 50%; background: var(--lime); }
+  @supports selector(:has(*)) {
+    .says__one { visibility: hidden; }
+    .auto:has(input[value='0']:checked) [data-l='0'], .auto:has(input[value='1']:checked) [data-l='1'], .auto:has(input[value='2']:checked) [data-l='2'], .auto:has(input[value='3']:checked) [data-l='3'], .auto:has(input[value='4']:checked) [data-l='4'] { visibility: visible; }
+  }
+  /* All five stay on one track, with the same gliding pill as the desktop. */
+  @media (max-width: 620px) {
+    .levels { flex-basis: 100%; }
+    .levels__track { gap: .125rem; padding: .22rem; }
+    .levels__pill { inset: .22rem auto .22rem .22rem; width: calc((100% - .44rem - .5rem) / 5); transform: translateX(calc(var(--at, 3) * (100% + .125rem))); }
+    .levels label span { min-height: 2.5rem; padding-inline: 0; font-size: clamp(.6875rem, 3.1vw, .8125rem); letter-spacing: -.01em; }
+    .hold, .holdbtn { width: 100%; justify-content: center; }
+  }
+  @media (max-width: 400px) { .levels .rec::after { right: .2rem; top: 0; width: .45rem; height: .45rem; } }
+
+  /* Proof: the one lime section */
+  .proof { position: relative; }
+  .proof__open { background: var(--lime); color: var(--ink-0); }
+  .proof { --text: #0E0E12; }
+  .proof__open .eyebrow, .proof__rest .eyebrow { color: var(--on-lime); }
+  .proof .eyebrow::before { color: var(--ink-0); }
+  .proof__ask { display: grid; gap: clamp(1.25rem, 3vh, 2.25rem); padding-block: clamp(5rem, 11vw, 9rem) clamp(3rem, 6vw, 5rem); }
+  .proof__qs { counter-reset: q; display: grid; gap: .55rem; max-width: 40em; font: 600 clamp(1.25rem, 2.2vw, 2.25rem)/1.15 var(--display); letter-spacing: -.02em; }
+  .proof__qs li { counter-increment: q; display: grid; grid-template-columns: 2.2em minmax(0, 1fr); align-items: baseline; }
+  .proof__qs li::before { content: counter(q); font: 860 1.15em/1 var(--display); font-stretch: 62%; }
+  .proof__rest { background: var(--lime); color: var(--ink-0); padding-bottom: clamp(5rem, 11vw, 10rem); }
+  .proof__rest ::selection, .proof__open ::selection { background: var(--ink-0); color: var(--lime); }
+  .proof__nums { display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; gap: 1rem clamp(1rem, 3vw, 3rem); padding-top: clamp(2rem, 4vw, 4rem); }
+  .proof__nums .num { display: inline-block; font-size: clamp(7.5rem, 25.5vw, 31rem); }
+  .proof__nums dt { margin-top: .6rem; font: 680 clamp(1.125rem, 2vw, 2rem)/1.1 var(--display); letter-spacing: -.02em; }
+  .proof__nums div { display: flex; flex-direction: column-reverse; justify-content: flex-end; }
+  .proof__found { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 1rem 2rem; margin-top: clamp(3rem, 6vw, 6rem); }
+  .proof__found li { padding-block: .7rem; border-top: 1px solid rgb(14 14 18 / .24); font: 560 clamp(1.125rem, 1.9vw, 1.875rem)/1.2 var(--display); letter-spacing: -.015em; }
+  .proof__found li:last-child { border-bottom: 1px solid rgb(14 14 18 / .24); }
+  .proof__found code { font-size: .86em; font-weight: 500; }
+  .proof__end { margin-top: clamp(3.5rem, 7vw, 7rem); max-width: 14em; }
+  .proof__gate { position: relative; }
+  @media (max-width: 899px) {
+    .proof__nums { grid-template-columns: 1fr; }
+    .proof__nums .num { font-size: clamp(9rem, 44vw, 15rem); }
+    .proof__found { grid-template-columns: 1fr; }
+  }
+  @media (min-width: 900px) {
+    .motion .proof__gate { height: 260svh; }
+    .motion .proof__open { position: sticky; top: 0; display: flex; align-items: center; height: 100svh; }
+    .motion .proof__ask { padding-block: 0; }
+  }
+
+  /* Works with */
+  .works__sprite { position: absolute; }
+  .works__sub { margin-top: 1.25rem; }
+  .works__rows { display: grid; gap: clamp(1.25rem, 2.6vw, 2.25rem); margin-top: clamp(2.5rem, 5vw, 4.5rem); }
+  .marq { overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent); mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent); }
+  .marq__track { display: flex; width: max-content; }
+  .marq ul { display: flex; flex: none; align-items: center; gap: clamp(2.25rem, 4.4vw, 4.75rem); padding-right: clamp(2.25rem, 4.4vw, 4.75rem); }
+  .marq li { flex: none; display: grid; place-items: center; height: clamp(2.5rem, 3.6vw, 3.25rem); filter: grayscale(1) brightness(1.35) contrast(.9); opacity: .78; transition: filter .3s, opacity .3s; }
+  .marq li:is([data-k='heroku'], [data-k='mysql'], [data-k='coolify']) { filter: grayscale(1) brightness(3.4) contrast(.9); }
+  .marq li:hover { filter: none; opacity: 1; }
+  .marq svg { height: clamp(1.75rem, 2.6vw, 2.375rem); width: auto; max-width: 6.5rem; color: #F2F2F4; fill: currentColor; }
+  html:not(.motion) .marq { -webkit-mask-image: none; mask-image: none; }
+  html:not(.motion) .marq__track { width: auto; }
+  html:not(.motion) .marq ul { flex-wrap: wrap; flex: 1; padding-inline: var(--gut); justify-content: flex-start; }
+  html:not(.motion) .marq ul[aria-hidden] { display: none; }
+  .motion .marq__track { animation: marq 70s linear infinite; }
+  .motion .marq--back .marq__track { animation-name: marq-back; animation-duration: 56s; }
+  .motion .marq:hover .marq__track { animation-play-state: paused; }
+  @keyframes marq { to { transform: translateX(-50%); } }
+  @keyframes marq-back { from { transform: translateX(-50%); } to { transform: none; } }
+  .works__line { margin-top: clamp(2.5rem, 5vw, 4rem); color: var(--muted); }
+
+  /* V2 teaser: the horizon starts rising here */
+  .teaser { padding-block: clamp(4rem, 7vw, 7.5rem) clamp(8rem, 18vw, 17rem); }
+  .teaser__big { margin-top: 1.25rem; max-width: 12.5em; font-size: clamp(2.75rem, 7vw, 8.25rem); }
+  .teaser .cta { margin-top: clamp(2rem, 4vw, 3.5rem); }
+
+  /* Closing */
+  .close .d1 { font-size: clamp(3rem, 6.4vw, 7.75rem); }
+  .close__grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 3rem clamp(2rem, 6vw, 7rem); align-items: end; }
+  .close .lede { margin-top: 1.5rem; }
+  .close .cta { margin-top: 2.25rem; }
+  @media (max-width: 899px) { .close__grid { grid-template-columns: 1fr; } }
+</style>

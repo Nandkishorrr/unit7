@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Unit 7 launch film</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="stage">
+
+  <!-- chaos -->
+  <section class="scene" id="s0">
+    <div id="chaos"></div>
+    <h1 class="d1 abs mid" id="hk1">Your AI writes the code.</h1>
+    <h1 class="d1 abs mid" id="hk2"><em>Who runs the rest?</em></h1>
+  </section>
+
+  <!-- the 7 -->
+  <section class="scene" id="s1">
+    <div class="abs mid" id="wm">Unit 7</div>
+    <div class="big3" id="b1">Servers.</div>
+    <div class="big3" id="b2">Apps.</div>
+    <div class="big3" id="b3">Domains.</div>
+  </section>
+
+  <!-- the AI -->
+  <section class="scene" id="s2">
+    <h2 class="d1 abs mid" id="ja">Just ask.</h2>
+    <div class="abs" id="ask">
+      <img src="vendor/unit7-mark.svg" alt="">
+      <span id="asktext"></span><i class="caret" id="caret"></i>
+      <b id="send"><svg viewBox="0 0 24 24" fill="none" stroke="#263300" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></b>
+    </div>
+    <div class="abs mid" id="res"></div>
+    <div class="abs" id="ais"></div>
+    <div class="abs" id="appr">
+      <h5>Delete the old database?</h5>
+      <p>A backup comes first.</p>
+      <div class="pills"><span class="pill">Not now</span><span class="pill pill--blue" id="approve">Approve</span></div>
+    </div>
+  </section>
+
+  <!-- connect -->
+  <section class="scene" id="s3">
+    <div class="abs" id="wall"></div>
+    <div class="abs" id="acc">
+      <svg id="acclines" width="1920" height="1080"></svg>
+      <div id="acctlist"></div>
+    </div>
+  </section>
+
+  <!-- servers -->
+  <section class="scene" id="s4">
+    <div class="abs" id="st">
+      <h2 class="d1">Every<br><em>server.</em></h2>
+      <p id="vps"><i></i>vps-01 is healthy</p>
+    </div>
+    <div class="abs" id="rings"></div>
+    <div class="abs" id="running"></div>
+  </section>
+
+  <!-- apps -->
+  <section class="scene" id="s5">
+    <div class="abs" id="verbs"><p>Deploy.</p><p>Restart.</p><p>Roll back.</p></div>
+    <div class="win" id="appc">
+      <div class="top"><b>nestly</b><span id="appst"><i></i><u id="appstt">Live</u></span></div>
+      <div class="num" id="ver">v42</div>
+      <div id="vbar"><i></i></div>
+      <div id="btns"></div>
+    </div>
+  </section>
+
+  <!-- env -->
+  <section class="scene" id="s6">
+    <h2 class="d1 abs mid" id="ev">Every variable.</h2>
+    <div class="win" id="envcard">
+      <div id="pick"><i id="pickb"></i><span>Production</span><span>Staging</span><span>Dev</span></div>
+      <div id="rows"></div>
+      <div id="scan"></div>
+    </div>
+  </section>
+
+  <!-- Seven -->
+  <section class="scene" id="s7">
+    <div class="abs" id="sl">
+      <h2 class="d1">Seven<em>.</em></h2>
+      <p id="onsh"><i></i>On shift</p>
+    </div>
+    <div class="abs" id="svn"></div>
+  </section>
+
+  <!-- order -->
+  <section class="scene" id="s8">
+    <svg id="lines" width="1920" height="1080"></svg>
+    <div id="orbit"></div>
+    <div class="abs mid" id="rest">
+      <p id="r1">Your AI writes the code.</p>
+      <h2 class="d1" id="r2">Unit 7 <em>runs the rest.</em></h2>
+    </div>
+  </section>
+
+  <section class="scene" id="s9">
+    <div class="abs mid big9" id="os1"><em>Open source.</em></div>
+    <div class="abs mid big9" id="os2">All yours.</div>
+  </section>
+
+  <section class="scene" id="s10">
+    <div class="abs" id="endw"><h2>Unit 7</h2><p>signull.cloud</p></div>
+    <div class="abs" id="endc">Demo workspace shown</div>
+  </section>
+
+  <svg class="cursor" id="cur" viewBox="0 0 24 24"><path d="M5 3l14 8.5-6.2 1.6L9.4 19z" fill="#fff" stroke="#0E0E12" stroke-width="1.4" stroke-linejoin="round"/></svg>
+  <div class="rip" id="rip"></div>
+  <div class="sweep" id="sw1" style="background:var(--blue)"></div>
+  <div class="sweep" id="sw2" style="background:var(--lime)"></div>
+</div>
+
+<script src="vendor/gsap.min.js"></script>
+<script src="vendor/CustomEase.min.js"></script>
+<script src="words.js"></script>
+<script src="logos.js"></script>
+<script src="glsl.js"></script>
+<script src="shader.js"></script>
+<script src="scenes.js"></script>
+</body>
+</html>

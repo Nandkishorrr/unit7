@@ -8,3 +8,5 @@ dist
 test
 *.db
 *.db-*
+website
+launch-video

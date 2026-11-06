@@ -1,0 +1,422 @@
+---
+// Section A: real use, for someone who just shipped. Six moments in a sticky stack; each mock is real HTML so it can play.
+const moments = [
+  { q: 'Where is all my stuff?', before: 'A domain here, a site there, a database you forgot about.', now: 'Connect your accounts once. Every domain, app, server and database gets listed, with what points at what.' },
+  { q: 'Is anyone actually using it?', before: 'Three dashboards, and the numbers never agree.', now: 'Real people, bots and scanners counted apart, plus what each app uses on your server.' },
+  { q: 'Why did it go down?', before: 'You paste logs into your AI and hope.', now: 'It replays the ten minutes around the failure, says what changed and offers the way back.' },
+  { q: 'Is someone attacking me?', before: 'You find out when the site gets slow.', now: 'It spots the flood or the password guessing and tells you in plain words. One click blocks it. If they come back the block grows, and it lifts by itself.', alert: true },
+  { q: 'Could someone steal my data?', before: "You hope nothing's open.", now: 'It checks every door it can see on your servers, apps and domains. Each open one comes with a fix, and your AI never sees a key.', alert: true },
+  { q: 'What is all this costing me?', before: 'The bill is a surprise.', now: 'One monthly number across everything, split by project, with a budget that warns you early.' },
+];
+
+const own = [
+  { logo: 'cloudflare', via: 'Cloudflare', d: 'nestly.example', app: 'nestly · web', on: 'vps-01', db: 'nestly · db', st: 'ok', word: 'Works' },
+  { logo: 'hostinger', via: 'Hostinger', d: 'shipfast.example', app: 'shipfast · api', on: 'vps-01', db: 'shipfast · db', st: 'bad', word: 'Points elsewhere' },
+  { logo: 'cloudflare', via: 'Cloudflare', d: 'orbit.example', app: 'orbit-web', on: 'Vercel', db: 'orbit-db', dbOn: 'Supabase', st: 'warn', word: 'Needs a look' },
+  { logo: 'hostinger', via: 'Hostinger', d: 'runclub.example', st: 'off', word: '1 unused' },
+];
+
+// Example traffic for the chart: one bar per hour.
+const hours = [22, 18, 14, 11, 10, 12, 18, 29, 42, 50, 56, 60, 58, 63, 57, 70, 86, 74, 63, 55, 47, 41, 33, 27];
+const using = [['nestly', '1.2 GB', 100], ['shipfast', '640 MB', 53], ['playground', '180 MB', 15]];
+const rings = [['CPU', 34], ['Memory', 61], ['Disk', 48]];
+
+const doors = [
+  { sev: 'Critical', text: 'Someone could take over old.shipfast.example' },
+  { sev: 'High', text: 'A Postgres database on vps-01 answers the internet', act: 'Close the port', done: 'Closed. Tested from outside.' },
+  { sev: 'High', text: "NEXT_PUBLIC_STRIPE_SECRET would ship to every visitor's browser" },
+  { sev: 'High', text: "Coolify's proxy dashboard is open on vps-01" },
+  { sev: 'Medium', text: 'Anyone can send email pretending to be nestly.example', act: 'Protect email' },
+  { sev: 'Medium', text: 'api prints secrets in its logs' },
+];
+
+const lg: Record<string, [number, number]> = { cloudflare: [256, 117], hostinger: [24, 24], vercel: [256, 222], supabase: [256, 263] };
+const Label = 'Demo workspace. Numbers are examples.';
+---
+<section class="life" id="real-use">
+  <header class="life__head sec" data-mood="night">
+    <div class="wrap">
+      <p class="eyebrow">Real use</p>
+      <h2 class="d1" data-wipe>You published your app. <em>That's when the real job starts.</em></h2>
+      <p class="lede lede--wide">Who's visiting? Is it safe? Who's attacking it? Why did it break? Nobody tells you this part. Here's what life after launch looks like with Unit 7 beside you.</p>
+    </div>
+  </header>
+
+  <div class="stack" data-opaque>
+    {moments.map((m, i) => (
+      <article class:list={['mo', `mo--${i + 1}`, { 'mo--alert': m.alert }]} data-mood={m.alert ? 'alert' : 'night'}>
+        <div class="mo__in">
+          <div class="wrap mo__grid">
+            <div class="mo__text">
+              <p class="mo__rail"><span>{i + 1} of 6</span><i data-on={String(i + 1)}></i></p>
+              <h3 class="mo__q">{m.q}</h3>
+              <p class="mo__line mo__line--was"><span class="mo__tag">Before</span><span class="strike" data-t={m.before}>{m.before}</span></p>
+              <p class="mo__line mo__line--now"><span class="mo__tag">Now</span><span>{m.now}</span></p>
+            </div>
+
+            <figure class="mo__mock" data-mock={['own', 'traffic', 'story', 'feed', 'doors', 'month'][i]}>
+              {i === 0 && (
+                <div class="pc own">
+                  <h4 class="pc__t">Everything you own</h4>
+                  <ul class="own__rows">
+                    {own.map((r) => (
+                      <li class="own__row">
+                        <span class="own__cell">
+                          <svg class="lg" style={`aspect-ratio:${lg[r.logo][0]}/${lg[r.logo][1]}`} role="img" aria-label={r.via}><use href={`#l-${r.logo}`} /></svg>
+                          <b>{r.d}</b>
+                        </span>
+                        {r.app ? (
+                          <>
+                            <i class="own__wire"></i>
+                            <span class="own__cell"><span>{r.app}<small>on {r.on}</small></span></span>
+                            <i class="own__wire"></i>
+                            <span class="own__cell"><span>{r.db}{r.dbOn && <small>on {r.dbOn}</small>}</span></span>
+                          </>
+                        ) : (
+                          <span class="own__none">nothing</span>
+                        )}
+                        <span class="own__st"><i class={`dot dot--${r.st}`}></i>{r.word}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p class="own__foot">Apps 11 · Servers 1 · Domains 7</p>
+                </div>
+              )}
+
+              {i === 1 && (
+                <div class="pc tf">
+                  <div class="tf__top">
+                    <h4 class="pc__t">Traffic</h4>
+                    <div class="tf__range" aria-hidden="true"><span class="on">24h</span><span>7d</span><span>30d</span></div>
+                  </div>
+                  <div class="tf__chart" aria-label="Visits per hour over the last day, with one deploy marked." role="img">
+                    <span class="tf__band"></span>
+                    {hours.map((h) => <i class="tf__bar" style={`--h:${h}%`}></i>)}
+                    <span class="tf__deploy"></span>
+                  </div>
+                  <p class="tf__legend"><span><i class="tf__key"></i>Normal for this hour</span><span><i class="tf__dep"></i>Deploy</span></p>
+                  <dl class="tf__big">
+                    <div><dt>Visits</dt><dd data-count="1204" data-count-manual>1,204</dd></div>
+                    <div><dt>Unique visitors</dt><dd data-count="386" data-count-manual>386</dd></div>
+                    <div><dt>Error rate</dt><dd><span data-count="0.2" data-count-manual>0.2</span>%</dd></div>
+                  </dl>
+                  <div class="tf__split">
+                    <div class="tf__mix" aria-hidden="true"><i></i><i></i><i></i></div>
+                    <p><span><i></i>People</span><span><i></i>Bots and scripts</span><span><i></i>Scanners probing for weak spots</span></p>
+                  </div>
+                  <div class="tf__use">
+                    <div>
+                      <h5>Who's using it</h5>
+                      <ul class="tf__who">
+                        {using.map(([n, v, w]) => <li><span>{n}</span><i style={`--w:${w}%`}></i><b>{v}</b></li>)}
+                      </ul>
+                    </div>
+                    <ul class="tf__rings" aria-label="CPU, memory and disk use">
+                      {rings.map(([n, v]) => (
+                        <li><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15" /><circle class="ring" cx="18" cy="18" r="15" pathLength="100" style={`--v:${v}`} /></svg><span>{n}</span></li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {i === 2 && (
+                <div class="pc sty">
+                  <h4 class="pc__t">The story of this failure</h4>
+                  <div class="sty__chart" role="img" aria-label="Memory climbs into its cap twice after deploy #42, and the app restarts each time.">
+                    <svg viewBox="0 0 640 170" preserveAspectRatio="none" aria-hidden="true">
+                      <line class="sty__cap" x1="0" y1="26" x2="640" y2="26" vector-effect="non-scaling-stroke" />
+                      <polyline class="sty__line" pathLength="1" vector-effect="non-scaling-stroke" points="0,126 90,124 150,122 230,84 318,28 322,124 400,76 486,28 490,124 560,92 640,60" />
+                    </svg>
+                    <span class="sty__capname">Memory cap</span>
+                    <span class="sty__m sty__m--dep" style="left:23.4%"><b>Deploy #42</b></span>
+                    <span class="sty__m" style="left:50.1%"><b>Restarted</b></span>
+                    <span class="sty__m" style="left:76.4%"><b>Restarted</b></span>
+                  </div>
+                  <p class="sty__say">web ran out of memory and restarted twice. It started right after deploy #42.</p>
+                  <div class="sty__row">
+                    <span class="sev sev--likely">Likely cause</span>
+                    <span class="mbtn mbtn--blue" aria-hidden="true">Go back to #41</span>
+                  </div>
+                  <p class="sty__undo">To undo: deploy the newer version again.</p>
+                </div>
+              )}
+
+              {i === 3 && (
+                <div class="pc feed">
+                  <h4 class="pc__t">Findings</h4>
+                  <ul class="feed__rows">
+                    <li class="feed__row feed__row--block">
+                      <span class="sev sev--high">High</span>
+                      <div>
+                        <p><b>203.0.113.44 tried to sign in <span data-count="1240" data-count-manual>1,240</span> times in the last hour.</b> That's password guessing, not a person who forgot theirs.</p>
+                        <div class="feed__act">
+                          <span class="mbtn mbtn--white feed__btn" aria-hidden="true">Block 203.0.113.44</span>
+                          <span class="feed__done"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3.5 8.5 6.6 11.6 12.5 5" /></svg>Blocked for 15 minutes <span class="feed__un">Unblock it</span></span>
+                        </div>
+                      </div>
+                    </li>
+                    <li class="feed__row">
+                      <span class="sev sev--high">High</span>
+                      <p><b>One address made <span data-count="4812" data-count-manual>4,812</span> calls without signing in.</b> 198.51.100.7 sent <span data-count="38" data-count-manual>38</span>% of all traffic in the last hour. Someone (or something) is hammering your site.</p>
+                    </li>
+                    <li class="feed__row">
+                      <span class="sev sev--low">Low</span>
+                      <p><b>Bots probed vps-01 for weak spots <span data-count="412" data-count-manual>412</span> times.</b> They try well-known paths like /.env and /wp-login.php. Normal on the internet; it only matters if one of them answers.</p>
+                    </li>
+                  </ul>
+                  <ol class="feed__ladder" aria-label="If they come back, the block grows: 15 minutes, 1 hour, 24 hours, 7 days.">
+                    <li>15m</li><li>1h</li><li>24h</li><li>7d</li>
+                  </ol>
+                  <p class="feed__small">Warden blocks floods and scanners by itself on servers Unit 7 set up. Elsewhere, one click does it.</p>
+                </div>
+              )}
+
+              {i === 4 && (
+                <div class="pc door">
+                  <h4 class="pc__t">Security check</h4>
+                  <ul class="door__rows">
+                    {doors.map((d) => (
+                      <li class="door__row">
+                        <span class={`sev sev--${d.sev.toLowerCase()}`}>{d.sev}</span>
+                        <p>{d.text}</p>
+                        {d.act && <span class="mbtn door__btn" aria-hidden="true">{d.act}</span>}
+                        {d.done && <span class="door__done">{d.done}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  <p class="door__foot">Your AI only ever sees <code>credential://stripe/live/key</code></p>
+                  <p class="door__small">Every report says how many apps it covered.</p>
+                </div>
+              )}
+
+              {i === 5 && (
+                <div class="pc mon">
+                  <h4 class="pc__t">This month</h4>
+                  <p class="mon__big"><span class="num">$<span data-count="84" data-count-manual>84</span></span> <span class="mon__of">of a $120 budget</span></p>
+                  <div class="mon__bar" role="img" aria-label="Spending is under the point where the budget warns you, at 80 percent.">
+                    <i class="mon__fill"></i>
+                    <span class="mon__warn"><b>Warns you here</b></span>
+                  </div>
+                  <div class="mon__split">
+                    <div>
+                      <h5>By project</h5>
+                      <ul>
+                        <li><span>nestly</span><i style="--w:100%"></i></li>
+                        <li><span>shipfast</span><i style="--w:64%"></i></li>
+                        <li><span>playground</span><i style="--w:18%"></i></li>
+                      </ul>
+                    </div>
+                    <div>
+                      <h5>By provider</h5>
+                      <ul>
+                        <li><span><svg class="lg" style="aspect-ratio:1" role="img" aria-label="Hostinger"><use href="#l-hostinger" /></svg>Hostinger</span><i style="--w:100%"></i></li>
+                        <li><span><svg class="lg lg--mono" style="aspect-ratio:256/222" role="img" aria-label="Vercel"><use href="#l-vercel" /></svg>Vercel</span><i style="--w:46%"></i></li>
+                        <li><span><svg class="lg" style="aspect-ratio:256/117" role="img" aria-label="Cloudflare"><use href="#l-cloudflare" /></svg>Cloudflare</span><i style="--w:22%"></i></li>
+                      </ul>
+                    </div>
+                  </div>
+                  <p class="mon__tip"><span>965 MB of old images nobody uses</span><span class="mbtn" aria-hidden="true">Free 965 MB</span></p>
+                </div>
+              )}
+              <figcaption class="mock-label">{Label}</figcaption>
+            </figure>
+          </div>
+        </div>
+      </article>
+    ))}
+  </div>
+
+  <div class="asks sec" data-mood="night">
+    <div class="wrap">
+      <h3 class="d1" data-wipe>Just ask.</h3>
+      <ul class="asks__list">
+        {["What's using my server?", 'Did the last backup work?', 'What changed since yesterday?', 'Am I ready for real users?', 'Why is it slow?', 'Is anything open to the internet?'].map((q) => <li>{q}</li>)}
+      </ul>
+      <p class="d2 asks__end" data-wipe>You go back to building. <em>Unit 7 looks after the rest.</em></p>
+    </div>
+  </div>
+</section>
+
+<style is:global>
+  .life__head { padding-bottom: clamp(3rem, 6vw, 5.5rem); }
+  .life__head .d1 { margin-top: 1.1rem; max-width: 13.5em; }
+  .life__head .lede { margin-top: 1.5rem; }
+
+  /* Shared bits of a product-style mock: rounded, because that's how the real product looks */
+  .pc { --s: clamp(.8125rem, min(1.26vw, 2.06vh), 1.4375rem); padding: 1.3em 1.45em; border: 1px solid var(--line); border-radius: 24px; background: var(--ink-2); color: var(--text); font-size: var(--s); line-height: 1.4; box-shadow: 0 40px 90px -50px rgb(0 0 0 / .95); }
+  .pc__t { font-size: 1.1em; font-weight: 600; }
+  .pc h5 { margin-bottom: .55em; font: 500 .8em/1.3 var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: .08em; }
+  .mock-label { margin-top: .75rem; font: 450 .75rem/1.4 var(--mono); color: var(--faint); }
+  .lg { flex: none; width: auto; height: 1.15em; fill: currentColor; }
+  .dot { flex: none; display: inline-block; width: .55em; height: .55em; border-radius: 50%; background: var(--faint); }
+  .dot--ok { background: var(--ok); } .dot--bad { background: var(--bad); } .dot--warn { background: var(--warn); } .dot--off { background: #6B6B75; }
+  .sev { display: inline-flex; align-items: center; min-height: 1.75em; padding: 0 .7em; border-radius: 999px; font-size: .84em; font-weight: 600; white-space: nowrap; }
+  .sev--critical { background: var(--bad); color: #360606; }
+  .sev--high { background: rgb(248 113 113 / .17); color: #FCA5A5; }
+  .sev--medium { background: rgb(251 191 36 / .15); color: var(--warn); }
+  .sev--low { background: rgb(255 255 255 / .09); color: var(--muted); }
+  .sev--likely { background: rgb(134 166 255 / .16); color: var(--soft-blue); }
+  .mbtn { display: inline-flex; align-items: center; min-height: 2.5em; padding: 0 1.05em; border: 1px solid var(--line-2); border-radius: 999px; font-size: .94em; font-weight: 500; white-space: nowrap; }
+  .mbtn--blue { border-color: transparent; background: var(--product-blue); color: #fff; }
+  .mbtn--white { border-color: transparent; background: #F2F2F4; color: #0E0E12; font-weight: 600; }
+
+  /* The stack. Default and phones: simply stacked. */
+  .mo { position: relative; background: var(--ink-1); border-top: 1px solid var(--line-2); }
+  .mo__in { position: relative; padding-block: clamp(3rem, 7vw, 5rem); background: radial-gradient(70% 90% at 96% 8%, var(--glow, rgb(47 102 255 / .14)), transparent 70%), var(--ink-1); }
+  .mo--alert { --glow: rgb(184 74 42 / .2); }
+  .mo--6 { --glow: rgb(198 244 50 / .08); }
+  .mo__grid { display: grid; gap: 2rem; }
+  .mo__rail { display: flex; align-items: center; gap: .75rem; font: 500 .8125rem/1 var(--mono); color: var(--faint); }
+  .mo__rail i { position: relative; width: 6.6rem; height: .34rem; background: repeating-linear-gradient(90deg, var(--line-3) 0 .85rem, transparent 0 1.14rem); transform: skewX(var(--skew)); }
+  .mo__rail i::after { content: ''; position: absolute; inset: 0 auto 0 0; width: calc(var(--n) * 1.14rem - .29rem); background: var(--lime); }
+  .mo__rail [data-on='1'] { --n: 1; } .mo__rail [data-on='2'] { --n: 2; } .mo__rail [data-on='3'] { --n: 3; } .mo__rail [data-on='4'] { --n: 4; } .mo__rail [data-on='5'] { --n: 5; } .mo__rail [data-on='6'] { --n: 6; }
+  .mo__q { margin-top: 1.1rem; font: 760 clamp(2.5rem, 5.5vw, 6.5rem)/.98 var(--display); font-stretch: 103%; letter-spacing: -.036em; text-wrap: balance; }
+  .mo__q::before { content: '\201C'; position: absolute; translate: -.48em 0; color: var(--em); font-style: italic; }
+  .mo__q::after { content: '\201D'; color: var(--em); font-style: italic; }
+  .mo__line { display: grid; grid-template-columns: 3.1rem minmax(0, 1fr); gap: .75rem; align-items: baseline; max-width: 36rem; }
+  .mo__line--was { margin-top: 1.6rem; color: var(--muted); font-size: clamp(1rem, 1.25vw, 1.1875rem); line-height: 1.35; }
+  .mo__line--now { margin-top: .9rem; color: var(--text); font-size: clamp(1.125rem, 1.6vw, 1.5rem); line-height: 1.3; letter-spacing: -.01em; }
+  .mo__tag { font: 500 .75rem/1.6 var(--mono); color: var(--faint); }
+  .mo__line--now .mo__tag { color: var(--lime); }
+  .strike { position: relative; display: block; }
+  .motion .strike::after { content: attr(data-t); position: absolute; inset: 0; color: transparent; text-decoration: line-through; text-decoration-thickness: 1.5px; text-decoration-color: var(--muted); clip-path: polygon(0 0, calc((100% + var(--k, 2em)) * var(--s, 0)) 0, calc((100% + var(--k, 2em)) * var(--s, 0) - var(--k, 2em)) 100%, 0 100%); }
+
+  @media (min-width: 900px) and (min-height: 660px) {
+    .motion .stack { position: relative; }
+    .motion .mo { position: sticky; top: 0; height: 100vh; border: 0; background: var(--ink-0); overflow: clip; }
+    /* Scale lives on the inner box, so the sticky panel itself is never transformed when ScrollTrigger measures it. */
+    .motion .mo__in { height: 100%; padding: 0; overflow: clip; border-top: 1px solid var(--line-2); border-radius: 30px 30px 0 0; transform-origin: 50% 0; will-change: transform; }
+    .motion .mo__grid { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(2rem, 4.5vw, 5.5rem); align-items: center; height: 100%; padding-block: 4rem 2.25rem; }
+    .motion .mo__mock { max-height: calc(100vh - 6.5rem); }
+  }
+  .mo__in::after { content: ''; position: absolute; inset: 0; background: var(--ink-0); opacity: var(--dim, 0); pointer-events: none; }
+
+  /* 1. Everything you own */
+  .own__rows { margin-top: .9em; }
+  .own__row { display: grid; grid-template-columns: 10.8em 1em minmax(0, 1fr) 1em minmax(0, .85fr) minmax(7.6em, auto); align-items: center; gap: .35em; padding-block: 1.1em; border-top: 1px solid var(--line); }
+  .own__cell { display: flex; align-items: center; gap: .5em; min-width: 0; }
+  .own__cell small { display: block; color: var(--faint); font-size: .84em; }
+  .own__cell b { font-weight: 600; white-space: nowrap; }
+  .own__wire { height: 1px; background: var(--soft-blue); opacity: .7; transform-origin: left; }
+  .own__none { grid-column: 2 / 6; padding-left: .35em; color: var(--faint); }
+  .own__st { display: inline-flex; align-items: center; justify-content: flex-end; gap: .45em; color: var(--muted); font-size: .92em; white-space: nowrap; }
+  .own__foot { margin-top: .4em; padding-top: .85em; border-top: 1px solid var(--line); font: 500 .92em/1.3 var(--mono); color: var(--muted); }
+
+  /* 2. Traffic */
+  .tf { display: grid; gap: .95em; }
+  .tf__top { display: flex; align-items: center; justify-content: space-between; }
+  .tf__range { display: flex; gap: .15em; padding: .18em; border: 1px solid var(--line); border-radius: 999px; font-size: .84em; color: var(--muted); }
+  .tf__range span { padding: .22em .7em; border-radius: 999px; }
+  .tf__range .on { background: #F2F2F4; color: #0E0E12; font-weight: 600; }
+  .tf__chart { position: relative; display: flex; align-items: flex-end; gap: .22em; height: clamp(6rem, 17vh, 12rem); }
+  .tf__band { position: absolute; inset: 34% 0 28% 0; border-radius: 6px; background: rgb(255 255 255 / .06); }
+  .tf__bar { position: relative; flex: 1; height: var(--h); border-radius: 3px 3px 1px 1px; background: var(--product-blue); transform-origin: bottom; }
+  .tf__deploy { position: absolute; top: 0; bottom: 0; left: 65.5%; width: 1px; background: var(--soft-blue); }
+  .tf__deploy::before { content: ''; position: absolute; top: 0; left: -.25em; width: .55em; height: .55em; border-radius: 50%; background: var(--soft-blue); box-shadow: 0 0 0 2px var(--ink-2); }
+  .tf__legend { display: flex; gap: 1.2em; margin-top: -.3em; color: var(--muted); font-size: .86em; }
+  .tf__legend span { display: inline-flex; align-items: center; gap: .45em; }
+  .tf__key { width: 1.2em; height: .7em; border-radius: 3px; background: rgb(255 255 255 / .12); }
+  .tf__dep { width: .55em; height: .55em; border-radius: 50%; background: var(--soft-blue); }
+  .tf__big { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75em; }
+  .tf__big dt { color: var(--muted); font-size: .9em; }
+  .tf__big dd { font-size: clamp(1.625rem, 2.5vw, 2.5rem); font-weight: 600; letter-spacing: -.025em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .tf__big dd span { display: inline-block; }
+  .tf__mix { display: flex; gap: 2px; height: .55em; overflow: hidden; border-radius: 999px; transform-origin: left; }
+  .tf__mix i { display: block; }
+  .tf__mix i:nth-child(1) { flex: 62; background: var(--product-blue); } .tf__mix i:nth-child(2) { flex: 27; background: var(--faint); } .tf__mix i:nth-child(3) { flex: 11; background: #F59E0B; }
+  .tf__split p { display: flex; flex-wrap: wrap; gap: .2em 1.1em; margin-top: .5em; color: var(--muted); font-size: .86em; }
+  .tf__split p span { display: inline-flex; align-items: center; gap: .4em; }
+  .tf__split p i { width: .6em; height: .6em; border-radius: 2px; background: var(--product-blue); }
+  .tf__split p span:nth-child(2) i { background: var(--faint); } .tf__split p span:nth-child(3) i { background: #F59E0B; }
+  .tf__use { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1.5em; align-items: center; padding-top: .9em; border-top: 1px solid var(--line); }
+  .tf__who li { display: grid; grid-template-columns: 5.2em minmax(0, 1fr) 4.2em; gap: .6em; align-items: center; font-size: .92em; }
+  .tf__who li + li { margin-top: .32em; }
+  .tf__who i { display: block; width: var(--w); height: .42em; border-radius: 999px; background: var(--soft-blue); transform-origin: left; }
+  .tf__who b { font-weight: 500; text-align: right; color: var(--muted); }
+  .tf__rings { display: flex; gap: .95em; }
+  .tf__rings li { display: grid; justify-items: center; gap: .2em; color: var(--muted); font-size: .84em; }
+  .tf__rings svg { width: 2.7em; height: 2.7em; rotate: -90deg; }
+  .tf__rings circle { fill: none; stroke: var(--ink-3); stroke-width: 4; }
+  .tf__rings .ring { stroke: var(--product-blue); stroke-linecap: round; stroke-dasharray: var(--v) 100; }
+
+  /* 3. The story of this failure */
+  .sty__chart { position: relative; margin-top: 1em; height: clamp(8rem, 27vh, 16rem); margin-bottom: 1.9em; border-bottom: 1px solid var(--line-2); }
+  .sty__chart svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .sty__cap { stroke: var(--bad); stroke-width: 1.25; stroke-dasharray: 5 5; opacity: .7; }
+  .sty__line { fill: none; stroke: var(--soft-blue); stroke-width: 2.25; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 0; }
+  .sty__capname { position: absolute; right: 0; top: 0; color: var(--bad); font-size: .8em; }
+  .sty__m { position: absolute; top: 15%; bottom: 0; width: 1px; background: var(--bad); }
+  .sty__m::before { content: ''; position: absolute; left: -.28em; top: -.28em; width: .6em; height: .6em; border-radius: 50%; background: var(--bad); }
+  .sty__m b { position: absolute; top: calc(100% + .35em); left: 50%; translate: -50% 0; font-size: .8em; font-weight: 500; color: var(--muted); white-space: nowrap; }
+  .sty__m--dep { background: var(--soft-blue); }
+  .sty__m--dep::before { background: var(--soft-blue); }
+  .sty__say { font-size: 1.32em; line-height: 1.28; letter-spacing: -.012em; font-weight: 500; }
+  .sty__row { display: flex; flex-wrap: wrap; gap: .75em; align-items: center; justify-content: space-between; margin-top: .9em; }
+  .sty__undo { margin-top: .55em; color: var(--muted); font-size: .9em; text-align: right; }
+
+  /* 4. Findings */
+  .feed__rows { margin-top: .75em; }
+  .feed__row { display: grid; grid-template-columns: 3.9em minmax(0, 1fr); gap: .75em; align-items: start; padding-block: .78em; border-top: 1px solid var(--line); color: var(--muted); }
+  .feed__row b { color: var(--text); font-weight: 600; }
+  .feed__row span[data-count] { display: inline-block; font-variant-numeric: tabular-nums; }
+  .feed__act { position: relative; display: grid; margin-top: .55em; }
+  .feed__btn, .feed__done { grid-area: 1 / 1; justify-self: start; }
+  html:not(.motion) .feed__btn { display: none; }
+  .feed__done { display: inline-flex; align-items: center; gap: .45em; min-height: 2.5em; color: var(--ok); font-weight: 600; }
+  .feed__done svg { width: 1.25em; height: 1.25em; padding: .18em; border-radius: 50%; background: rgb(74 222 128 / .14); }
+  .feed__un { margin-left: .5em; color: var(--soft-blue); font-weight: 500; }
+  .feed__ladder { display: flex; align-items: center; gap: .5em; margin-top: .3em; padding-top: .8em; border-top: 1px solid var(--line); font: 500 .92em/1 var(--mono); color: var(--muted); }
+  .feed__ladder li { position: relative; padding: .4em .85em; border-radius: 999px; background: var(--ink-3); }
+  .feed__ladder li + li { margin-left: 1.15em; }
+  .feed__ladder li + li::before { content: ''; position: absolute; right: 100%; top: 50%; width: 1.15em; height: 1px; margin-right: .25em; background: var(--line-3); }
+  .feed__ladder li.on, html:not(.motion) .feed__ladder li:first-child { background: var(--warn); color: #2B1E00; }
+  .feed__small { margin-top: .7em; color: var(--faint); font-size: .86em; }
+
+  /* 5. Security check */
+  .door__rows { margin-top: .75em; }
+  .door__row { position: relative; display: grid; grid-template-columns: 4.7em minmax(0, 1fr) auto; gap: .35em .7em; align-items: center; min-height: 3.5em; padding-block: .55em; border-top: 1px solid var(--line); }
+  .door__row .sev { justify-self: start; }
+  .door__done { grid-column: 2 / -1; color: var(--ok); font-size: .92em; font-weight: 600; }
+  .door__btn, .door__done { grid-row: 1; grid-column: 3; justify-self: end; }
+  .door__foot { margin-top: .2em; padding-top: .75em; border-top: 1px solid var(--line); color: var(--muted); }
+  .door__foot code { color: var(--text); font-size: .88em; }
+  .door__small { margin-top: .3em; color: var(--faint); font-size: .86em; }
+  html:not(.motion) .door__row:nth-child(2) .door__btn { display: none; }
+
+  /* 6. This month */
+  .mon__big { display: flex; align-items: baseline; gap: .6em; margin-top: .55em; }
+  .mon__big .num { font-size: clamp(4.5rem, min(10vw, 17vh), 10rem); }
+  .mon__big .num span { display: inline-block; }
+  .mon__of { color: var(--muted); font-size: 1.15em; }
+  .mon__bar { position: relative; height: .85em; margin-block: .9em 2.3em; border-radius: 999px; background: var(--ink-3); }
+  .mon__fill { position: absolute; inset: 0 30% 0 0; border-radius: 999px; background: var(--lime); transform-origin: left; }
+  .mon__warn { position: absolute; left: 80%; top: -.35em; bottom: -.35em; width: 2px; background: var(--warn); }
+  .mon__warn b { position: absolute; top: calc(100% + .3em); left: 50%; translate: -50% 0; color: var(--warn); font-size: .86em; font-weight: 500; white-space: nowrap; }
+  .mon__split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.75em; }
+  .mon__split li { display: grid; grid-template-columns: 6.8em minmax(0, 1fr); gap: .6em; align-items: center; padding-block: .38em; }
+  .mon__split li span { display: inline-flex; align-items: center; gap: .45em; min-width: 0; }
+  .mon__split .lg { height: .95em; }
+  .mon__split i { display: block; width: var(--w); height: .46em; border-radius: 999px; background: var(--soft-blue); transform-origin: left; }
+  .mon__tip { display: flex; align-items: center; justify-content: space-between; gap: 1em; margin-top: 1.5em; padding: .55em .55em .55em 1em; border-radius: 16px; background: var(--ink-3); }
+  @media (max-width: 899px) {
+    .mo__q { font-size: clamp(2.5rem, 11.5vw, 4rem); }
+    .mo__line { grid-template-columns: 1fr; gap: .1rem; }
+    .pc { padding: 1em 1em; }
+    .own__row { grid-template-columns: minmax(0, 1fr) auto; }
+    .own__wire { display: none; }
+    .own__row .own__cell { grid-column: 1; }
+    .own__st { grid-column: 2; grid-row: 1; }
+    .own__none { grid-column: 1; padding-left: 0; }
+    .tf__use { grid-template-columns: 1fr; }
+    .door__row { grid-template-columns: 4.7em minmax(0, 1fr); }
+    .door__btn, .door__done { grid-column: 2; grid-row: 2; justify-self: start; }
+    .mon__split { grid-template-columns: 1fr; gap: 1em; }
+    .mon__tip { flex-direction: column; align-items: flex-start; }
+  }
+
+  /* After the stack */
+  .asks__list { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: clamp(1.75rem, 3.5vw, 3rem); max-width: 60rem; }
+  .asks__list li { padding: .6rem 1.05rem; border: 1px solid var(--line-2); border-radius: 18px 18px 4px 18px; background: var(--ink-2); font-size: clamp(1rem, 1.2vw, 1.1875rem); }
+  .asks__end { margin-top: clamp(4rem, 8vw, 7.5rem); max-width: 13em; }
+</style>

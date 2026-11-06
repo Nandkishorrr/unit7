@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Unit 7 launch film</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="stage">
+
+  <section class="scene" id="s0">
+    <h1 class="d1 abs" id="h1a">AI writes your code<br><em>in minutes.</em></h1>
+    <h1 class="d1 abs" id="h1b">Everything after that<br><em>still eats your evenings.</em></h1>
+    <ul id="pains">
+      <li>The VPS.</li><li>The Coolify stacks.</li><li>DNS spread over three providers.</li>
+      <li>Backups you hope work.</li><li>The port you forgot was open.</li>
+    </ul>
+  </section>
+
+  <section class="scene" id="s1">
+    <div class="abs" id="wordmark">Unit 7</div>
+    <div class="abs" id="hero">
+      <p class="eyebrow">Open source · Self-hosted · Apache 2.0</p>
+      <h1 class="d1">The backend<br>developer<br>your AI<br><em>never had.</em></h1>
+    </div>
+  </section>
+
+  <section class="scene" id="s2">
+    <div class="abs left">
+      <p class="eyebrow">Vibe coders</p>
+      <h2 class="d2">New to this? <em>Just say it.</em></h2>
+      <p class="sub">Plain words. It does the work on your real servers.</p>
+    </div>
+    <div class="win" id="chat">
+      <div class="win__top"><img src="vendor/unit7-mark.svg" alt=""><b>Unit 7</b><span>nestly · Production</span></div>
+      <div id="chatbody">
+        <div id="chatmain">
+          <div class="bubble" id="bub">Put my app online, with a database and my domain</div>
+          <div id="steps"></div>
+          <div id="receipt"><svg width="30" height="30" viewBox="0 0 16 16" fill="none" stroke="#C6F432" stroke-width="2.4"><path d="M3.5 8.5 6.6 11.6 12.5 5"/></svg><span>nestly.example is live. HTTPS is on.</span><b>Undo</b></div>
+          <div id="inp"><span class="ph" id="ph">Tell Unit 7 what you want…</span><span id="typed"></span><i class="caret" id="caret"></i></div>
+        </div>
+        <div id="side">
+          <h4>Waiting for you</h4>
+          <p class="none">Nothing happens until you say yes.</p>
+          <div id="card">
+            <h5>Point nestly.example at web</h5>
+            <p class="meta">Production</p>
+            <dl>
+              <div><dt>It will:</dt><dd>Set the DNS, the route and the certificate.</dd></div>
+              <div><dt>To undo:</dt><dd>Take the domain off the app.</dd></div>
+            </dl>
+            <div class="pills"><span class="pill">Not now</span><span class="pill pill--blue" id="approve">Approve</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="scene" id="s3">
+    <p class="eyebrow">Coders</p>
+    <h2 class="d2" id="t3a">Write your own code?</h2>
+    <h2 class="d2" id="t3b">Every variable. <em>Every environment.</em></h2>
+    <div class="win" id="envcard">
+      <div id="envtop">
+        <b>nestly</b>
+        <div id="pick"><i id="pickb"></i><span>Production</span><span>Staging</span><span>Dev</span></div>
+        <div id="chips"><span class="chip">Saved</span><span class="chip">Encrypted</span><span class="chip">Versioned</span></div>
+        <span class="btn2">Import .env</span>
+      </div>
+      <div id="empty">No variables yet. Add one, or paste your .env file: secrets are spotted and locked away automatically.</div>
+      <div id="rows"></div>
+      <div id="scan"></div>
+    </div>
+    <div class="abs" id="dotenv"><h6>.env</h6>DATABASE_URL=postgres://app:hunter2@db<br>STRIPE_SECRET_KEY=sk_demo_4f9a…<br>JWT_SECRET=correct-horse-battery<br>SITE_URL=https://nestly.example</div>
+    <div class="abs" id="aisees"><p>What your AI sees</p><code>credential://stripe/live/key</code><span>A reference. Never the key.</span></div>
+  </section>
+
+  <section class="scene" id="s4">
+    <div id="names"></div>
+    <div id="s4a">
+      <p class="eyebrow">Advanced</p>
+      <h2 class="d2">Run serious infrastructure?</h2>
+      <div class="num" id="big400">400+</div>
+      <p id="big400lab">tools, over MCP and the CLI</p>
+      <div class="win" id="term">
+        <div class="bar">zsh · ~/nestly</div>
+<pre id="termtext"></pre>
+      </div>
+    </div>
+    <div id="gate">
+      <h3 class="d1">One safety gate. <em>Every action.</em></h3>
+      <div id="gline"><div id="gfill"></div></div>
+      <div id="gnodes"></div>
+      <div id="audit"></div>
+    </div>
+  </section>
+
+  <section class="scene" id="s5">
+    <div id="v2big">
+      <div class="num">V2</div>
+      <h2 class="d2">Doesn’t wait <em>to be asked.</em></h2>
+    </div>
+    <div class="lc" id="lc1"><p class="eyebrow">V2</p><h2 class="d2">Check-up.</h2><p>One button, or it runs by itself. No AI needed.</p></div>
+    <div class="win" id="ck">
+      <div class="h">Is everything OK?<span>read-only</span></div>
+      <div class="ca"><span class="mk"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3.5 8.5 6.6 11.6 12.5 5"/></svg></span>Is there room?<span class="tag">Yes</span></div>
+      <div class="ca"><span class="mk"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3.5 8.5 6.6 11.6 12.5 5"/></svg></span>Is your data safe?<span class="tag">Yes</span></div>
+      <div class="ca"><span class="mk warn">!</span>Is anything open?<span class="tag">Who fixes it: Unit 7</span></div>
+      <div class="ca"><span class="mk warn">!</span>Is your app behaving?<span class="tag">Who fixes it: your AI</span></div>
+    </div>
+    <div class="lc" id="lc2"><p class="eyebrow">V2</p><h2 class="d2">Safety <em>Net.</em></h2><p>Your data, copied off the server. Then proven.</p></div>
+    <div id="ladder">
+      <div id="ltrack"><div id="lfill"></div></div>
+      <ol id="lrungs">
+        <li>Unprotected<small>no copy anywhere</small></li>
+        <li>Weak<small>only on this server</small></li>
+        <li>Protected<small>a copy off the server</small></li>
+        <li>Proven<small>it restored in a test</small></li>
+      </ol>
+      <ul id="llog"></ul>
+    </div>
+    <div id="mq"></div>
+  </section>
+
+  <section class="scene" id="s6">
+    <div class="left">
+      <p class="eyebrow">V2.1</p>
+      <h2 class="d1">Seven<em>.</em></h2>
+      <p class="sub">The agent on shift.</p>
+    </div>
+    <div class="win" id="seven">
+      <div class="h">Seven<span class="on"><i></i>On shift</span></div>
+      <p class="calm">Nothing needs you. I looked 12 minutes ago.</p>
+      <ol id="shift"><li>Gather</li><li>Think</li><li>Decide</li><li>Act</li><li>Report</li></ol>
+      <div id="askbox">
+        <h6>Should I?</h6>
+        <div id="q">
+          <p>Give Demo CRM a memory cap of 768 MB?</p>
+          <small>It has no limit, so one leak could take your other apps down. Nothing restarts. You can undo it.</small>
+          <div class="pills"><span class="pill pill--lime" id="yes">Yes, do it</span><span class="pill">No</span></div>
+        </div>
+      </div>
+      <div id="doneblock">
+        <h6>Done for you</h6>
+        <div class="dn"><time>03:12</time><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3.5 8.5 6.6 11.6 12.5 5"/></svg><span>Copied Demo Postgres off the server and proved it restores</span></div>
+        <div class="dn" id="dn1"><time>08:05</time><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3.5 8.5 6.6 11.6 12.5 5"/></svg><span>Renewed the certificate for nestly.example</span></div>
+        <div class="dn" id="dn2"><time>09:41</time><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3.5 8.5 6.6 11.6 12.5 5"/></svg><span>Gave Demo CRM a 768 MB memory cap, with your yes</span></div>
+      </div>
+      <p class="ft">Today $0.04 of $1.00 · Next look in about 5 hours</p>
+    </div>
+  </section>
+
+  <section class="scene" id="s7">
+    <div class="big" id="w1" style="top:128px">Self-hosted.</div>
+    <div class="big" id="w2" style="top:338px"><em>Open source.</em></div>
+    <div class="big" id="w3" style="top:548px">Yours.</div>
+    <div id="facts"><span><i>/</i>Apache 2.0</span><span><i>/</i>One process, one file</span><span><i>/</i>No cloud</span><span><i>/</i>No telemetry</span><span><i>/</i>No account</span></div>
+  </section>
+
+  <section class="scene" id="s8">
+    <div class="abs" id="endw"><h2>Unit 7</h2><p>signull.cloud</p></div>
+    <div class="abs" id="endc">Music: “Ethernight Club” by Kevin MacLeod (incompetech.com), licensed under CC BY 4.0</div>
+  </section>
+
+  <div id="lock"><img src="vendor/unit7-mark.svg" alt=""><span>Unit 7</span></div>
+  <p id="demo">Demo workspace. Numbers are examples.</p>
+  <ul id="ticks">
+    <li><i><b></b></i>Vibe coders</li>
+    <li><i><b></b></i>Coders</li>
+    <li><i><b></b></i>Advanced</li>
+  </ul>
+  <svg class="cursor" id="cur" viewBox="0 0 24 24"><path d="M5 3l14 8.5-6.2 1.6L9.4 19z" fill="#fff" stroke="#0E0E12" stroke-width="1.4" stroke-linejoin="round"/></svg>
+  <div class="rip" id="rip"></div>
+  <div class="sweep" id="sw1" style="background:var(--blue)"></div>
+  <div class="sweep" id="sw2" style="background:var(--lime)"></div>
+</div>
+
+<script src="vendor/gsap.min.js"></script>
+<script src="vendor/CustomEase.min.js"></script>
+<script src="words.js"></script>
+<script src="glsl.js"></script>
+<script src="shader.js"></script>
+<script src="scenes.js"></script>
+</body>
+</html>

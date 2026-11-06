@@ -1,0 +1,19 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Nothing here | Unit 7" description="This page doesn't exist. Unit 7 didn't touch a thing." noindex>
+  <section class="nf">
+    <div class="wrap">
+      <p class="num nf__n" aria-hidden="true">404</p>
+      <h1 class="d1">Nothing here. <em>Unit 7 didn't touch a thing.</em></h1>
+      <div class="cta"><a class="btn" href="/">Back to the start</a></div>
+    </div>
+  </section>
+</Base>
+
+<style is:global>
+  .nf { display: flex; align-items: center; min-height: 100svh; padding-block: 6rem; }
+  .nf__n { color: var(--muted); font-size: clamp(5rem, 12vw, 12rem); }
+  .nf .d1 { margin-top: 1rem; max-width: 12em; }
+  .nf .cta { margin-top: 2rem; }
+</style>
