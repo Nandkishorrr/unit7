@@ -614,6 +614,10 @@ test('a name already live on this server is never taken, by any tool', async () 
     assert.equal((r as any).error?.code, 'domain_taken');
   assert.equal(things.length, 0);
   assert.ok(!seen.some((x) => x.command.startsWith('coolify POST')));
+  // a site no panel runs counts too
+  const compose = ctr({ name: 'shop-wordpress-1', image: 'wordpress:6', labels: { 'com.docker.compose.project': 'shop', 'com.docker.compose.service': 'wordpress', 'traefik.http.routers.shop.rule': 'Host(`shop.example.com`)' }, mounts: [{ Type: 'volume', Name: 'shop_files', Destination: '/var/www/html' }] });
+  const b = await box(site(), { sites: [compose] });
+  assert.equal((await b.h('addon.install', { serverId: b.srv, addon: 'n8n', domain: 'shop.example.com' }) as any).error?.code, 'domain_taken');
 });
 
 // --- staging -------------------------------------------------------------------------------------------------------------

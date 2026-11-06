@@ -342,7 +342,7 @@ function checkHost(ctx: Ctx, serverId: string, hostname: string, mine?: string) 
   if (hostname.split('.').length <= rootOf(hostname).split('.').length) throw new Unit7Error('needs_subdomain', `Use a subdomain like analytics.${hostname}, so ${hostname} keeps pointing where it does.`, 400);
   const d = get<{ org_id: string; service_id: string | null; target: string | null }>(ctx.db, 'SELECT org_id, service_id, target FROM domains WHERE hostname = ?', hostname);
   if (d && !(mine && d.org_id === ctx.orgId && !d.service_id && json<{ uuid?: string }>(d.target, {}).uuid === mine)) throw new Unit7Error('domain_taken', `${hostname} already goes somewhere. Pick another name.`, 409);
-  if (lastXray(ctx.db, ctx.orgId, serverId)?.data.parts?.some((p) => p.hosts?.includes(hostname) && p.coolify?.uuid !== mine)) throw new Unit7Error('domain_taken', `${hostname} is already live on this server. Pick another name.`, 409);
+  if (lastXray(ctx.db, ctx.orgId, serverId)?.data.parts?.some((p) => p.hosts?.includes(hostname) && !(mine && p.coolify?.uuid === mine))) throw new Unit7Error('domain_taken', `${hostname} is already live on this server. Pick another name.`, 409);
 }
 
 function catalogOf(ctx: Pick<Ctx, 'db' | 'orgId'>, s: ServerRow) {

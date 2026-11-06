@@ -381,7 +381,7 @@ defineTool({
     await readSite(ctx, src);
     if (!src.url) throw new Unit7Error('no_address', `Unit7 can’t tell ${p.name}’s address, so it can’t change it in the copy. Nothing was made.`, 409);
     await roomFor(ctx, s, 0);
-    const prefix = (await must(ctx, s, wpRun(src, 'db', 'prefix'), `Reading ${p.name}’s table names`)).trim();
+    const prefix = (await must(ctx, s, wpRun(src, 'db', 'prefix'), `Reading ${p.name}’s table names`)).trim().split('\n').at(-1) ?? ''; // a PHP notice can come first
     if (!/^[A-Za-z0-9_]{1,64}$/.test(prefix)) throw new Unit7Error('wordpress_failed', `Unit7 couldn’t read ${p.name}’s table names. Nothing was made.`, 502);
     const dump = `${manageDirs.backups}/imports/${when()}-${a.id}.sql.gz`;
     try {
