@@ -400,6 +400,17 @@ test('email.setup: a subdomain’s records land under it, Resend taking time or 
     assert.match(e.message, /Resend: You have reached your domain limit/);
     assert.equal(all<{ status: string }>(quota.app.db, `SELECT status FROM accounts WHERE provider = 'resend'`)[0]!.status, 'verified', 'a plan limit isn’t a dead key');
   } finally { quota.close(); }
+
+  // a DNS host that says no stops it there, with nothing verified, and running it again picks up
+  const down = await sendable();
+  try {
+    down.cf.st.refused = /^POST \/zones\/z1\/dns_records$/;
+    assert.equal(failed(await down.o.h('email.setup', { domain: 'example.com' })).code, 'cloudflare_error');
+    assert.equal(down.rs.st.verifies, 0);
+    down.cf.st.refused = undefined;
+    assert.equal(ok(await down.o.h('email.setup', { domain: 'example.com' })).ready, true);
+    assert.equal(down.rs.st.domains.length, 1, 'the same domain, not a second one');
+  } finally { down.close(); }
 });
 
 test('email.setup with no sender says which free one to connect, and how', async () => {

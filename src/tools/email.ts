@@ -403,7 +403,7 @@ defineTool({
     // a rule made on an earlier run counts as new here: Undo takes it away
     const changeId = had && l.enabled && !p.changes.length ? undefined : keepChange(ctx, `email:${i.from}`, 'email.forward', `Forwarded ${i.from} to ${i.to}`, { accountId: l.acc, zoneId: l.zoneId, ruleId, before: had ? null : l.rule ?? null, turnedOn: !l.enabled, dns: p.changes });
     ctx.emit('email.forwarding', `${i.from} goes to ${i.to}`, { severity: 'success', resource: i.from });
-    return { forwarded: true, from: i.from, to: i.to, at: 'Cloudflare Email Routing', ...held(p), note: `Send a test from another address: mail you send yourself can look lost, because some inboxes hide their own.${l.foreign.length ? ` Mail no longer goes to ${l.foreign.join(', ')}.` : ''}`, ...(changeId && { changeId, undo: `change.undo with changeId ${changeId} takes the forward away.` }) };
+    return { forwarded: true, from: i.from, to: i.to, at: 'Cloudflare Email Routing', ...held(p), note: `Send a test from another address: mail you send yourself can look lost, because some inboxes hide their own.${l.foreign.length ? ` Mail no longer goes to ${l.foreign.join(', ')}.` : ''}`, ...(changeId && { changeId, undo: `change.undo with changeId ${changeId} takes the forward away.` }), untrusted: UNTRUSTED };
   },
 });
 CHANGE_UNDO['email.forward'] = async (ctx, ch) => {
