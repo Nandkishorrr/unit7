@@ -84,6 +84,7 @@ export function AddonChatCard({ tool, input, output: o }: { tool: string; input:
       sub={o.url ? <a href={o.url} target="_blank" rel="noopener" className="font-medium text-blue-text hover:underline">{host(o.url)}</a> : o.server} href={href} hrefLabel="Open Add to my server"
       right={<Pill tone={o.healthy || o.already ? 'ok' : 'warn'}>{o.healthy || o.already ? 'Live' : 'Starting'}</Pill>}>
       <div className="space-y-2 text-[12.5px] text-ink-2">
+        {o.warning && <p className="rounded-[14px] bg-warn/10 px-3 py-2">{words(o.warning)}</p>}
         {o.firstVisit && <p className="rounded-[14px] bg-warn/10 px-3 py-2">{o.firstVisit}</p>}
         {o.credentials?.some((c: any) => c.saved) && <p><KeyRound size={13} className="mr-1 inline align-[-2px] text-muted" aria-hidden />{o.credentials.filter((c: any) => c.saved).map((c: any) => c.label).join(', ')} kept in your vault. Show them on Add to my server.</p>}
         {o.wire?.snippet && <div className="flex items-start gap-2 rounded-[12px] bg-[#111115] px-3 py-2"><code className="min-w-0 flex-1 break-all font-mono text-[11.5px] text-white/90">{o.wire.snippet}</code><CopyButton text={o.wire.snippet} className="text-white/60 hover:bg-white/10 hover:text-white" /></div>}

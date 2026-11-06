@@ -1,25 +1,25 @@
-// Add to my server (/add): a dozen tools a growing app needs, one click each, on the person's own server. Each card says
+// Add to my server (/add): the tools a growing app needs, one click each, on the person's own server, with search and shelves. Each card says
 // what it is in a line and what memory it needs against the server's free room; Install opens a centred pop-up (its
 // address, then the steps as they happen, then the moment it's live with what's left to do: the first sign-in, its keys
 // shown only on request, a snippet or settings for an app, and for Uptime Kuma the sites to watch).
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, ExternalLink, Eye, KeyRound, PackagePlus, Server, Trash2 } from 'lucide-react';
+import { Activity, ExternalLink, Eye, KeyRound, PackagePlus, SearchX, Server, Trash2 } from 'lucide-react';
 import { runTool, useApi, type ToolResult } from '../../lib/api';
 import { navigate, useQuery } from '../../lib/router';
 import { tidy } from '../../lib/words';
-import { Badge, Button, Card, ChipSelect, CopyButton, Empty, Field, HoldButton, HoverCard, Input, Modal, PageHeader, Select, Skeleton, Switch, cx, toast, Illustration } from '../../ui';
+import { Badge, Button, Card, ChipSelect, CopyButton, Empty, Field, HoldButton, HoverCard, Input, Modal, PageHeader, SearchInput, Select, Skeleton, Switch, Tabs, cx, toast, Illustration } from '../../ui';
 import { LogoTile, Menu } from '../kit';
 import { BrandLogo } from '../../brand/BrandLogo';
 import { LiveMoment, Note, RoomMeter, StepList, host, size, useSteps } from './parts';
 
 export interface AddonItem {
   id: string; name: string; logo: string; category: string; line: string; memoryMb: number; how: 'coolify' | 'unit7' | 'needs_coolify' | 'off';
-  suggest?: string; fits?: boolean; off?: string; instead?: string; installed: { url?: string; healthy: boolean | null; at: string; keys: number; gated?: boolean } | null;
+  group?: string; suggest?: string; fits?: boolean; off?: string; instead?: string; domainOnly?: string; warn?: string; unknown?: boolean; installed: { url?: string; healthy: boolean | null; at: string; keys: number; gated?: boolean } | null;
 }
-interface Catalog { servers: { id: string; name: string; coolify: boolean }[]; server?: { id: string; name: string; coolify: boolean }; freeMb?: number; root?: string; items: AddonItem[]; note?: string }
+interface Catalog { servers: { id: string; name: string; coolify: boolean }[]; server?: { id: string; name: string; coolify: boolean }; freeMb?: number; root?: string; items: AddonItem[]; note?: string; anyTemplateWarn?: string }
 export type Installed = {
   name: string; url?: string; healthy: boolean; status?: string; via: string; dns?: { written: boolean; at?: string; addThese?: { type: string; name: string; value: string }[] };
-  credentials: { label: string; saved: boolean }[]; credentialsNote?: string; firstVisit?: string; next?: string; gated?: boolean;
+  credentials: { label: string; saved: boolean }[]; credentialsNote?: string; firstVisit?: string; next?: string; gated?: boolean; warning?: string;
   wire?: { note: string; snippet?: string; env?: { key: string; value: string }[] }; monitors?: Monitored;
 };
 // Uptime Kuma's monitors after an install (uptime.sync): what it watches now, or the sites to add by hand
@@ -34,11 +34,20 @@ export function AddPage() {
   const [installing, setInstalling] = useState<AddonItem | null>(null);
   const [removing, setRemoving] = useState<AddonItem | null>(null);
   const [keys, setKeys] = useState<AddonItem | null>(null);
+  const [term, setTerm] = useState('');
+  const [shelf, setShelf] = useState('All');
   const load = () => runTool('addon.catalog', serverId ? { serverId } : {}).then((r) => { const o = outOf(r); if (o.ok) { setCat(o.ok); setErr(undefined); } else setErr(o.why); }, (e: Error) => setErr(e.message));
   useEffect(() => { void load(); }, [serverId]);
   const sid = cat?.server?.id;
   const ready = cat?.items ?? [];
   const installedCount = ready.filter((x) => x.installed).length;
+  const shelfOf = (a: AddonItem) => a.group ?? a.category;
+  const word = term.trim().toLowerCase();
+  // what can be added comes first; a search looks through every shelf
+  const rank = (a: AddonItem) => (a.how === 'off' ? 2 : a.how === 'needs_coolify' ? 1 : 0);
+  const shown = ready.filter((a) => (word ? `${a.name} ${a.category} ${shelfOf(a)} ${a.line}`.toLowerCase().includes(word) : shelf === 'All' || shelfOf(a) === shelf)).sort((x, y) => rank(x) - rank(y));
+  // no match, but it could be a key of Coolify's template list
+  const template = cat?.server?.coolify && /^[a-z0-9][a-z0-9-]{1,60}$/.test(word) ? word : undefined;
 
   return (
     <div>
@@ -54,15 +63,26 @@ export function AddPage() {
       {cat && !cat.server && <Empty art={<Illustration name="add-server" size={104} />} title="Connect a server first" body="The tools run on your server. Connect one and they’re a click away." action={<Button variant="primary" onClick={() => navigate('/servers')}>Go to Servers</Button>} />}
       {cat?.server && (
         <>
+          <div className="mb-5 space-y-3">
+            <SearchInput value={term} onChange={setTerm} placeholder="Search tools" label="Search tools" className="md:w-[320px]" />
+            {!word && <Tabs value={shelf} onChange={setShelf} tabs={['All', ...new Set(ready.map(shelfOf))].map((s) => ({ value: s, label: s }))} />}
+          </div>
           {installedCount > 0 && <p className="mb-3 text-[13px] text-muted">{installedCount} on {cat.server.name} already.</p>}
-          <ul className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-3 min-[105rem]:grid-cols-4">
-            {ready.map((a) => (
-              <li key={a.id} className="min-w-0">
-                <AddonCard a={a} free={cat.freeMb} onInstall={() => setInstalling(a)} onRemove={() => setRemoving(a)} onKeys={() => setKeys(a)} instead={ready.find((x) => x.id === a.instead)} onInstead={(x) => setInstalling(x)} />
-              </li>
-            ))}
-          </ul>
-          {!cat.server.coolify && <p className="mt-5 text-[12.5px] text-muted">{cat.server.name} has no Coolify connected, so Unit7 adds the one-container tools itself; the rest need Coolify.</p>}
+          {shown.length ? (
+            <ul className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-3 min-[105rem]:grid-cols-4">
+              {shown.map((a) => (
+                <li key={a.id} className="min-w-0">
+                  <AddonCard a={a} free={cat.freeMb} onInstall={() => setInstalling(a)} onRemove={() => setRemoving(a)} onKeys={() => setKeys(a)} instead={ready.find((x) => x.id === a.instead)} onInstead={(x) => setInstalling(x)} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Empty icon={<SearchX size={22} />} title={`Nothing called “${term.trim()}”`}
+              body={template ? 'It isn’t one of Unit7’s tools. If that’s the name of a Coolify template, Unit7 can still add it, with a warning.' : 'Try another word.'}
+              action={template && <Button variant="secondary" icon={<PackagePlus size={15} />} onClick={() => setInstalling({ id: template, name: template, logo: template, category: 'Coolify template', line: 'A Coolify template Unit7 doesn’t know', memoryMb: 0, how: 'coolify', unknown: true, warn: cat.anyTemplateWarn, installed: null })}>Add {template} from Coolify</Button>} />
+          )}
+          {cat.server.coolify ? <p className="mt-5 text-[12.5px] text-muted">Looking for something else? Search for any Coolify template by its name.</p>
+            : <p className="mt-5 text-[12.5px] text-muted">{cat.server.name} has no Coolify connected, so Unit7 adds the one-container tools itself; the rest need Coolify.</p>}
         </>
       )}
       {sid && installing && <InstallModal serverId={sid} server={cat!.server!.name} item={installing} freeMb={cat!.freeMb} open onClose={() => { setInstalling(null); void load(); }} />}
@@ -86,11 +106,11 @@ function AddonCard({ a, free, onInstall, onRemove, onKeys, instead, onInstead }:
       </div>
       <p className="mt-3 flex-1 text-[13.5px] leading-snug text-ink-2">{a.line}</p>
       <div className="mt-4 flex items-center gap-2">
-        <HoverCard content={<div className="w-[220px]"><RoomMeter needMb={a.memoryMb} freeMb={free} fits={a.fits} label="Uses about" /><p className="mt-2 text-[12px] text-muted">{a.how === 'coolify' ? 'Added as Coolify’s own one-click service.' : a.how === 'unit7' ? 'Unit7 runs it, with its own database.' : a.off}</p></div>}>
+        {a.memoryMb > 0 && <HoverCard content={<div className="w-[220px]"><RoomMeter needMb={a.memoryMb} freeMb={free} fits={a.fits} label="Uses about" /><p className="mt-2 text-[12px] text-muted">{a.how === 'coolify' ? 'Added as Coolify’s own one-click service.' : a.how === 'unit7' ? 'Unit7 runs it, with its own database.' : a.off}</p></div>}>
           <button type="button" className={cx('inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium tabular', a.fits === false ? 'bg-warn/12 text-warn' : 'bg-raised text-ink-2')}>
             <span aria-hidden className={cx('size-1.5 rounded-full', a.fits === false ? 'bg-[#f59e0b]' : 'bg-ok')} />{size(a.memoryMb)}{a.fits === false && <span className="sr-only">, more than the free room</span>}
           </button>
-        </HoverCard>
+        </HoverCard>}
         <span className="ml-auto flex items-center gap-1.5">
           {a.installed ? (
             <>
@@ -111,7 +131,7 @@ function AddonCard({ a, free, onInstall, onRemove, onKeys, instead, onInstead }:
 
 function InstallModal({ serverId, server, item: a, freeMb, open, onClose }: { serverId: string; server: string; item: AddonItem; freeMb?: number; open: boolean; onClose: () => void }) {
   const [domain, setDomain] = useState(a.suggest ?? '');
-  const [free, setFree] = useState(!a.suggest);
+  const [free, setFree] = useState(!a.suggest && !a.domainOnly);
   const [phase, setPhase] = useState<'ask' | 'running' | 'done' | 'failed'>('ask');
   const [out, setOut] = useState<Installed>();
   const [why, setWhy] = useState<{ why: string; approval?: boolean }>();
@@ -131,12 +151,15 @@ function InstallModal({ serverId, server, item: a, freeMb, open, onClose }: { se
             <LogoTile size={48}><BrandLogo id={a.logo} size={25} title={a.name} /></LogoTile>
             <div className="min-w-0"><p className="text-[14px] font-medium text-ink">{a.category}</p><p className="text-[13px] text-muted">{a.line}</p></div>
           </div>
-          <Field label="Its address" hint={free ? 'A free test address now; add your own domain any time.' : 'A subdomain of yours. Unit7 writes its DNS record where your domain lives, and HTTPS follows.'}>
-            <Input value={free ? '' : domain} disabled={free} placeholder={`${a.id === 'umami' ? 'analytics' : 'tools'}.example.com`} onChange={(e) => setDomain(e.target.value)} aria-invalid={!okName} />
-          </Field>
-          <label className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">Use a free test address instead<Switch checked={free} onChange={setFree} label="Use a free test address instead" /></label>
-          <RoomMeter needMb={a.memoryMb} freeMb={freeMb} fits={a.fits} label="Uses about" />
-          {a.fits === false && <Note tone="warn">{server} is short on free memory for this. It may still start, but things can get slow; a bigger server or one tool fewer helps.</Note>}
+          {!a.unknown && (
+            <Field label="Its address" hint={free ? 'A free test address now; add your own domain any time.' : a.domainOnly ?? 'A subdomain of yours. Unit7 writes its DNS record where your domain lives, and HTTPS follows.'}>
+              <Input value={free ? '' : domain} disabled={free} placeholder={`${a.id === 'umami' ? 'analytics' : 'tools'}.example.com`} onChange={(e) => setDomain(e.target.value)} aria-invalid={!okName} />
+            </Field>
+          )}
+          {!a.domainOnly && !a.unknown && <label className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">Use a free test address instead<Switch checked={free} onChange={setFree} label="Use a free test address instead" /></label>}
+          {a.memoryMb > 0 && <RoomMeter needMb={a.memoryMb} freeMb={freeMb} fits={a.fits} label="Uses about" />}
+          {a.fits === false && <Note tone="warn">{server} looks short on free memory for this. Unit7 checks again when you install, and won’t add it if it still doesn’t fit. A bigger server or one tool fewer helps.</Note>}
+          {a.warn && <Note tone="warn">{a.warn}</Note>}
           <div className="flex justify-end gap-2 border-t border-line pt-4">
             <Button variant="ghost" onClick={onClose}>Not now</Button>
             <Button variant="primary" icon={<PackagePlus size={15} />} disabled={!okName} onClick={go}>Install {a.name}</Button>
@@ -161,6 +184,7 @@ export function InstalledView({ a, out, serverId, onClose }: { a: Pick<AddonItem
     <LiveMoment title={out.healthy ? `${a.name} is live` : `${a.name} is starting`} url={out.url}>
       <div className="space-y-3">
         {out.next && <Note tone="warn">{out.next}</Note>}
+        {out.warning && <Note tone="warn">{out.warning}</Note>}
         {out.dns && !out.dns.written && out.dns.addThese && <Note tone="warn">Add this record where your domain’s DNS lives ({out.dns.at}): {out.dns.addThese.map((r) => `${r.type} ${r.name} → ${r.value}`).join(', ')}. Unit7 finishes by itself once it’s live.</Note>}
         {out.firstVisit && <Note tone={/first person/.test(out.firstVisit) ? 'warn' : 'neutral'}>{out.firstVisit}</Note>}
         {out.credentials.some((c) => c.saved) && <KeysInline serverId={serverId} addon={a.id} labels={out.credentials.filter((c) => c.saved).map((c) => c.label)} />}

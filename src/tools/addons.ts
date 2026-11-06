@@ -484,7 +484,7 @@ function catalogOf(ctx: Pick<Ctx, 'db' | 'orgId'>, s: ServerRow) {
   // templates outside the list that are on this server: shown too, so they can be seen and taken off
   const more = all<{ key: string }>(ctx.db, `SELECT key FROM made WHERE org_id = ? AND kind = 'addon' AND key LIKE ?`, ctx.orgId, `${s.id}:%`).map((r) => r.key.slice(s.id.length + 1)).filter((k) => byId(k).unknown).map(anyTemplate);
   return {
-    server: { id: s.id, name: s.name, coolify }, freeMb: room.mb, ...(room.at && { at: room.at }), root,
+    server: { id: s.id, name: s.name, coolify }, freeMb: room.mb, ...(room.at && { at: room.at }), root, anyTemplateWarn: UNKNOWN('it'),
     items: [...ADDONS, ...more].map((a) => {
       const had = madeGet<AddonMade>(ctx, 'addon', `${s.id}:${a.id}`);
       const how = a.off ? 'off' : coolify && a.template ? 'coolify' : a.unit7 ? 'unit7' : 'needs_coolify';
@@ -522,7 +522,7 @@ export async function installAddon(ctx: Ctx, a: Addon, i: { serverId: string; do
   if (i.domain) { checkHost(ctx, s.id, i.domain, had?.uuid); await mayTakeOver(i.domain, ipOf(s), i.takeover); }
   const c = coolifyAccount(ctx, s.id) && a.template ? coolifyFor(ctx, s) : undefined;
   // ponytail: no plain Docker Compose path: it would need each compose file, Coolify's generated values, a proxy route and a way to take it off
-  if (!c && !a.unit7) throw new Unit7Error('needs_coolify', `${a.name} ${a.unknown ? 'is a Coolify template' : 'has several parts'}, so Unit7 adds it through Coolify, and ${s.name} has none connected. Connect Coolify on ${s.name} (install it from coolify.io first if it isn’t there), or pick a server that has it. Without Coolify, Unit7 can only add Umami and Unleash.`, 409);
+  if (!c && !a.unit7) throw new Unit7Error('needs_coolify', `${a.name} ${a.unknown ? 'is a Coolify template' : 'has several parts'}, so Unit7 adds it through Coolify, and ${s.name} has none connected. Connect Coolify on ${s.name} (install Coolify there first if it isn’t on it), or pick a server that has it. Without Coolify, Unit7 can only add Umami and Unleash.`, 409);
   const free = await roomNow(ctx, s);
   if (free !== undefined && free - a.memoryMb < SPARE_MB) throw new Unit7Error('no_room', `${s.name} has ${free} MB of memory free. ${a.memoryMb ? `${a.name} needs about ${a.memoryMb} MB, and Unit7` : 'Unit7'} keeps ${SPARE_MB} MB free for the server itself, so it didn’t add ${a.name}. Stop something you don’t need, or move to a bigger server, then try again.`, 409);
   const cl = a.claim ?? {};

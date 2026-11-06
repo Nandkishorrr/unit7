@@ -375,7 +375,7 @@ test('no Coolify on the server: only Umami and Unleash go on, and the others say
     const m = (await o.h('addon.install', { serverId: srv, addon }) as any).error.message;
     assert.match(m, /through Coolify/);
     assert.match(m, /Connect Coolify on box/);
-    assert.match(m, /coolify\.io/);
+    assert.match(m, /install Coolify there first/);
     assert.match(m, /only add Umami and Unleash/);
   }
 });
