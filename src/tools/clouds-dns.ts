@@ -222,9 +222,10 @@ async function setPlan(ctx: Ctx, i: SetIn) {
   }
   const mode = i.mode ?? (['A', 'AAAA', 'CNAME'].includes(i.type) ? 'replace' : 'add');
   const kind = i.type === 'TXT' ? oneOnly(r.content) : undefined;
-  const going = (mode === 'replace' ? p.recs : kind ? p.recs.filter((x) => oneOnly(x.content) === kind) : []).filter((x) => x !== same);
+  // an MX to the same server at another priority is that record moving, not a second one
+  const going = (mode === 'replace' ? p.recs : kind ? p.recs.filter((x) => oneOnly(x.content) === kind) : i.type === 'MX' ? p.recs.filter((x) => alike(x.content)) : []).filter((x) => x !== same);
   const next: FullRec = { type: i.type, name: p.name, content: r.content, ...(r.priority !== undefined && { priority: r.priority }), ...(i.ttl && { ttl: i.ttl }), ...((i.proxied ?? going[0]?.proxied ?? same?.proxied) !== undefined && { proxied: i.proxied ?? going[0]?.proxied ?? same?.proxied }) };
-  const retime = !!same && i.ttl !== undefined && same.ttl !== i.ttl;
+  const retime = !!same && ((i.ttl !== undefined && same.ttl !== i.ttl) || (i.proxied !== undefined && same.proxied !== i.proxied));
   const nothing = !!same && !going.length && !retime;
   const cons = going.length ? consequences(ctx, p.name, p.zone, i.type, going) : { stops: [] as string[], email: false };
   const stops = i.type === 'MX' && going.length ? [`Email to addresses @${p.name} stops going to ${going.map((x) => x.content).join(', ')} and goes to ${r.content}`] : cons.stops;

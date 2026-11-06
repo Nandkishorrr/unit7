@@ -11,7 +11,7 @@ import { serverRow } from './servers.ts';
 import { assertReachable } from '../netguard.ts';
 import { REDIRECT_PATH, REDIRECT_TO, assertHostname, proxyFor, putSite, putTraefikRedirects, removeSite, type Redirect, type Site } from '../deploy/caddy.ts';
 import { replicaNames, routeService, type ServiceConfig, type ServiceRow } from '../deploy/deployer.ts';
-import { DNS_ACCOUNT, EDITORS, swapRecords, writeRecords, type FullRec, type Rec } from '../connectors/dnswrite.ts';
+import { DNS_ACCOUNT, putBack, writeRecords, type Rec, type WriteUndo } from '../connectors/dnswrite.ts';
 import { proxyFacts } from '../connectors/coolify.ts';
 import { vercel } from '../connectors/clouds.ts';
 import type { ServerRow } from '../connectors/ssh.ts';
@@ -73,11 +73,12 @@ const saveList = (ctx: Ctx, r: DomRow, list: Redirect[]) => { const { redirects:
 const NO_SETTING: Record<string, string> = { netlify: 'Netlify', render: 'Render', railway: 'Railway', heroku: 'Heroku', fly: 'Fly.io', supabase: 'Supabase', pages: 'Cloudflare Pages', hostinger: 'Hostinger', addon: 'This tool' };
 function placeOf(ctx: Ctx, host: string, serverId?: string) {
   const row = rowOf(ctx, host), t = targetIn(row);
-  if (t.kind === 'vercel' && !serverId) return { row, t, s: undefined };
-  if (t.kind && NO_SETTING[t.kind] && !serverId) throw new Unit7Error('unsupported', `${NO_SETTING[t.kind]} has no redirect setting Unit7 can use for ${host}. Your app can send visitors there itself, or point ${host} at one of your servers first.`, 400);
+  if (t.kind === 'vercel') return { row, t, s: undefined };
+  if (t.kind && NO_SETTING[t.kind]) throw new Unit7Error('unsupported', `${NO_SETTING[t.kind]} has no redirect setting Unit7 can use for ${host}. Your app can send visitors there itself, or point ${host} at one of your servers first.`, 400);
   const own = row?.service_id ? get<{ server_id: string | null }>(ctx.db, 'SELECT server_id FROM services WHERE id = ?', row.service_id)?.server_id : undefined;
-  const servers = all<{ id: string }>(ctx.db, 'SELECT id FROM servers WHERE org_id = ?', ctx.orgId);
-  const id = serverId ?? t.serverId ?? own ?? (servers.length === 1 ? servers[0]!.id : undefined);
+  const servers = all<{ id: string }>(ctx.db, 'SELECT id FROM servers WHERE org_id = ?', ctx.orgId), known = t.serverId ?? own ?? undefined;
+  if (serverId && known && known !== serverId) throw new Unit7Error('other_server', `${host} points at another server. Point it at that one first (domain.point), then add the redirect.`, 409);
+  const id = serverId ?? known ?? (servers.length === 1 ? servers[0]!.id : undefined);
   if (!id) throw new Unit7Error('which_server', `Which server should answer ${host}? Give serverId.`, 400);
   const s = serverRow(ctx, id), proxy = proxyFor(s);
   if (proxy.kind === 'other') throw new Unit7Error('proxy_taken', `${s.name}’s web ports (80 and 443) belong to ${proxy.name}, so Unit7 can’t put a redirect there.`, 409);
@@ -114,7 +115,7 @@ async function answersWith(host: string, path: string | undefined, to: string, k
   } catch { return { answered: false, ok: false }; }
 }
 
-interface RedirectUndo { host: string; path?: string; serverId?: string; before: Redirect[]; hadRow: boolean; target?: string | null; vercel?: { accountId: string; project: string; team?: string; to: string | null; code: number | null }; dns?: { provider: string; accountId: string; zone: string; added: FullRec[]; before: FullRec[] } }
+interface RedirectUndo { host: string; path?: string; serverId?: string; before: Redirect[]; hadRow: boolean; target?: string | null; vercel?: { accountId: string; project: string; team?: string; to: string | null; code: number | null }; dns?: WriteUndo }
 
 // a domain.canonical on a Coolify app: the other name sends visitors to the main one; the main one stops sending anywhere
 export async function canonicalOnCoolify(ctx: Ctx, serverId: string, main: string, other: string) {
@@ -168,7 +169,7 @@ async function setRedirect(ctx: Ctx, i: In) {
   const { row, t, s } = placeOf(ctx, host, i.serverId);
   const whole = `${host}${path ?? ''}`;
   // a name serving an app isn't taken over by an AI: the same rule as domain.point
-  if (isAgent(ctx) && !path && !i.remove && (row?.service_id || (t.kind && t.kind !== 'redirect' && t.kind !== 'server'))) throw forbidden(`${host} opens an app right now. A person can make it send visitors to ${to}.`);
+  if (isAgent(ctx) && !path && !i.remove && row && t.kind !== 'redirect') throw forbidden(`${host} opens something right now. A person can make it send visitors to ${to}.`);
 
   if (!s) { // Vercel: one domain to another on the same project; it keeps the page by itself
     if (path || !i.keepPath) throw new Unit7Error('unsupported', `Vercel’s domain redirect moves a whole domain and keeps the page. For ${path ? 'one path' : 'anything else'}, add a redirect to vercel.json in the app.`, 400);
@@ -209,6 +210,7 @@ async function setRedirect(ctx: Ctx, i: In) {
   ctx.progress(i.remove ? `Taking the redirect off ${whole}…` : `Sending ${whole} to ${to}…`);
   try { await apply(ctx, s, host, list, fresh); } catch (e) {
     if (row) run(ctx.db, 'UPDATE domains SET target = ? WHERE id = ?', row.target, row.id); else run(ctx.db, 'DELETE FROM domains WHERE hostname = ? AND org_id = ?', host, ctx.orgId);
+    if (undo.dns) await putBack(ctx, undo.dns).catch(() => undefined);
     throw e;
   }
   const summary = i.remove ? `${whole} stopped sending visitors elsewhere` : `${whole} now sends visitors to ${to}`;
@@ -229,7 +231,6 @@ CHANGE_UNDO['domain.redirect'] = async (ctx, ch) => {
   if (u.hadRow && row) run(ctx.db, 'UPDATE domains SET target = ? WHERE id = ?', u.target ?? null, row.id);
   await apply(ctx, s, u.host, u.before, u.hadRow ? rowOf(ctx, u.host) : undefined);
   if (!u.hadRow) run(ctx.db, 'DELETE FROM domains WHERE hostname = ? AND org_id = ?', u.host, ctx.orgId);
-  const ed = u.dns && EDITORS[u.dns.provider];
-  if (u.dns && ed) await swapRecords(ctx, ed, u.dns.accountId, u.dns.zone, { name: u.host, type: 'A' }, u.dns.added.filter((a) => !u.dns!.before.some((b) => b.content === a.content)), u.dns.before.filter((b) => !u.dns!.added.some((a) => a.content === b.content)));
+  if (u.dns) await putBack(ctx, u.dns);
   return { restored: u.host };
 };

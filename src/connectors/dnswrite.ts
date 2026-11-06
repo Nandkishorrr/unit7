@@ -52,6 +52,7 @@ export async function rest<T = any>(who: string, url: string, init: { method?: s
   const text = await res.text();
   let data: any = {};
   try { data = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+  if (who === 'GoDaddy' && res.status === 403) throw new Unit7Error('dns_error', 'GoDaddy refused this key. It limits its DNS API by account (how many domains, or a paid plan), so a good key can still be refused. Ask GoDaddy about API access, or move this domain’s DNS to Cloudflare (free; Unit7 can do it).', 403);
   if (!res.ok || data?.status === 'ERROR') throw new Unit7Error('dns_error', `${who}: ${data?.message ?? data?.error?.message ?? data?.id ?? res.statusText ?? res.status}`.slice(0, 300), res.status === 403 || res.status === 401 ? 403 : 502);
   return data as T;
 }
@@ -257,13 +258,27 @@ const subName = (name: string, zone: string) => sub(fq(name, zone), zone);
 const quoted = (s: string) => (/^".*"$/s.test(s) ? s : `"${s.replace(/"/g, '\\"')}"`);
 const unquoted = (s: string) => s.replace(/^"((?:[^"\\]|\\.)*)"(\s+"((?:[^"\\]|\\.)*)")*$/s, (m) => [...m.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) => x[1]!.replace(/\\"/g, '"')).join(''));
 // One name + type moves to other records with nothing left unanswered: the new ones go in first, then the old ones go.
-// A CNAME can't stand next to anything, so there the old one goes first and comes back if the new one fails.
+// A CNAME can't stand next to anything, and the same value can't stand next to itself (a new TTL, the orange cloud), so
+// there the old one goes first and comes back if the new one fails.
 const valueOf = (r: FullRec) => (r.priority !== undefined ? `${r.priority} ${r.content}` : r.content);
 export async function swapRecords(ctx: Ctx, ed: Editor, acc: string, zone: string, q: { name: string; type: string }, old: FullRec[], next: FullRec[]) {
   const drop = async () => { for (const r of old) await ed.del(ctx, acc, zone, { name: q.name, type: q.type, value: valueOf(r) }); };
-  if (q.type !== 'CNAME') { for (const r of next) await ed.add(ctx, acc, zone, r); return drop(); }
+  const first = q.type === 'CNAME' || old.some((o) => next.some((n) => normValue(n.content) === normValue(o.content)));
+  if (!first) { for (const r of next) await ed.add(ctx, acc, zone, r); return drop(); }
   await drop();
   try { for (const r of next) await ed.add(ctx, acc, zone, r); } catch (e) { for (const r of old) await ed.add(ctx, acc, zone, r).catch(() => undefined); throw e; }
+}
+
+// names back to what they said before a write (writeRecords' before): only what differs moves
+export interface WriteUndo { provider: string; accountId: string; zone: string; added: FullRec[]; before: FullRec[] }
+export async function putBack(ctx: Ctx, d: WriteUndo) {
+  const ed = EDITORS[d.provider];
+  if (!ed) return;
+  const same = (a: FullRec, b: FullRec) => a.content.replace(/\.$/, '') === b.content.replace(/\.$/, '');
+  for (const name of new Set(d.added.map((r) => r.name))) {
+    const added = d.added.filter((r) => r.name === name), old = d.before.filter((r) => r.name === name);
+    await swapRecords(ctx, ed, d.accountId, d.zone, { name, type: added[0]!.type }, added.filter((a) => !old.some((b) => same(a, b))), old.filter((b) => !added.some((a) => same(a, b))));
+  }
 }
 
 // "Ids" each host gives its records, kept next to the record while deleting

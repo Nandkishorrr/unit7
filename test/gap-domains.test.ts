@@ -210,6 +210,18 @@ test('the shapes each registrar wants: GoDaddy’s SRV fields, Porkbun’s and N
   } finally { a1.close(); a2.close(); a3.close(); offs.forEach((f) => f()); restore(); }
 });
 
+test('GoDaddy refusing a good key says why that happens and what else there is', async () => {
+  const api = await fakeApi(() => [403, { code: 'ACCESS_DENIED', message: 'Authenticated user is not allowed access' }]);
+  const off = setEnv('UNIT7_GODADDY_API', api.base);
+  dnsAt('godaddy');
+  try {
+    const app = testApp(), o = await testOrg(app);
+    account(app, o.orgId, 'godaddy', 'gd-pat-token-123456');
+    assert.match(failed(await o.h('dns.list', { domain: 'example.com' })).message, /limits its DNS API by account.*Cloudflare/);
+    assert.match(failed(await o.h('dns.set', { domain: 'example.com', name: 'www', type: 'A', value: '203.0.113.1' })).message, /limits its DNS API by account/);
+  } finally { api.close(); off(); restore(); }
+});
+
 test('SPF and DMARC: a second one would break both, so a new one takes the old one’s place, and only with a yes', async () => {
   const rows = REGISTRARS[0]!.rows();
   const api = await fakeApi(godaddyFake(rows) as never);
@@ -302,6 +314,16 @@ test('Cloudflare: SRV and CAA go as fields, read back as one line, and a replace
     assert.deepEqual(l.filter((r: any) => r.type === 'SRV' || r.type === 'CAA').map((r: any) => r.value), ['10 5 5060 sip.example.net', '0 issue "letsencrypt.org"']);
     ok(await o.h('dns.set', { domain: 'example.com', name: 'app', type: 'A', value: '203.0.113.2' }));
     assert.deepEqual(cf.recs.filter((r) => r.name === 'app.example.com').map((r) => [r.content, r.proxied]), [['203.0.113.2', true]]);
+    // the same value with something else changed: the orange cloud off, a new TTL; never lost on the way
+    ok(await o.h('dns.set', { domain: 'example.com', name: 'app', type: 'A', value: '203.0.113.2', proxied: false }));
+    assert.deepEqual(cf.recs.filter((r) => r.name === 'app.example.com').map((r) => [r.content, r.proxied]), [['203.0.113.2', false]]);
+    ok(await o.h('dns.set', { domain: 'example.com', name: 'app', type: 'A', value: '203.0.113.2', ttl: 3600 }));
+    assert.deepEqual(cf.recs.filter((r) => r.name === 'app.example.com').map((r) => [r.content, r.ttl]), [['203.0.113.2', 3600]]);
+    // the same mail server at another priority is that record moving: never two of it
+    ok(await o.h('dns.set', { domain: 'example.com', name: '@', type: 'MX', value: 'mx9.example.net', priority: 10 }));
+    ok(await o.h('dns.set', { domain: 'example.com', name: '@', type: 'MX', value: 'mx9.example.net', priority: 30, breakEmail: true }));
+    assert.deepEqual(cf.recs.filter((r) => r.type === 'MX').map((r) => [r.content, r.priority]), [['mx9.example.net', 30]]);
+    cf.recs.splice(cf.recs.findIndex((r) => r.type === 'MX'), 1);
     // a CNAME over an A: refused in words, not by the provider's error
     const clash = failed(await o.h('dns.set', { domain: 'example.com', name: 'app', type: 'CNAME', value: 'x.example.net' }));
     assert.equal(clash.code, 'dns_clash');
@@ -511,6 +533,13 @@ test('a Coolify app in one step: the name on the app, DNS, a restart, HTTPS chec
     assert.equal(f.box.restarts, 2);
     assert.deepEqual(cf.recs.map((x) => [x.name, x.content]), [['app.example.com', '198.51.100.7']]);
     assert.equal(domainRow(f.app, 'app.example.com'), undefined);
+
+    // a name Unit7 already knew comes back as it was, not gone
+    run(f.app.db, `INSERT INTO domains (id, org_id, hostname, status, tls, target, records) VALUES (?, ?, 'known.example.com', 'active', 'active', ?, '[]')`, id('dom'), f.o.orgId, JSON.stringify({ kind: 'netlify', accountId: 'acc_aaaaaaaaaaaa', site: 's' }));
+    const moved = ok(await f.o.h('domain.point', { hostname: 'known.example.com', coolify: f.point }));
+    assert.equal(json<any>(domainRow(f.app, 'known.example.com')!.target, {}).kind, 'coolify');
+    ok(await f.o.h('change.undo', { changeId: moved.changeId }));
+    assert.deepEqual([json<any>(domainRow(f.app, 'known.example.com')!.target, {}).kind, domainRow(f.app, 'known.example.com')!.status], ['netlify', 'active']);
   } finally { cf.close(); restore(); }
 });
 
@@ -768,9 +797,14 @@ test('domain.redirect refuses a Coolify proxy that wouldn’t read it, and an AI
     answering();
     ok(await f.o.h('domain.redirect', { from: 'app.example.com', to: 'https://new.example.net' }));
     ok(await f.o.a('domain.redirect', { from: 'app.example.com/old', to: 'https://new.example.net/x' }));
-    // hosts with no setting for it say so
+    // hosts with no setting for it say so, a server given or not
     run(f.app.db, `INSERT INTO domains (id, org_id, hostname, status, tls, target) VALUES (?, ?, 'r.example.com', 'active', 'active', ?)`, id('dom'), f.o.orgId, JSON.stringify({ kind: 'render', accountId: 'acc_aaaaaaaaaaaa', service: 's' }));
     assert.match(failed(await f.o.h('domain.redirect', { from: 'r.example.com', to: 'https://new.example.net' })).message, /Render has no redirect setting/);
+    assert.match(failed(await f.o.h('domain.redirect', { from: 'r.example.com', to: 'https://new.example.net', serverId: f.srv })).message, /Render has no redirect setting/);
+    // a name on one server isn't quietly redirected from another
+    const other = id('srv');
+    run(f.app.db, `INSERT INTO servers (id, org_id, name, host, username, key_ref, status, facts) VALUES (?, ?, 'two', '203.0.113.10', 'root', 'credential://ssh/two/k', 'ready', '{"web":"unit7-caddy|caddy:2.11"}')`, other, f.o.orgId);
+    assert.equal(failed(await f.o.h('domain.redirect', { from: 'app.example.com/x', to: 'https://new.example.net', serverId: other })).code, 'other_server');
   } finally { cf.close(); restore(); }
 });
 
@@ -826,6 +860,11 @@ test('domain.redirect on Unit7’s own Caddy: a path next to the app, kept by th
     assert.equal((await bad.o.h('domain.redirect', { from: 'shop.example.com/old', to: 'https://shop.example.com/new' })).status, 'error');
     assert.equal(json<any>(domainRow(bad.app, 'shop.example.com')!.target, {}).redirects, undefined);
     assert.ok(bad.seen.some((c) => c.includes('mv -f "$1.prev" "$1"') || c.includes('rm -f "$1"')), 'the working site is put back');
+    // a name new to Unit7: its DNS goes back too, and nothing stays half done
+    cf.recs.push({ id: 'was', type: 'A', name: 'gone.example.com', content: '198.51.100.7', ttl: 300, proxied: false });
+    assert.equal((await bad.o.h('domain.redirect', { from: 'gone.example.com', to: 'https://new.example.net', serverId: bad.srv })).status, 'error');
+    assert.deepEqual(cf.recs.filter((x) => x.name === 'gone.example.com').map((x) => x.content), ['198.51.100.7']);
+    assert.equal(domainRow(bad.app, 'gone.example.com'), undefined);
   } finally { cf.close(); restore(); }
 });
 

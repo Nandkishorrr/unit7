@@ -8,7 +8,7 @@ import { Unit7Error } from '../errors.ts';
 import { serverRow } from './servers.ts';
 import { removeSite, assertHostname, proxyFor } from '../deploy/caddy.ts';
 import { cloudflare } from '../connectors/cloudflare.ts';
-import { writeRecords, LISTERS, NAMESERVERS, EDITORS, swapRecords, rest, NAMECOM, nc, type Rec, type WriteResult, type FullRec } from '../connectors/dnswrite.ts';
+import { writeRecords, LISTERS, NAMESERVERS, putBack, rest, NAMECOM, nc, type Rec, type WriteResult, type WriteUndo, type FullRec } from '../connectors/dnswrite.ts';
 import { hostinger } from '../connectors/hostinger.ts';
 import { vercel, supabase } from '../connectors/clouds.ts';
 import { netlify, render, railway, heroku, fly } from '../connectors/hosts.ts';
@@ -104,21 +104,15 @@ export const needsYou = (w: WriteResult, records: Rec[]) => ({
 export const pointing = { pollMs: 15_000, waitMs: 3 * 60_000 }; // tests shorten these
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((r, j) => { const t = setTimeout(r, ms); signal?.addEventListener('abort', () => { clearTimeout(t); j(signal.reason); }, { once: true }); });
 type CoolifyPoint = z.infer<typeof coolifyTarget>;
-interface PointUndo { coolify: CoolifyPoint; hostname: string; before: string[]; changed: boolean; wild: string[]; dns?: { provider: string; accountId: string; zone: string; added: Rec[]; before: FullRec[] } }
+interface PointUndo { coolify: CoolifyPoint; hostname: string; before: string[]; changed: boolean; wild: string[]; dns?: WriteUndo; row?: { service_id: string | null; target: string | null; records: string | null; status: string; tls_mode: string | null } }
 async function undoPoint(ctx: Ctx, u: PointUndo, restart: boolean) {
   const s = serverRow(ctx, u.coolify.serverId), { api } = need(ctx, s);
   for (const h of u.wild) await removeSite(ctx.app, s, h);
   if (u.changed) await setDomains(ctx, api, s, { ...u.coolify, domains: u.before, replace: true, exact: true });
-  const ed = u.dns && EDITORS[u.dns.provider];
-  if (u.dns && ed) {
-    const same = (a: { content: string }, b: { content: string }) => a.content.replace(/\.$/, '') === b.content.replace(/\.$/, '');
-    for (const name of new Set(u.dns.added.map((r) => r.name))) {
-      const added = u.dns.added.filter((r) => r.name === name), old = u.dns.before.filter((r) => r.name === name);
-      await swapRecords(ctx, ed, u.dns.accountId, u.dns.zone, { name, type: 'A' }, added.filter((a) => !old.some((b) => same(a, b))), old.filter((b) => !added.some((a) => same(a, b))));
-    }
-  }
+  if (u.dns) await putBack(ctx, u.dns);
   if (restart && u.changed) await act(ctx, api, { uuid: u.coolify.uuid, kind: u.coolify.kind, action: 'restart' });
-  run(ctx.db, 'DELETE FROM domains WHERE hostname = ? AND org_id = ?', u.hostname, ctx.orgId);
+  if (u.row) run(ctx.db, 'UPDATE domains SET service_id = ?, target = ?, records = ?, status = ?, tls_mode = ? WHERE hostname = ? AND org_id = ?', u.row.service_id, u.row.target, u.row.records, u.row.status, u.row.tls_mode, u.hostname, ctx.orgId);
+  else run(ctx.db, 'DELETE FROM domains WHERE hostname = ? AND org_id = ?', u.hostname, ctx.orgId);
 }
 CHANGE_UNDO['domain.point'] = async (ctx, ch) => {
   const u = json<PointUndo>(ch.undo, {} as PointUndo);
@@ -133,7 +127,8 @@ async function pointCoolify(ctx: Ctx, hostname: string, t: CoolifyPoint, prefer:
   const records: Rec[] = names.map((name) => ({ type: 'A', name, content: ip }));
   ctx.progress(`Adding ${hostname} to the app in Coolify…`);
   const set = await setDomains(ctx, api, s, { uuid: t.uuid, kind: t.kind, part: t.part, domains: names });
-  const undo: PointUndo = { coolify: t, hostname, before: set.before, changed: set.changed, wild: set.wild };
+  const row = get<NonNullable<PointUndo['row']>>(ctx.db, 'SELECT service_id, target, records, status, tls_mode FROM domains WHERE hostname = ? AND org_id = ?', hostname, ctx.orgId);
+  const undo: PointUndo = { coolify: t, hostname, before: set.before, changed: set.changed, wild: set.wild, ...(row && { row }) };
   ctx.progress(`Finding where ${hostname}'s DNS lives…`);
   let w: WriteResult;
   try { w = await writeRecords(ctx, hostname, records, { ...prefer, keep: true }); } catch (e) { await undoPoint(ctx, undo, false).catch(() => undefined); throw e; }
