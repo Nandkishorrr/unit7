@@ -59,6 +59,7 @@ Unit7 can use an AI you connect: an API key, a local model, or your own signed-i
 - Unit7 never removes its own key or the last working key on a server. Key changes update the break-in baseline line by line. server.move only reads the old server, apart from a fresh backup file.
 - Hostinger deploys overwrite with no undo: a site with content needs update, an AI needs a person, and WordPress, Builder and Horizons sites are refused. Uploads to Hostinger and servers are repacked from checked files, so left-out keys never leave.
 - Your GitHub token goes to Azure or AWS only to connect your repo. A key in finished files stops publishing.
+- A dropped ZIP is never trusted: paths leaving the site stop it, links are dropped, and bytes are counted as they unpack. An AI hears an upload’s id, name and stack, never a path.
 
 ## Licence promise
 

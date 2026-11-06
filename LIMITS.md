@@ -61,6 +61,8 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Fly needs a ready image or a copy of an app. Cloud Run needs a gcloud sign-in and uses us-central1. Render, Railway, DigitalOcean and Amplify builds need their GitHub app connected once in a browser.
 
+- A dropped site: 100 MB sent, 90 MB packed, 1 GB unpacked, 20,000 files. No ZIP64 or password-protected ZIPs.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

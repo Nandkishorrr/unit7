@@ -68,7 +68,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 48. Coolify: coolify_auto_deploy (deploy on push), coolify_previews, coolify_storage, coolify_scale. project_list and graph_get show its projects with an ast_ id, which project_readiness, project_passport and client_assign accept.
 49. Server care: server_snapshot, server_open_port, server_ssh_keys, server_users, server_resize, server_move_plan. Buying, plan changes and deleting are people only: send the person to the server’s Advanced tab.
 50. live_put also takes netlify, cloudflare-pages, github-pages, hostinger and server. On hostinger, domain picks the website.
-51. A live_options place with costs is for a person to start: tell them, don’t retry.`;
+51. A live_options place with costs is for a person to start: tell them, don’t retry.
+52. In Unit7’s ask box, to put something live: ui_folder or a repo, then live_options, then live_put. You never choose a path.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).
