@@ -3,6 +3,9 @@
 // with its undo and its approval, and an AI never gets near an SMTP password.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { fakeApi, account } from './clouds-fakes.ts';
 import { COOLIFY_HOST } from './xray-fixtures.ts';
@@ -10,8 +13,11 @@ import { all, id, run } from '../src/db.ts';
 import type { App } from '../src/app.ts';
 import { CURL, coolifyTiming } from '../src/connectors/coolify.ts';
 import { dnsLook } from '../src/connectors/dnswrite.ts';
+import { packFolder, saveUpload } from '../src/connectors/folder.ts';
 import { ssh, type ExecOptions } from '../src/connectors/ssh.ts';
-import { buildInventory } from '../src/discovery/xray.ts';
+import { envRefs } from '../src/discovery/model.ts';
+import { buildInventory, type Inventory } from '../src/discovery/xray.ts';
+import { addHost } from '../src/live/hosts.ts';
 import { dnsHostFromNs, isSpf, mailHost, mergeSpf, spfAdvice, spfKeeps, spfLookups } from '../src/connectors/dnsinfo.ts';
 import { CATALOG } from '../src/connectors/oneclick.ts';
 import { dkimWord, isDkimKey } from '../src/sentinel/watch.ts';
@@ -516,11 +522,12 @@ function standIn(app: App, o: { appEnvs?: Record<string, string>; hardWired?: st
   };
   return { envs, live, seen };
 }
-function onServer(host = COOLIFY_HOST) {
+function onServer(host = COOLIFY_HOST, change?: (inv: Inventory) => void) {
   return (async () => {
-    const app = testApp(), o = await testOrg(app), srv = id('srv');
+    const app = testApp(), o = await testOrg(app), srv = id('srv'), inv = buildInventory(host);
+    change?.(inv);
     run(app.db, `INSERT INTO servers (id, org_id, name, host, username, key_ref, status, facts) VALUES (?, ?, 'box', '203.0.113.9', 'root', 'credential://ssh/box/private-key', 'ready', ?)`, srv, o.orgId, JSON.stringify({ sudo: 'root' }));
-    saveXray(app.db, o.orgId, srv, 'fast', buildInventory(host));
+    saveXray(app.db, o.orgId, srv, 'fast', inv);
     const coolify = account(app, o.orgId, 'coolify', '3|unit7testtokenAbC123xyz', 'Coolify on box');
     run(app.db, `UPDATE accounts SET meta = json_set(meta, '$.serverId', ?, '$.facts', json(?)) WHERE id = ?`, srv, JSON.stringify({ abilities: ['read', 'write', 'deploy'] }), coolify);
     app.vault.put(o.orgId, 'credential://smtp/example-com/password', PASSWORD, { kind: 'smtp', meta: { host: 'smtp.mailhost.example', port: 2525, user: 'mailer', from: 'hello@example.com', via: 'your SMTP host' } });
@@ -611,13 +618,15 @@ test('email.connect_app into self-hosted Supabase: GOTRUE_SMTP settings by the s
 
 async function hostedSupabase(auth: Record<string, unknown>) {
   const st = { auth };
+  const f = { st, custom: undefined as unknown, projects: [] as unknown[] };
   const api = await fakeApi(({ method, path, body }) => {
+    if (path === '/v1/projects') return f.projects;
     if (path === `/v1/projects/${REF}/config/auth` && method === 'GET') return st.auth;
     if (path === `/v1/projects/${REF}/config/auth` && method === 'PATCH') { Object.assign(st.auth, JSON.parse(body)); return st.auth; }
-    if (path === `/v1/projects/${REF}/custom-hostname`) return [404, { message: 'none' }];
+    if (path === `/v1/projects/${REF}/custom-hostname`) return f.custom ?? [404, { message: 'none' }];
   });
   const off = setEnv('UNIT7_SUPABASE_API', `${api.base}/v1`);
-  return { st, api, close: () => { api.close(); off(); } };
+  return Object.assign(f, { api, close: () => { api.close(); off(); } });
 }
 
 test('email.connect_app into hosted Supabase: through supabase.auth, with the sender’s limits said, and an existing sender kept unless replaced', async () => {
@@ -801,6 +810,201 @@ test('email.forward says what to do where it can’t: another DNS host, no accou
     assert.match(failed(await f.o.h('email.forward', { from: 'hello@mail.example.com', to: 'me@inbox.example' })).message, /on example\.com itself/);
   } finally { f.close(); }
   assert.match(decodeURIComponent(CATALOG.find((p) => p.id === 'cloudflare')!.method.kind === 'key' ? (CATALOG.find((p) => p.id === 'cloudflare')!.method as { keyUrl: string }).keyUrl : ''), /email_routing_rule/, 'a new key can do this');
+});
+
+// --- auth.urls: login on a real domain ----------------------------------------------------------------------------------------
+test('auth.urls on a hosted project: the new address, every old one kept, what to paste at Google, and an AI waits', async () => {
+  const s = await hostedSupabase({ site_url: 'https://shop-abc.vercel.app', uri_allow_list: 'http://localhost:3000/**,https://staging.example.com/**', external_google_enabled: true, external_github_enabled: false });
+  try {
+    const app = testApp(), o = await testOrg(app);
+    account(app, o.orgId, 'supabase', `sbp_${'a1'.repeat(20)}`, 'Supabase');
+    const dry = (await o.h('auth.urls', { ref: REF, url: 'app.example.com' }, { dryRun: true }) as any).plan;
+    assert.equal(dry.site, 'https://app.example.com', 'a bare domain is fine');
+    assert.deepEqual(dry.addedToAllowed, ['https://shop-abc.vercel.app/**', 'https://app.example.com/**']);
+    assert.equal(s.st.auth.site_url, 'https://shop-abc.vercel.app', 'a dry run changes nothing');
+
+    const asked = ok(await o.a('auth.urls', { ref: REF, url: 'https://app.example.com/dashboard' }));
+    assert.equal(asked.changed, false);
+    assert.match(asked.waiting, /Approvals/);
+    assert.equal(asked.byHand.length, 1, 'what’s by hand is said either way');
+    const card = all<{ id: string }>(app.db, `SELECT id FROM approvals WHERE tool = 'supabase.auth' AND status = 'pending'`)[0]!;
+    assert.equal((await decideApproval(app, o.orgId, o.human, card.id, true)).status, 'ok');
+    assert.equal(s.st.auth.site_url, 'https://app.example.com');
+    assert.equal(s.st.auth.uri_allow_list, 'http://localhost:3000/**,https://staging.example.com/**,https://shop-abc.vercel.app/**,https://app.example.com/**');
+
+    const after = ok(await o.h('auth.urls', { ref: REF, url: 'https://app.example.com' }));
+    assert.equal(after.changed, false, 'already right');
+    assert.equal(after.callback, `https://${REF}.supabase.co/auth/v1/callback`);
+    assert.deepEqual(after.byHand.map((b: any) => b.where), ['Google sign-in'], 'only what’s turned on');
+    assert.deepEqual(after.byHand[0].paste, { origin: 'https://app.example.com', redirect: `https://${REF}.supabase.co/auth/v1/callback` });
+    assert.match(after.byHand[0].open, /console\.cloud\.google\.com/);
+
+    s.st.auth.external_github_enabled = true;
+    s.st.auth.site_url = 'https://old.example.com';
+    const moved = ok(await o.h('auth.urls', { ref: REF, url: 'https://new.example.com' }));
+    assert.equal(moved.changed, true);
+    assert.deepEqual(moved.byHand.map((b: any) => Object.keys(b.paste)), [['origin', 'redirect'], ['homepage', 'callback']]);
+    ok(await o.h('change.undo', { changeId: moved.changeId }));
+    assert.equal(s.st.auth.site_url, 'https://old.example.com');
+
+    assert.equal(failed(await o.h('auth.urls', { ref: REF, url: 'https://x.example.com', apiUrl: 'https://api.example.com' })).code, 'invalid_input', 'a hosted API address is Supabase’s');
+    assert.equal(failed(await o.h('auth.urls', { ref: REF, url: 'ftp://x.example.com' })).code, 'invalid_input');
+    assert.equal(failed(await o.h('supabase.auth', { ref: REF, op: 'set', apiUrl: 'https://api.example.com' })).code, 'invalid_input');
+  } finally { s.close(); }
+});
+
+test('auth.urls on a custom API domain: the callback to paste is that one', async () => {
+  const s = await hostedSupabase({ site_url: '', uri_allow_list: '', external_google_enabled: true });
+  try {
+    s.custom = { status: '5_services_reconfigured', custom_hostname: 'api.example.com' };
+    const app = testApp(), o = await testOrg(app);
+    account(app, o.orgId, 'supabase', `sbp_${'a1'.repeat(20)}`, 'Supabase');
+    assert.equal(ok(await o.h('auth.urls', { ref: REF, url: 'https://app.example.com' })).callback, 'https://api.example.com/auth/v1/callback');
+  } finally { s.close(); }
+});
+
+test('auth.urls on a self-hosted stack: GOTRUE_SITE_URL, the allow list and API_EXTERNAL_URL, a redeploy, and a Compose file that holds them', async () => {
+  const { app, o, srv } = await onServer(), c = standIn(app);
+  const r = ok(await o.h('auth.urls', { serverId: srv, part: 'shop-supabase', url: 'https://shop.example.com' }));
+  assert.equal(r.changed, true);
+  assert.equal(c.envs.shopsupa01!.get('GOTRUE_SITE_URL')!.value, 'https://shop.example.com');
+  assert.equal(c.envs.shopsupa01!.get('ADDITIONAL_REDIRECT_URLS')!.value, 'https://old.example.com,http://localhost:3000/**,https://shop.example.com/**', 'the stack’s own name for the list');
+  assert.equal(c.envs.shopsupa01!.get('API_EXTERNAL_URL')!.value, 'https://api.shop.example.com', 'an inside address can’t be a callback: the stack’s public one from the X-ray');
+  assert.equal(c.live.GOTRUE_SITE_URL, 'https://shop.example.com');
+  assert.equal(c.seen.deploys, 1);
+  assert.equal(r.callback, 'https://api.shop.example.com/auth/v1/callback');
+  assert.deepEqual(r.byHand.map((b: any) => b.where), ['Google sign-in'], 'read from the running stack');
+  ok(await o.h('change.undo', { changeId: r.changeId }));
+  assert.equal(c.envs.shopsupa01!.get('API_EXTERNAL_URL')!.value, 'http://supabase-kong:8000');
+
+  const hard = await onServer(), h = standIn(hard.app, { hardWired: ['GOTRUE_SITE_URL'] });
+  const stuck = ok(await hard.o.h('auth.urls', { serverId: hard.srv, part: 'shop-supabase', url: 'https://shop.example.com', apiUrl: 'https://auth.example.com' }));
+  assert.equal(stuck.changed, false);
+  assert.match(stuck.why, /Compose file/);
+  assert.deepEqual(Object.keys(stuck.inCompose), ['GOTRUE_SITE_URL', 'GOTRUE_URI_ALLOW_LIST', 'API_EXTERNAL_URL']);
+  assert.equal(stuck.inCompose.API_EXTERNAL_URL, 'https://auth.example.com');
+  assert.equal(h.live.GOTRUE_SITE_URL, 'http://localhost:3000', 'nothing half done');
+
+  // no public address at all: it says so instead of giving a callback that can't work
+  const none = await onServer(COOLIFY_HOST, (inv) => { inv.parts.find((p) => p.name === 'shop-supabase')!.hosts = []; }), n = standIn(none.app);
+  const r2 = ok(await none.o.h('auth.urls', { serverId: none.srv, part: 'shop-supabase', url: 'https://shop.example.com' }));
+  assert.equal(r2.callback, undefined);
+  assert.match(r2.note, /no public address/);
+  assert.equal(n.envs.shopsupa01!.get('API_EXTERNAL_URL')!.value, 'http://supabase-kong:8000');
+});
+
+test('domain.point and live.put suggest auth.urls, and only suggest it', async () => {
+  const s = await hostedSupabase({ site_url: 'https://old.example.com', uri_allow_list: '' });
+  const cf = await cloudflareFake();
+  const dir = mkdtempSync(join(tmpdir(), 'site-'));
+  writeFileSync(join(dir, 'index.html'), '<h1>hi</h1>');
+  addHost({ id: 'test-place', name: 'Test place', builds: true, places: () => [{ host: 'test-place', label: 'Test' }], fit: () => ({ ok: true, why: '', best: true }), put: async (_c, p) => ({ url: `http://127.0.0.1:9/${p.name}`, project: p.name, point: false }) });
+  try {
+    const app = testApp(), o = await testOrg(app), srv = id('srv');
+    run(app.db, `INSERT INTO servers (id, org_id, name, host, username, key_ref, status, facts) VALUES (?, ?, 'box', '203.0.113.9', 'root', 'credential://ssh/box/private-key', 'ready', '{}')`, srv, o.orgId);
+    account(app, o.orgId, 'cloudflare', 'cf-demo-token');
+    world('cloudflare');
+    const before = ok(await o.h('domain.point', { hostname: 'app.example.com', server: { serverId: srv } }));
+    assert.equal(before.suggest, undefined, 'nothing to say with no Supabase around');
+
+    account(app, o.orgId, 'supabase', `sbp_${'a1'.repeat(20)}`, 'Supabase');
+    const r = ok(await o.h('domain.point', { hostname: 'shop.example.com', server: { serverId: srv } }));
+    assert.match(r.suggest, /run auth\.urls with url https:\/\/shop\.example\.com/);
+    assert.equal(ok(await o.h('domain.point', { hostname: '*.example.com', server: { serverId: srv } })).suggest, undefined, 'a wildcard isn’t where anyone logs in');
+    assert.equal(s.api.calls.length, 0, 'never done by itself');
+
+    const uploadId = await saveUpload(app, o.orgId, o.userId, await packFolder(dir, undefined, { keepBuild: true }));
+    const live = ok(await o.h('live.put', { uploadId, to: 'test-place', name: 'shop', domain: 'shop.example.com' }));
+    assert.match(live.suggest, /auth\.urls/);
+    assert.equal(s.api.calls.length, 0);
+  } finally { s.close(); cf.close(); }
+});
+
+// --- readiness and the Check-up ---------------------------------------------------------------------------------------------
+test('the X-ray sees where GoTrue’s settings point, and nothing else of them', () => {
+  const refs = envRefs('', { GOTRUE_SMTP_HOST: 'smtp.resend.com', GOTRUE_SITE_URL: 'https://app.example.com', GOTRUE_SMTP_PASS: 're_secretvalue', API_EXTERNAL_URL: 'http://supabase-kong:8000' });
+  assert.deepEqual(refs.map((r) => [r.via, r.host]), [['GOTRUE_SMTP_HOST', 'smtp.resend.com'], ['GOTRUE_SITE_URL', 'app.example.com']]);
+  assert.deepEqual(envRefs('', { GOTRUE_SMTP_HOST: 'supabase-mail', GOTRUE_SITE_URL: 'http://localhost:3000' }), [], 'the stand-ins a stack starts with don’t count');
+});
+
+const key = (r: { checks: { key: string }[] }, k: string) => r.checks.find((c) => c.key === k) as any;
+test('project.readiness on a stack found on a server: sign-up emails and login, each with its fix', async () => {
+  const { app, o, srv } = await onServer();
+  run(app.db, `INSERT INTO watch (org_id, host, kind, status, detail, value) VALUES (?, 'example.com', 'email', 'ok', 'SPF and DMARC set', 'unsigned')`, o.orgId);
+  let r = ok(await o.a('project.readiness', { serverId: srv, found: 'shop' }));
+  assert.equal(key(r, 'sender').ok, false);
+  assert.match(key(r, 'sender').detail, /can’t leave/);
+  assert.deepEqual(key(r, 'sender').fix, { tool: 'email.connect_app', input: { domain: 'example.com', serverId: srv, part: 'coolify:shopsupa01' }, label: 'Connect the sender' }, 'the login is there, so this is the next step');
+  assert.equal(key(r, 'login').ok, false);
+  assert.deepEqual(key(r, 'login').fix, { tool: 'auth.urls', input: { url: 'https://shop.example.com', serverId: srv, part: 'coolify:shopsupa01' }, label: 'Fix login' });
+  assert.equal(key(r, 'dkim').ok, false);
+  assert.match(key(r, 'dkim').detail, /no DKIM key found/);
+  assert.equal(key(r, 'dkim').fix.tool, 'email.check');
+  for (const k of ['sender', 'login', 'dkim']) { const f = key(r, k).fix; assert.equal(getTool(f.tool)!.input.safeParse(f.input).success, true, `${k}’s fix runs as it stands`); }
+
+  const good = await onServer(COOLIFY_HOST, (inv) => { inv.parts.find((p) => p.name === 'shop-supabase')!.env = [{ via: 'GOTRUE_SMTP_HOST', host: 'smtp.resend.com' }, { via: 'GOTRUE_SITE_URL', host: 'shop.example.com' }]; });
+  run(good.app.db, `INSERT INTO watch (org_id, host, kind, status, detail, value) VALUES (?, 'example.com', 'email', 'ok', 'SPF and DMARC set', 'signed')`, good.o.orgId);
+  r = ok(await good.o.a('project.readiness', { serverId: good.srv, found: 'shop' }));
+  assert.deepEqual([key(r, 'sender').ok, key(r, 'login').ok, key(r, 'dkim').ok], [true, true, true]);
+  assert.match(key(r, 'sender').detail, /your own sender/);
+
+  // a site address that's the stack's own API isn't an app, and a domain with no mail has nothing to sign
+  const api = await onServer(COOLIFY_HOST, (inv) => { inv.parts.find((p) => p.name === 'shop-supabase')!.env = [{ via: 'GOTRUE_SITE_URL', host: 'api.shop.example.com' }]; });
+  run(api.app.db, `INSERT INTO watch (org_id, host, kind, status, detail, value) VALUES (?, 'example.com', 'email', 'ok', 'DMARC rejects', 'silent')`, api.o.orgId);
+  r = ok(await api.o.a('project.readiness', { serverId: api.srv, found: 'shop' }));
+  assert.equal(key(r, 'login').ok, false);
+  assert.equal(key(r, 'dkim'), undefined);
+  assert.equal(key(ok(await api.o.a('project.readiness', { serverId: api.srv, found: 'relay' })), 'sender'), undefined, 'a project with no Supabase has no such check');
+});
+
+test('project.readiness and the Check-up flag an app on Supabase’s built-in sender, read from the last sync', async () => {
+  const s = await hostedSupabase({ smtp_host: '', site_url: 'http://localhost:3000' });
+  try {
+    const app = testApp(), o = await testOrg(app);
+    const acc = account(app, o.orgId, 'supabase', `sbp_${'a1'.repeat(20)}`, 'Supabase');
+    s.projects = [{ ref: REF, name: 'shop-db', status: 'ACTIVE_HEALTHY' }];
+    ok(await o.h('sync.run', { only: [acc] }).catch(() => ({ status: 'ok', output: {} }) as any));
+    const asset = all<{ id: string; meta: string }>(app.db, `SELECT id, meta FROM assets WHERE provider = 'supabase'`)[0]!;
+    assert.deepEqual(JSON.parse(asset.meta).auth, { smtp: false, site: 'http://localhost:3000' }, 'a sync reads whether it has its own sender');
+
+    // a project of Unit7's, linked to it
+    const prj = ok(await o.h('project.create', { name: 'Shop' })), env = all<{ id: string }>(app.db, `SELECT id FROM environments WHERE project_id = ? ORDER BY kind = 'production' DESC`, prj.id ?? prj.projectId)[0]!, svc = id('svc');
+    run(app.db, `INSERT INTO services (id, org_id, project_id, environment_id, name, slug, kind, status) VALUES (?, ?, ?, ?, 'web', 'web', 'web', 'running')`, svc, o.orgId, prj.id ?? prj.projectId, env.id);
+    run(app.db, 'INSERT INTO links (id, org_id, source, target) VALUES (?, ?, ?, ?)', id('lnk'), o.orgId, JSON.stringify({ kind: 'supabase', accountId: acc, ref: REF }), JSON.stringify({ kind: 'unit7', serviceId: svc }));
+    run(app.db, `INSERT INTO domains (id, org_id, hostname, service_id, status, tls) VALUES (?, ?, 'shop.example.com', ?, 'active', 'active')`, id('dom'), o.orgId, svc);
+    const r = ok(await o.h('project.readiness', { projectId: prj.id ?? prj.projectId }));
+    assert.match(key(r, 'sender').detail, /stop after 2 an hour/);
+    assert.deepEqual(key(r, 'sender').fix, { ask: 'Set up email sending for shop-db', label: 'Set up with AI' }, 'no domain seen on the map yet');
+    assert.deepEqual(key(r, 'login').fix, { tool: 'auth.urls', input: { url: 'https://shop.example.com', ref: REF }, label: 'Fix login' });
+
+    // the Check-up says so too, once an app on the map uses it
+    run(app.db, `INSERT INTO assets (id, org_id, account_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES ('ast_appshop00001', ?, NULL, 'vercel', 'app', 'shop', 'shop', NULL, ?, '2026-11-01')`, o.orgId, JSON.stringify({ hosts: ['shop.vercel.app', 'shop.example.com'] }));
+    run(app.db, `INSERT INTO edges (id, org_id, source, target, kind, via) VALUES ('edg_1', ?, 'ast_appshop00001', ?, 'env', 'SUPABASE_URL')`, o.orgId, asset.id);
+    const c = ok(await o.h('checkup.run', { quick: true }));
+    const item = c.items.find((i: any) => i.id === `mail:supabase:${REF}`);
+    assert.match(item.title, /shop-db: sign-up emails stop after 2 an hour/);
+    assert.match(item.why, /only to your own team/);
+    assert.equal(item.area, 'app');
+    assert.equal(item.who, 'unit7');
+    assert.deepEqual([item.fix.tool, item.fix.input], ['email.setup', { domain: 'example.com' }]);
+    assert.ok(c.checked.some((x: any) => x.id === 'mail'));
+
+    Object.assign(s.st.auth, { smtp_host: 'smtp.resend.com', site_url: 'https://shop.example.com' });
+    ok(await o.h('sync.run', { only: [acc] }).catch(() => ({ status: 'ok', output: {} }) as any));
+    const fine = ok(await o.h('project.readiness', { projectId: prj.id ?? prj.projectId }));
+    assert.deepEqual([key(fine, 'sender').ok, key(fine, 'login').ok], [true, true]);
+    assert.ok(!ok(await o.h('checkup.run', { quick: true })).items.some((i: any) => i.id.startsWith('mail:')));
+  } finally { s.close(); }
+});
+
+test('the Check-up flags a stack on a server whose mail goes nowhere', async () => {
+  const { app, o, srv } = await onServer();
+  ssh(app).exec = async () => ({ code: 1, stdout: '', stderr: 'no', truncated: false });
+  const c = ok(await o.h('checkup.run', { quick: true, serverId: srv }));
+  const items = c.items.filter((i: any) => i.id.startsWith('mail:'));
+  assert.equal(items.length, 3, 'three Supabase stacks in the fixture');
+  assert.match(items[0].title, /sign-up emails can’t leave/);
+  assert.equal(items[0].serverId, srv);
 });
 
 test('an AI trying to read the SMTP password gets nowhere, whichever way it asks', async () => {

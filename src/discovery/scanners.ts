@@ -133,8 +133,8 @@ export const SCANNERS: Record<string, Scanner> = {
 
   // --- Supabase and Neon: databases -----------------------------------------------------------------
   async supabase(ctx, acc) {
-    const found = (await supabase.projects(ctx, acc)).map((p): Found => ({ provider: 'supabase', kind: 'database', extId: p.id, name: p.name, accountId: acc, url: `https://supabase.com/dashboard/project/${p.id}`,
-      hosts: [`${p.id}.supabase.co`, `db.${p.id}.supabase.co`], status: p.status, end: { kind: 'supabase', accountId: acc, ref: p.id }, platform: 'supabase' }));
+    const found = await pool(await supabase.projects(ctx, acc), 4, async (p): Promise<Found> => ({ provider: 'supabase', kind: 'database', extId: p.id, name: p.name, accountId: acc, url: `https://supabase.com/dashboard/project/${p.id}`,
+      hosts: [`${p.id}.supabase.co`, `db.${p.id}.supabase.co`], status: p.status, end: { kind: 'supabase', accountId: acc, ref: p.id }, platform: 'supabase', auth: await supabase.authSeen(ctx, acc, p.id) }));
     return { found, refs: [] };
   },
   async neon(ctx, acc) {

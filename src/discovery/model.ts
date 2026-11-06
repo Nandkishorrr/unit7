@@ -17,6 +17,7 @@ export interface Found {
   end?: End;               // how a connection addresses it
   platform?: string;       // where it's served from (vercel, netlify, unit7…), to check its domains' DNS
   status?: string;         // the provider's own state ("paused"…)
+  auth?: { smtp: boolean; site?: string }; // Supabase: its own sender set?, and where sign-in lands
   dns?: string;            // domains: who serves the zone
   zone?: string;           // domains: the zone they're in (a name equal to its zone is the bare domain)
   expires?: string;        // domains: when the registration runs out (from the registrar)

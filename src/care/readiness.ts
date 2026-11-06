@@ -5,6 +5,7 @@
 import { all, get, json, type DB } from '../db.ts';
 import { archivedKeys } from '../archive.ts';
 import { alertsVerified } from '../sentinel/phone.ts';
+import { authOfServices, dkimCheck, mailChecks } from './mail.ts';
 
 export type Fix = { tool: string; input: Record<string, unknown>; label: string } | { href: string; label: string } | { ask: string; label: string };
 export interface Check { key: string; label: string; ok: boolean; detail: string; fix?: Fix }
@@ -30,7 +31,7 @@ export function readiness(db: DB, orgId: string, projectId: string, at = Date.no
   const apps = svcs.filter((s) => !DBS.includes(s.kind)), dbs = svcs.filter((s) => DBS.includes(s.kind));
   const doms = svcs.flatMap((s) => all<Dom>(db, 'SELECT id, hostname, status, tls, zone FROM domains WHERE service_id = ?', s.id));
   const own = doms.filter((d) => !isTestHost(d.hostname));
-  const watch = (host: string, kind: string) => get<{ status: string; detail: string | null; checked_at: string | null }>(db, 'SELECT status, detail, checked_at FROM watch WHERE org_id = ? AND host = ? AND kind = ?', orgId, host, kind);
+  const watch = (host: string, kind: string) => get<{ status: string; detail: string | null; checked_at: string | null; value: string | null }>(db, 'SELECT status, detail, checked_at, value FROM watch WHERE org_id = ? AND host = ? AND kind = ?', orgId, host, kind);
   const day = new Date(at - 86400_000).toISOString(), month = new Date(at - 30 * 86400_000).toISOString();
   const checks: Check[] = [];
   const add = (key: string, label: string, ok: boolean, detail: string, fix?: Fix) => checks.push({ key, label, ok, detail, ...(!ok && fix && { fix }) });
@@ -53,7 +54,10 @@ export function readiness(db: DB, orgId: string, projectId: string, at = Date.no
     const unknown = rows.find((r) => !r.w), weak = rows.find((r) => r.w && r.w.status !== 'ok');
     add('email', 'Email can’t be faked', !unknown && !weak, weak ? `${weak.a}: ${weak.w!.detail ?? 'SPF or DMARC missing'}` : unknown ? `${unknown.a}: not checked yet` : 'SPF and DMARC set',
       weak ? { tool: 'domain.protect_email', input: { domain: weak.a }, label: 'Protect email' } : { tool: 'watch.check', input: { daily: true }, label: 'Check now' });
+    dkimCheck(apexes.map((a) => ({ a, value: watch(a, 'email')?.value })), add);
   }
+  // sign-up emails reach real people, and login works on its own address (when a Supabase is linked to it)
+  mailChecks(db, orgId, authOfServices(db, orgId, svcs.map((s) => s.id)), own.map((d) => d.hostname), add);
 
   // 4. daily backups, and one proven to restore in the last 30 days
   if (dbs.length) {

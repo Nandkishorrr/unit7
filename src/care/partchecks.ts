@@ -17,6 +17,7 @@ import { serverRow } from '../tools/servers.ts';
 import { fid } from '../tools/helpers.ts';
 import { scanImage, type ImageReport } from '../deploy/security.ts';
 import { apexOf, isTestHost, type Check, type Fix as ReadyFix, type Readiness } from './readiness.ts';
+import { authOfParts, dkimCheck, mailChecks } from './mail.ts';
 import { protectionOf, loadOk } from './safetynet.ts';
 import { alertsVerified } from '../sentinel/phone.ts';
 import type { Finding } from '../tools/security.ts';
@@ -183,7 +184,7 @@ export function foundReadiness(db: DB, orgId: string, serverId: string, projectI
   const parts = inv.parts.filter((p) => project.parts.includes(p.id)), apps = parts.filter((p) => p.kind === 'app'), own = project.domains.filter((d) => !isTestHost(d));
   const checks: Check[] = [];
   const add = (key: string, label: string, ok: boolean, detail: string, fix?: ReadyFix) => checks.push({ key, label, ok, detail, ...(!ok && fix && { fix }) });
-  const watch = (host: string, kind: string) => get<{ status: string; detail: string | null; checked_at: string | null }>(db, 'SELECT status, detail, checked_at FROM watch WHERE org_id = ? AND host = ? AND kind = ?', orgId, host, kind);
+  const watch = (host: string, kind: string) => get<{ status: string; detail: string | null; checked_at: string | null; value: string | null }>(db, 'SELECT status, detail, checked_at, value FROM watch WHERE org_id = ? AND host = ? AND kind = ?', orgId, host, kind);
   if (apps.length) add('domain', 'Its own domain', own.length > 0, own[0] ?? (project.domains[0] ? `Only a test address so far (${project.domains[0]})` : 'No web address yet'), { ask: `Connect my own domain to ${project.name}`, label: 'Connect a domain' });
   if (project.domains.length) {
     const bad = project.domains.find((d) => { const w = watch(d, 'tls'); return !w || w.status !== 'ok'; });
@@ -192,7 +193,9 @@ export function foundReadiness(db: DB, orgId: string, serverId: string, projectI
   if (own.length) {
     const apexes = [...new Set(own.map((d) => apexOf(d)))], weak = apexes.find((a) => { const w = watch(a, 'email'); return !w || w.status !== 'ok'; });
     add('email', 'Email can’t be faked', !weak, weak ? `${weak}: ${watch(weak, 'email')?.detail ?? 'not checked yet'}` : 'SPF and DMARC set', weak && watch(weak, 'email') ? { tool: 'domain.protect_email', input: { domain: weak }, label: 'Protect email' } : { tool: 'watch.check', input: { daily: true }, label: 'Check now' });
+    dkimCheck(apexes.map((a) => ({ a, value: watch(a, 'email')?.value })), add);
   }
+  mailChecks(db, orgId, authOfParts(db, orgId, serverId, inv, parts), own, add);
   const guarded = protectionOf(db, orgId).filter((g) => g.serverId === serverId && project.parts.includes(g.part));
   if (guarded.length) {
     const bare = guarded.find((g) => g.level === 'unprotected' || g.level === 'weak'), unproven = guarded.find((g) => g.level === 'protected');

@@ -50,6 +50,8 @@ export const supabase = {
     ? (await sb<{ ref: string; name: string; region?: string; status?: string }[]>(ctx, acc, '/projects')).map((p) => ({ id: p.ref, name: p.name, region: p.region, status: p.status }))
     : mcpJson<{ projects: { id: string; name: string; region?: string; status?: string }[] }>(ctx, acc, 'list_projects').then((r) => r.projects ?? []),
   url: async (ctx: Ctx, acc: string, ref: string) => viaToken(ctx, acc) ? `https://${ref}.supabase.co` : mcpJson<{ url: string }>(ctx, acc, 'get_project_url', { project_id: ref }).then((r) => r.url),
+  // who sends a project's sign-up emails and where sign-in lands, for the map; a one-click sign-in can't read this, so unknown
+  authSeen: (ctx: Ctx, acc: string, ref: string) => sb<{ smtp_host?: string; site_url?: string }>(ctx, acc, `/projects/${ref}/config/auth`).then((c) => ({ smtp: !!c.smtp_host, ...(c.site_url && { site: c.site_url }) }), () => undefined),
   // the browser-safe key: the legacy anon key where it's still on (every supabase-js reads it), else the newer publishable one
   async publicKey(ctx: Ctx, acc: string, ref: string) {
     const keys = (viaToken(ctx, acc)

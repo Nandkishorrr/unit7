@@ -398,13 +398,17 @@ const AUTH_KEYS: AuthKey[] = [
   { field: 'smtpAdminEmail', api: 'smtp_admin_email', names: ['SMTP_ADMIN_EMAIL', 'GOTRUE_SMTP_ADMIN_EMAIL'], run: 'GOTRUE_SMTP_ADMIN_EMAIL' },
   { field: 'smtpSenderName', api: 'smtp_sender_name', names: ['SMTP_SENDER_NAME', 'GOTRUE_SMTP_SENDER_NAME'], run: 'GOTRUE_SMTP_SENDER_NAME' },
   { field: 'smtpPass', api: 'smtp_pass', names: ['SMTP_PASS', 'GOTRUE_SMTP_PASS'] },
+  { field: 'apiUrl', api: 'api_external_url', names: ['API_EXTERNAL_URL'], run: 'API_EXTERNAL_URL' },
+  // only read: which sign-in buttons are on
+  { field: 'google', api: 'external_google_enabled', names: [], run: 'GOTRUE_EXTERNAL_GOOGLE_ENABLED' },
+  { field: 'github', api: 'external_github_enabled', names: [], run: 'GOTRUE_EXTERNAL_GITHUB_ENABLED' },
 ];
 const RUN_KEYS = AUTH_KEYS.flatMap((k) => (k.run ? [k.run] : []));
 const LINE = z.string().min(1).max(300).regex(/^[^\r\n\0]+$/, 'one line');
 const ADDRESS = z.string().max(300).regex(/^[a-z][a-z0-9+.-]*:\/\/[^\s,]+$/i, 'an address like https://app.example.com');
-type AuthInput = { signups?: boolean; siteUrl?: string; redirectUrls?: string[]; smtpHost?: string; smtpPort?: number; smtpUser?: string; smtpPass?: string; smtpAdminEmail?: string; smtpSenderName?: string };
+type AuthInput = { signups?: boolean; siteUrl?: string; redirectUrls?: string[]; apiUrl?: string; smtpHost?: string; smtpPort?: number; smtpUser?: string; smtpPass?: string; smtpAdminEmail?: string; smtpSenderName?: string };
 function wantedAuth(ctx: Ctx, i: AuthInput) {
-  const v: Record<string, string | undefined> = { disableSignup: i.signups === undefined ? undefined : String(!i.signups), siteUrl: i.siteUrl, redirectUrls: i.redirectUrls?.join(','), smtpHost: i.smtpHost, smtpPort: i.smtpPort?.toString(), smtpUser: i.smtpUser, smtpAdminEmail: i.smtpAdminEmail, smtpSenderName: i.smtpSenderName, smtpPass: i.smtpPass && valueOf(ctx, i.smtpPass, 'the SMTP password') };
+  const v: Record<string, string | undefined> = { disableSignup: i.signups === undefined ? undefined : String(!i.signups), siteUrl: i.siteUrl, redirectUrls: i.redirectUrls?.join(','), apiUrl: i.apiUrl, smtpHost: i.smtpHost, smtpPort: i.smtpPort?.toString(), smtpUser: i.smtpUser, smtpAdminEmail: i.smtpAdminEmail, smtpSenderName: i.smtpSenderName, smtpPass: i.smtpPass && valueOf(ctx, i.smtpPass, 'the SMTP password') };
   const out = AUTH_KEYS.flatMap((k) => (v[k.field] === undefined ? [] : [{ ...k, value: v[k.field]! }]));
   if (!out.length) throw need('Say what to change: signups, siteUrl, redirectUrls or an SMTP setting.');
   // coolify.envs opens a reference and op get reads these back, so one here would show a secret: only the password takes one
@@ -414,6 +418,7 @@ function wantedAuth(ctx: Ctx, i: AuthInput) {
 }
 const authView = (c: Record<string, unknown>) => ({
   signups: c.disable_signup !== true && c.disable_signup !== 'true', siteUrl: c.site_url || undefined, redirectUrls: String(c.uri_allow_list ?? '').split(',').map((u) => u.trim()).filter(Boolean),
+  ...(c.api_external_url ? { apiUrl: c.api_external_url } : {}), signIn: ['google', 'github'].filter((p) => [true, 'true'].includes(c[`external_${p}_enabled`] as string)),
   smtp: { host: c.smtp_host || undefined, port: c.smtp_port || undefined, user: c.smtp_user || undefined, adminEmail: c.smtp_admin_email || undefined, senderName: c.smtp_sender_name || undefined, ...('smtp_pass' in c && { passwordSet: !!c.smtp_pass }) },
 });
 const AUTH_LIMITS = 'Self-hosted: changes need a Coolify stack, and redeploy it. Sign-in providers and email templates aren’t covered here. The SMTP password can’t be read or put back.';
@@ -462,8 +467,8 @@ CHANGE_UNDO['supabase.auth_server'] = async (ctx, ch) => {
 defineTool({
   name: 'supabase.auth', title: 'Supabase sign-in settings',
   risk: (i) => (i.op === 'get' ? 'read' : 'write'), action: (i) => (i.op === 'get' ? 'read' : 'settings_write'), sensitive: ['smtpPass'], timeoutMs: 20 * 60_000,
-  description: 'Sign-up, the site address, allowed redirect addresses and SMTP settings of a hosted project (ref) or a self-hosted stack (serverId and part). op get shows them; the SMTP password is never shown. op set changes the ones given: signups, siteUrl, redirectUrls (the whole list), smtpHost, smtpPort, smtpUser, smtpPass (a credential:// reference works), smtpAdminEmail, smtpSenderName. Undo puts the old values back, except the SMTP password. Self-hosted works through its GoTrue settings: Coolify stacks only, through coolify.envs and a redeploy, checked in the running auth container and put back if it didn’t take (a Compose file that sets a value itself has to be edited in Coolify). Sign-in providers and email templates aren’t covered.',
-  input: z.object({ ...WHERE, op: z.enum(['get', 'set']).default('get'), signups: z.boolean().optional().describe('false stops new sign-ups'), siteUrl: ADDRESS.optional(), redirectUrls: z.array(ADDRESS).max(50).optional().describe('The whole list: it replaces the old one'),
+  description: 'Sign-up, the site address, allowed redirect addresses and SMTP settings of a hosted project (ref) or a self-hosted stack (serverId and part). op get shows them; the SMTP password is never shown. op set changes the ones given: signups, siteUrl, redirectUrls (the whole list), apiUrl (self-hosted: API_EXTERNAL_URL), smtpHost, smtpPort, smtpUser, smtpPass (a credential:// reference works), smtpAdminEmail, smtpSenderName. Undo puts the old values back, except the SMTP password. Self-hosted works through its GoTrue settings: Coolify stacks only, through coolify.envs and a redeploy, checked in the running auth container and put back if it didn’t take (a Compose file that sets a value itself has to be edited in Coolify). Sign-in providers and email templates aren’t covered. After a domain change, auth.urls sets the addresses for you and says what to change at Google or GitHub.',
+  input: z.object({ ...WHERE, op: z.enum(['get', 'set']).default('get'), signups: z.boolean().optional().describe('false stops new sign-ups'), siteUrl: ADDRESS.optional(), redirectUrls: z.array(ADDRESS).max(50).optional().describe('The whole list: it replaces the old one'), apiUrl: ADDRESS.optional().describe('Self-hosted only: the stack’s public API address'),
     smtpHost: z.string().max(253).regex(/^[a-z0-9.-]+$/i, 'a host like smtp.example.com').optional(), smtpPort: z.number().int().min(1).max(65_535).optional(), smtpUser: LINE.optional(), smtpPass: LINE.optional(), smtpAdminEmail: z.string().email().max(200).optional(), smtpSenderName: LINE.optional() }).refine(oneTarget, ONE_TARGET),
   assess: (c, i) => (i.op === 'get' ? { tier: 0 } : assessWhere(c, i, 2, 'Changes who can sign up, or where sign-in sends people and its email.')),
   async run(ctx, i) {
@@ -472,6 +477,7 @@ defineTool({
       const { s, p } = await stackOf(ctx, i), env = await running(ctx, s, inner(p, AUTH, 'auth'));
       return { part: p.name, ...authView(Object.fromEntries(AUTH_KEYS.filter((k) => k.run).map((k) => [k.api, env[k.run!]]))), limits: AUTH_LIMITS, untrusted: UNTRUSTED };
     }
+    if (i.apiUrl) throw need('A hosted project’s API address is Supabase’s to set: apiUrl is for a stack on your server.');
     const acc = accountFor(ctx, 'supabase', i.accountId, i.ref), path = `/projects/${i.ref}/config/auth`;
     const was = await sb<Record<string, unknown>>(ctx, acc, path);
     if (i.op === 'get') return { ref: i.ref, ...authView(was), untrusted: UNTRUSTED };
@@ -490,6 +496,61 @@ CHANGE_UNDO['supabase.auth'] = async (ctx, ch) => {
   await sb(ctx, u.accountId, `/projects/${u.ref}/config/auth`, { method: 'PATCH', body: u.before });
   return { restored: Object.keys(u.before) };
 };
+
+// --- login on a real domain ---------------------------------------------------------------------------------------------
+// After a domain change, sign-in still sends people to the old address, and the new one isn't allowed. What Unit7 can reach
+// it sets, keeping every address already allowed. What lives in the person's Google or GitHub account it says, with the
+// exact address to paste. Asked for, never automatic: live.put and domain.point only suggest it.
+const WEB = z.string().trim().max(300).transform((u) => (/^[a-z][a-z0-9+.-]*:\/\//i.test(u) ? u : `https://${u}`)).pipe(ADDRESS).refine((u) => URL.canParse(u) && /^https?:$/.test(new URL(u).protocol), 'a web address like https://app.example.com');
+type UrlsIn = Where & { url: string; apiUrl?: string };
+function byHand(site: string, callback: string | undefined, on: string[]) {
+  if (!callback) return [];
+  const steps: Record<string, unknown> = {
+    google: { where: 'Google sign-in', open: 'https://console.cloud.google.com/apis/credentials', steps: 'Open your OAuth client. Add origin under Authorized JavaScript origins and redirect under Authorized redirect URIs. Keep the old ones until the new ones work.', paste: { origin: site, redirect: callback } },
+    github: { where: 'GitHub sign-in', open: 'https://github.com/settings/developers', steps: 'Open your OAuth app. Set Homepage URL to homepage and Authorization callback URL to callback. It has one callback, so the old one stops working.', paste: { homepage: site, callback } },
+  };
+  return on.map((p) => steps[p]);
+}
+async function urlsPlan(ctx: Ctx, i: UrlsIn) {
+  if (i.ref && i.apiUrl) throw need('A hosted project’s API address is Supabase’s to set: apiUrl is for a stack on your server.');
+  const where = i.ref ? { ref: i.ref, ...(i.accountId && { accountId: i.accountId }) } : { serverId: i.serverId, part: i.part };
+  const now = await step<{ siteUrl?: string; redirectUrls: string[]; apiUrl?: string; signIn: string[] }>(ctx, 'supabase.auth', where);
+  const site = new URL(i.url).origin, old = now.siteUrl?.replace(/\/+$/, '');
+  const redirectUrls = [...new Set([...now.redirectUrls, ...(old && old !== site ? [`${old}/**`] : []), `${site}/**`])];
+  let api: string | undefined;
+  if (i.ref) {
+    const acc = accountFor(ctx, 'supabase', i.accountId, i.ref), own = await sb<{ status?: string; custom_hostname?: string }>(ctx, acc, `/projects/${i.ref}/custom-hostname`).catch(() => undefined);
+    api = own?.custom_hostname && /^5_/.test(own.status ?? '') ? `https://${own.custom_hostname}` : await supabase.url(ctx, acc, i.ref);
+  } else {
+    const { p } = await stackOf(ctx, i), reachable = !!now.apiUrl && /^https:\/\/[^/:]+\.[^/:]+/.test(now.apiUrl);
+    api = i.apiUrl ?? (reachable ? now.apiUrl : p.hosts?.[0] && `https://${p.hosts[0]}`);
+  }
+  const newApi = !i.ref && api && api !== now.apiUrl ? api : undefined, callback = api && `${api.replace(/\/+$/, '')}/auth/v1/callback`;
+  return { where, now, site, redirectUrls, added: redirectUrls.filter((u) => !now.redirectUrls.includes(u)), newApi, same: now.siteUrl === site && redirectUrls.length === now.redirectUrls.length && !newApi,
+    report: { site, redirectUrls, ...(callback ? { callback } : { note: 'This stack has no public address yet, so Google and GitHub have nowhere to send people back to. Give it a domain, then run this again with apiUrl.' }), byHand: byHand(site, callback, now.signIn), untrusted: UNTRUSTED } };
+}
+
+defineTool({
+  name: 'auth.urls', title: 'Make login work on a domain', risk: 'write', action: 'settings_write', timeoutMs: 20 * 60_000,
+  description: 'After a domain change, login still points at the old address: this fixes it for a Supabase project (ref) or a self-hosted stack (serverId and part). It sets the site address to url and adds that address to the allowed redirect addresses, keeping every address already allowed and the old site address (hosted through supabase.auth; self-hosted through GOTRUE_SITE_URL, GOTRUE_URI_ALLOW_LIST and API_EXTERNAL_URL, with a redeploy). byHand says what to change at Google or GitHub sign-in, for those turned on, with the exact address to paste: those live in the person’s own accounts. An AI’s change waits for a person in production. Run it as a dry run first. Undo puts the old addresses back.',
+  input: z.object({ ...WHERE, url: WEB.describe('The app’s address now: https://app.example.com'), apiUrl: WEB.optional().describe('Self-hosted: the stack’s public API address, if Unit7 can’t see it') }).refine(oneTarget, ONE_TARGET),
+  async dryRun(ctx, i) {
+    const p = await urlsPlan(ctx, i);
+    return { siteNow: p.now.siteUrl, addedToAllowed: p.added, ...(p.newApi && { apiUrl: p.newApi }), nothingToChange: p.same, ...p.report };
+  },
+  async run(ctx, i) {
+    const p = await urlsPlan(ctx, i);
+    if (p.same) return { changed: false, ...p.report, ...(p.report.byHand.length ? {} : { done: 'Sign-in already points here, and nothing needs changing by hand.' }) };
+    try {
+      const r = await step<{ changed: boolean; why?: string; changeId?: string; undo?: string; rolledBack?: boolean }>(ctx, 'supabase.auth', { ...p.where, op: 'set', siteUrl: p.site, redirectUrls: p.redirectUrls, ...(p.newApi && { apiUrl: p.newApi }) });
+      return { changed: r.changed, ...p.report, ...(r.changeId && { changeId: r.changeId, undo: r.undo }), ...(r.why && { why: r.why }),
+        ...(r.rolledBack && { inCompose: { GOTRUE_SITE_URL: p.site, GOTRUE_URI_ALLOW_LIST: p.redirectUrls.join(','), ...(p.newApi && { API_EXTERNAL_URL: p.newApi }) } }) };
+    } catch (e) {
+      if ((e as Unit7Error).code !== 'approval_required') throw e;
+      return { changed: false, waiting: (e as Error).message, note: 'Once it’s approved, it’s done: nothing more to run.', ...p.report };
+    }
+  },
+});
 
 // --- storage: buckets, through the Storage API ---------------------------------------------------------------------------
 // Hosted: the project's service key, from Supabase to Unit7 and on to the project, never further. Self-hosted: the key stays

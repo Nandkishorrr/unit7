@@ -13,6 +13,7 @@ import { hostinger } from '../connectors/hostinger.ts';
 import { vercel, supabase } from '../connectors/clouds.ts';
 import { netlify, render, railway, heroku, fly } from '../connectors/hosts.ts';
 import { resolvesTo, dnsHost, publicResolver, spfAdvice } from '../connectors/dnsinfo.ts';
+import { loginHint } from '../care/mail.ts';
 import { hostsOf } from '../connectors/coolify.ts';
 import { act, need, setDomains } from './coolify.ts';
 import { CHANGE_UNDO, keepChange } from './manage.ts';
@@ -160,6 +161,12 @@ async function pointCoolify(ctx: Ctx, hostname: string, t: CoolifyPoint, prefer:
     ...certificate, ...undoLine };
 }
 
+// a line in the result, nothing more: changing where login goes is the person's next step
+const withLoginHint = <I extends { hostname: string }, O extends object>(go: (ctx: Ctx, i: I) => Promise<O>) => async (ctx: Ctx, i: I) => {
+  const out = await go(ctx, i), suggest = loginHint(ctx.db, ctx.orgId, i.hostname.toLowerCase());
+  return { ...out, ...(suggest && { suggest }) };
+};
+
 defineTool({
   // pointing at an app here is routine; at an outside host the name leaves Unit7's hands
   name: 'domain.point', title: 'Point a domain at an app', risk: (i) => (i.serviceId || i.server || i.coolify ? 'write' : 'destructive'), action: 'dns_write', timeoutMs: 20 * 60_000,
@@ -170,7 +177,7 @@ defineTool({
     wait: z.boolean().optional().describe('Coolify only: false to skip the wait for HTTPS'),
     provider: z.string().max(40).optional(), accountId: fid('acc').optional() })
     .refine((i) => [i.serviceId, i.vercel, i.netlify, i.render, i.railway, i.supabase, i.heroku, i.fly, i.server, i.coolify, i.pages, i.github, i.hostinger].filter(Boolean).length === 1, 'Give exactly one target: serviceId (an app here), coolify, vercel, netlify, render, railway, heroku, fly, pages, hostinger, supabase or server.'),
-  async run(ctx, i) {
+  run: withLoginHint(async (ctx, i) => {
     const hostname = i.hostname.toLowerCase();
     // a name already serving one app is moved to another only by a person (it may be production's address)
     const serving = get<{ service_id: string | null; target: string | null }>(ctx.db, 'SELECT service_id, target FROM domains WHERE hostname = ? AND org_id = ?', hostname, ctx.orgId);
@@ -250,7 +257,7 @@ defineTool({
     return w.written
       ? { hostname, dns: `${w.provider}: A ${hostname} → ${ip}`, ...(!wild && { url: `https://${hostname}` }), note: wild ? 'DNS usually updates within minutes.' : 'DNS usually updates within minutes; Unit7 checks and HTTPS turns on by itself.', ...certificate }
       : { hostname, ...needsYou(w, records), ...certificate };
-  },
+  }),
 });
 
 // Is a domain doing what it should? Each expected record is checked through public DNS; HTTPS is

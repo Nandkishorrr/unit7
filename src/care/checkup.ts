@@ -11,6 +11,7 @@ import { blindMs, gapsIn } from '../sentinel/gaps.ts';
 import { LEVEL_WORDS, protectionOf, type Guarded } from './safetynet.ts';
 import { reducePlan, size, unusedStackParts, type Saving } from './reduce.ts';
 import { lowCoverage } from './coverage.ts';
+import { seenAuth, senderFix, senderProblem } from './mail.ts';
 import { learnable, playbookFor } from './judge.ts';
 import { memoryForecasts, signalsOf } from '../inspect/index.ts';
 import type { Finding, Fix, Report as Security, Coverage } from '../tools/security.ts';
@@ -159,6 +160,13 @@ export async function runCheckup(ctx: Ctx, o: { quick?: boolean; serverId?: stri
   checked.push({ id: 'protection', label: 'Backups of every database', ok: true });
   for (const g of protection.filter((x) => x.important && x.level !== 'proven')) add({ id: `protect:${g.key}`, area: 'protection', severity: g.level === 'unprotected' || g.failed ? 'high' : 'medium', title: g.failed ? `${g.name}: its last test restore failed` : `${g.name}: ${LEVEL_WORDS[g.level].toLowerCase()}`, why: g.failed ?? (g.level === 'unprotected' ? 'If the server dies or data gets deleted, there’s no way back.' : g.level === 'weak' ? 'If the server dies, those copies go with it.' : 'A copy nobody restored may not work when you need it.'), who: 'unit7', serverId: g.serverId,
     fix: { tool: 'safety.protect', input: { key: g.key }, label: 'Protect it now', change: 'Makes a copy, sends it off the server encrypted, copies files and settings, and test-restores it. Nothing that exists changes.', safe: true } });
+  // sign-up emails that can't reach real people, from the last X-ray and sync
+  checked.push({ id: 'mail', label: 'Who sends sign-up emails', ok: true });
+  for (const s of seenAuth(ctx.db, ctx.orgId, o.serverId).filter((x) => x.sender !== 'own')) {
+    const p = senderProblem(s), f = senderFix(ctx.db, ctx.orgId, s);
+    add({ id: `mail:${s.key}`, area: 'app', severity: 'medium', title: p.title, why: p.why, who: 'tool' in f ? 'unit7' : 'your-ai', ...('serverId' in s.at && { serverId: s.at.serverId }), about: { name: s.name },
+      fix: 'tool' in f ? { ...f, change: 'Sets up sending from the domain, or puts your sender into Supabase. Mail records wait for your OK.' } : { manual: [p.why], label: f.label, ...('ask' in f && { ask: f.ask }) } });
+  }
   // the backup findings say the same thing as the line above
   const said = new Set(protection.filter((g) => g.important).map((g) => g.part));
   const clean = items.filter((i) => !(/^xray:(no|weak)-backup:/.test(i.id) && [...said].some((p) => i.id.endsWith(p)))).sort(order);

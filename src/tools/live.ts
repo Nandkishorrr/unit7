@@ -9,6 +9,7 @@ import { assertReachable } from '../netguard.ts';
 import { openSource, type Site } from '../live/source.ts';
 import { allHosts, hostOf, type Fit, type Host, type Place, type Placed } from '../live/hosts.ts';
 import { step } from '../live/coolify.ts';
+import { loginHint } from '../care/mail.ts';
 import { liveTiming } from '../live/vercel.ts';
 import '../live/netlify.ts';
 import '../live/cloudflare.ts';
@@ -113,9 +114,10 @@ defineTool({
       ctx.emit('live.placed', `${name} is live on ${chosen.host.name}: ${placed.url}`, { severity: 'success', resource: placed.project, data: { host: chosen.host.id, url: placed.url } });
       const answered = placed.url ? await answers(placed.url) : false;
       const domain = i.domain && placed.point !== false ? await pointDomain(ctx, i.domain, chosen.place, name, placed, i.team).catch((e: Error) => ({ error: e.message })) : undefined;
+      const suggest = i.domain ? loginHint(ctx.db, ctx.orgId, i.domain) : undefined; // said, never done
       return { url: placed.url, name, host: chosen.host.id, accountId: chosen.place.accountId, serverId: chosen.place.serverId, project: placed.project, deployment: placed.deployment, point: placed.point, verified: answered !== false, status: answered || undefined, autoDeploy: !!placed.autoDeploy, site: facts(site),
-        ...(domain && { domain }), notes: [...(placed.notes ?? []), ...(w ? [`These files hold keys, so they shouldn’t be in the code: ${w.list}.`] : []), ...(site.detection.envKeys.length && !i.env && chosen.host.env ? [`The code reads ${site.detection.envKeys.length} setting${site.detection.envKeys.length === 1 ? '' : 's'}. Set them with live.env or the site may not work: ${site.detection.envKeys.slice(0, 12).join(', ')}.`] : [])],
-        next: answered === false ? 'It says it’s live but didn’t answer yet. Check again in a minute with live.status.' : undefined };
+        ...(domain && { domain: { ...domain, suggest: undefined } }), notes: [...(placed.notes ?? []), ...(w ? [`These files hold keys, so they shouldn’t be in the code: ${w.list}.`] : []), ...(site.detection.envKeys.length && !i.env && chosen.host.env ? [`The code reads ${site.detection.envKeys.length} setting${site.detection.envKeys.length === 1 ? '' : 's'}. Set them with live.env or the site may not work: ${site.detection.envKeys.slice(0, 12).join(', ')}.`] : [])],
+        next: answered === false ? 'It says it’s live but didn’t answer yet. Check again in a minute with live.status.' : undefined, ...(suggest && { suggest }) };
     } finally { site.done(); }
   },
 });
