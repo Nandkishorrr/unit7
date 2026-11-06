@@ -93,6 +93,10 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - One-click sign-ins to these three only read. Creating, connecting, removing and sizes need a key. A Turso token can’t be revoked alone. Upstash gives no login to a read-only key.
 
+## Login and email forwarding
+
+- Google and GitHub sign-in clients can’t be created by API: Unit7 gives the steps and the callback address. Supabase’s built-in sender stays at two emails an hour, so real use needs your own sender. Forwarding needs Cloudflare DNS, and undoing a subdomain forward leaves Cloudflare’s records. Subdomain forwarding hasn’t been tried on a real zone.
+
 ## Not built
 
 - **Scoped server access.** Unit7 needs root or passwordless sudo. A real allow-list needs every script hashed and checked on the server.

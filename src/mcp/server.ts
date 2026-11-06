@@ -79,7 +79,8 @@ export const INSTRUCTIONS = `Unit7 runs real infrastructure (servers, apps, data
 59. part_query shows an AI plain columns, counts and simple sums. Anything computed is hidden. MongoDB takes plain data.
 60. A stored key in a setting asks a person first, and link_create with Neon asks too. With Supabase it wires the public keys: a service key is a person’s to add, on the Wiring page or in the Vault.
 61. When GitHub’s answer lists steps to give Unit7’s App more rights, those steps are the person’s: tell them as written.
-62. PlanetScale, Turso and Upstash: planetscale_databases, turso_databases, upstash_databases, then create_database on each, and link_create to wire one to an app. Only a person creates on PlanetScale, which has no free plan.`;
+62. PlanetScale, Turso and Upstash: planetscale_databases, turso_databases, upstash_databases, then create_database on each, and link_create to wire one to an app. Only a person creates on PlanetScale, which has no free plan.
+63. Login on a real domain: auth_urls, supabase_auth with emailsPerHour, auth_sign_in for Google or GitHub sign-in, firebase_auth_domains. A person pastes a client secret into a form, never chat.`;
 
 // Ready-made prompts. Clients that support MCP prompts show them as commands
 // (Claude Code: /mcp__unit7__deploy, /mcp__unit7__status, …).
