@@ -91,6 +91,7 @@ import './coolify-dashboard.ts';
 import './coolify-app.ts';
 import './promote.ts';
 import './supabase.ts';
+import './reach.ts';
 import '../seven/index.ts';
 import './files.ts';
 import './vps.ts';

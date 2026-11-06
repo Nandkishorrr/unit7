@@ -7,7 +7,7 @@ import { all, get, id, json, now, run, type DB } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { fid } from './helpers.ts';
 import { serverRow, parseMetrics, type Facts } from './servers.ts';
-import { perMonth } from './budget.ts';
+import { subCost, type HostingerSub } from './budget.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
 import { cmd } from '../connectors/shell.ts';
 import { hostinger } from '../connectors/hostinger.ts';
@@ -170,9 +170,9 @@ async function hostingerPrice(ctx: Ctx, s: ServerRow): Promise<Price | undefined
   const call = async (operation: string, params: Record<string, unknown> = {}) => { const j = JSON.parse(await hostinger(ctx.app).call(ctx, s.account_id!, 'execute', { operation, params }, 60_000)); return j?.data ?? j; };
   const machine = await call('vps_virtual-machines_get', { virtualMachineId: Number(vm) });
   const subs = await call('billing_subscriptions_list');
-  const sub = (Array.isArray(subs) ? subs : []).find((x: { id?: unknown }) => machine?.subscription_id && String(x.id) === String(machine.subscription_id));
-  const cents = sub?.renewal_price ?? sub?.total_price;
-  return cents ? { monthly: Math.round(perMonth(cents / 100, sub.billing_period ?? 1, sub.billing_period_unit ?? 'month') * 100) / 100, currency: sub.currency_code ?? 'USD', source: 'Hostinger' } : undefined;
+  const sub = (Array.isArray(subs) ? subs : []).find((x: HostingerSub) => machine?.subscription_id && String(x.id) === String(machine.subscription_id));
+  const c = sub && subCost(sub);
+  return c && 'monthly' in c ? { monthly: Math.round(c.monthly * 100) / 100, currency: c.currency, source: 'Hostinger' } : undefined;
 }
 export async function serverPrice(ctx: Ctx, s: ServerRow): Promise<Price | undefined> {
   const p = get<{ monthly_price: number | null; price_currency: string | null; price_source: string | null }>(ctx.db, 'SELECT monthly_price, price_currency, price_source FROM servers WHERE id = ?', s.id);

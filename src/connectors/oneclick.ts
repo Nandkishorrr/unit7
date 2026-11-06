@@ -43,7 +43,7 @@ export const CATALOG: Provider[] = [
   { id: 'porkbun', name: 'Porkbun', group: 'Servers & domains', what: 'DNS for domains on Porkbun.', method: { kind: 'key', keyUrl: 'https://porkbun.com/account/api', hint: 'Create an API key, then paste it as KEY:SECRET (both parts, colon between). Also switch on API Access for each domain.', pattern: '^pk1_[^:]+:sk1_' } },
   { id: 'namecom', name: 'Name.com', group: 'Servers & domains', what: 'DNS for domains on Name.com.', method: { kind: 'key', keyUrl: 'https://www.name.com/account/settings/api', hint: 'Create a token, then paste it as USERNAME:TOKEN. With 2FA on, also switch on API access under Security.', pattern: '^[^:]+:.+' } },
   { id: 'github', name: 'GitHub', group: 'Code', what: 'Deploy straight from your repos, private ones too.', method: { kind: 'github-app' },
-    alt: { kind: 'key', keyUrl: 'https://github.com/settings/tokens/new?scopes=repo&description=Unit7', hint: 'Click Generate token, then paste it here.', pattern: '^(gh[pousr]_|github_pat_)' } },
+    alt: { kind: 'key', keyUrl: 'https://github.com/settings/tokens/new?scopes=repo,workflow&description=Unit7', hint: 'Keep repo and workflow ticked: Actions logs, re-runs and secrets need them. Click Generate token, then paste it here. A fine-grained token needs Contents, Actions and Secrets, read and write.', pattern: '^(gh[pousr]_|github_pat_)' } },
   { id: 'openrouter', name: 'OpenRouter', group: 'AI models', what: 'Every model (Claude, Gemini, GPT) with one sign-in. Powers Unit7’s own AI box.', method: { kind: 'openrouter' } },
   { id: 'anthropic', name: 'Anthropic API', group: 'AI models', what: 'Claude models for Unit7’s AI box, billed to your API account (not your Claude subscription).', method: { kind: 'key', keyUrl: 'https://platform.claude.com/settings/keys', hint: 'Click Create Key, then paste it here.', pattern: '^sk-ant-' } },
   { id: 'google', name: 'Google Gemini', group: 'AI models', what: 'Gemini models for Unit7’s AI box. Has a free tier.', method: { kind: 'key', keyUrl: 'https://aistudio.google.com/apikey', hint: 'Click Create API key, then paste it here.', pattern: '^AIza' } },
@@ -187,7 +187,7 @@ export function githubManifestPage(state: string, userId: string, origin: string
     setup_url: `${origin}/api/connect/github/installed`,
     setup_on_update: true,
     public: false,
-    default_permissions: { contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'write', deployments: 'write' },
+    default_permissions: { contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'write', deployments: 'write', actions: 'write', secrets: 'write' },
     default_events: [],
   };
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');

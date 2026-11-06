@@ -13,12 +13,33 @@ import { hostinger } from '../connectors/hostinger.ts';
 import { pool } from '../discovery/scanners.ts';
 
 // spent: usage this calendar month; period: usage in the provider's own billing period (its dates unknown, so
-// counted as it is, never projected over the month); monthly: a fixed price
-export type CostKind = 'spent' | 'period' | 'monthly';
-export interface Cost { provider: string; account: string; label: string; amount: number; currency: string; kind: CostKind }
+// counted as it is, never projected over the month); monthly: a fixed price; unknown: it's there but Unit7 can't put a
+// number on it (kept at 0 and never added up, with why it's unknown)
+export type CostKind = 'spent' | 'period' | 'monthly' | 'unknown';
+export interface Cost { provider: string; account: string; label: string; amount: number; currency: string; kind: CostKind; why?: string }
 interface Budget { monthly: number | null; currency: string; actions: { scaleDown?: boolean; stopPreviews?: boolean }; manual: { label: string; monthly: number }[] }
 
-export const perMonth = (amount: number, period: number, unit: string) => amount / Math.max(1, unit.startsWith('year') ? period * 12 : unit.startsWith('day') ? period / 30.4 : unit.startsWith('week') ? period / 4.35 : unit.startsWith('quarter') ? period * 3 : period);
+export const perMonth = (amount: number, period: number, unit: string) => {
+  const u = unit.toLowerCase(), months = u.startsWith('year') ? period * 12 : u.startsWith('day') ? period / 30.4 : u.startsWith('week') ? period / 4.35 : u.startsWith('quarter') ? period * 3 : period;
+  return months > 0 ? amount / months : amount;
+};
+
+// One Hostinger subscription as a monthly cost, field by field from its API docs (Billing.V1.Subscription.SubscriptionResource).
+// Status: active and in_trial bill. not_renewing is auto-renew switched off: paid for and live until expires_at, so it still
+// counts (this is how a VPS paid for up front used to vanish from the bill). paused and future don't bill now. cancelled and
+// transferred are gone. Prices are in cents, and renewal_price can be 0 on a plan that won't renew: the first price above 0 counts.
+export interface HostingerSub { id?: unknown; name?: string; status?: string; billing_period?: number; billing_period_unit?: string; currency_code?: string; renewal_price?: number | null; total_price?: number | null; expires_at?: string | null }
+export function subCost(s: HostingerSub, at = Date.now()): { monthly: number; currency: string } | { why: string } | undefined {
+  const status = (s.status ?? '').toLowerCase();
+  if (status === 'cancelled' || status === 'transferred') return undefined;
+  if (status === 'not_renewing' && s.expires_at && Date.parse(s.expires_at) < at) return undefined;
+  if (!['active', 'in_trial', 'not_renewing'].includes(status)) return { why: `its status is ${status.replace(/_/g, ' ') || 'missing'}` };
+  const cents = [s.renewal_price, s.total_price].map(Number).find((c) => c > 0);
+  if (!cents) return { why: 'Hostinger gave no price' };
+  if (!(Number(s.billing_period) > 0) || !s.billing_period_unit) return { why: 'Hostinger didn’t say how often it’s billed' };
+  if (!s.currency_code) return { why: 'Hostinger gave no currency' };
+  return { monthly: perMonth(cents / 100, Number(s.billing_period), s.billing_period_unit), currency: s.currency_code.toUpperCase() };
+}
 
 // Providers that read their own spending register here (AWS and Azure, in tools/bigclouds.ts): this month so far
 export const SPEND: Record<string, (ctx: Ctx, accountId: string) => Promise<{ label: string; amount: number; currency: string }[]>> = {};
@@ -41,10 +62,10 @@ async function collect(ctx: Ctx): Promise<{ costs: Cost[]; problems: string[] }>
       for (const c of SPEND[a.provider] ? await SPEND[a.provider]!(ctx, a.id) : []) costs.push({ provider: a.provider, account: a.name, ...c, kind: 'spent' });
       if (a.provider === 'hostinger') {
         const text = await hostinger(ctx.app).call(ctx, a.id, 'execute', { operation: 'billing_subscriptions_list', params: {} }, 60_000);
-        const subs = JSON.parse(text) as { name: string; status: string; billing_period: number; billing_period_unit: string; currency_code: string; renewal_price?: number; total_price?: number }[];
-        for (const s of subs.filter((x) => x.status === 'active' || x.status === 'in_trial')) {
-          const cents = s.renewal_price ?? s.total_price ?? 0;
-          if (cents) costs.push({ provider: 'hostinger', account: a.name, label: s.name, amount: perMonth(cents / 100, s.billing_period, s.billing_period_unit), currency: s.currency_code, kind: 'monthly' });
+        const got = JSON.parse(text) as HostingerSub[] | { data?: HostingerSub[] }, subs = Array.isArray(got) ? got : got.data ?? [];
+        for (const s of subs) {
+          const c = subCost(s), label = s.name ?? 'A Hostinger plan';
+          if (c) costs.push('why' in c ? { provider: 'hostinger', account: a.name, label, amount: 0, currency: 'USD', kind: 'unknown', why: c.why } : { provider: 'hostinger', account: a.name, label, amount: c.monthly, currency: c.currency, kind: 'monthly' });
         }
       }
     } catch (e) { noteAccountTrouble(ctx.app, a.id, e); problems.push(`${a.name}: ${(e as Error).message.slice(0, 120)}`); }
@@ -52,7 +73,7 @@ async function collect(ctx: Ctx): Promise<{ costs: Cost[]; problems: string[] }>
   return { costs, problems };
 }
 
-// one rate per currency into the budget's currency (ECB rates via frankfurter.app); unknown ones are left out, and said so
+// one rate per currency into the budget's currency (ECB rates via frankfurter.app); a cost with no rate is marked unknown
 async function rates(from: string[], to: string): Promise<Record<string, number>> {
   const out: Record<string, number> = { [to]: 1 };
   for (const c of [...new Set(from)].filter((x) => x !== to)) {
@@ -82,12 +103,14 @@ export async function checkBudget(ctx: Ctx) {
   const b = budgetOf(ctx);
   const { costs, problems } = await collect(ctx);
   for (const m of b.manual) costs.push({ provider: 'manual', account: 'you', label: m.label, amount: m.monthly, currency: b.currency, kind: 'monthly' });
-  const fx = await rates(costs.map((c) => c.currency), b.currency);
-  const usable = costs.filter((c) => fx[c.currency]).map((c) => ({ ...c, amount: c.amount * fx[c.currency]!, original: c.currency === b.currency ? undefined : `${c.amount.toFixed(2)} ${c.currency}` }));
-  for (const c of costs.filter((x) => !fx[x.currency])) problems.push(`${c.label}: no exchange rate for ${c.currency}, left out`);
+  const counted = costs.filter((c) => c.kind !== 'unknown');
+  const fx = await rates(counted.map((c) => c.currency), b.currency);
+  const usable = counted.filter((c) => fx[c.currency]).map((c) => ({ ...c, amount: c.amount * fx[c.currency]!, original: c.currency === b.currency ? undefined : `${c.amount.toFixed(2)} ${c.currency}` }));
+  // never left out without a word: these show with no amount, and the totals say they don't include them
+  const unknown = [...costs.filter((c) => c.kind === 'unknown'), ...counted.filter((c) => !fx[c.currency]).map((c) => ({ ...c, why: `${c.amount.toFixed(2)} ${c.currency}, no exchange rate to ${b.currency} right now` }))];
   const f = forecast(usable);
   run(ctx.db, 'DELETE FROM costs WHERE org_id = ?', ctx.orgId);
-  for (const c of usable) run(ctx.db, 'INSERT INTO costs (org_id, provider, account, label, amount, currency, kind, original, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', ctx.orgId, c.provider, c.account, c.label, c.amount, b.currency, c.kind, c.original ?? null, now());
+  for (const c of [...usable, ...unknown.map((u) => ({ ...u, amount: 0, kind: 'unknown' as const, original: u.why }))]) run(ctx.db, 'INSERT INTO costs (org_id, provider, account, label, amount, currency, kind, original, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', ctx.orgId, c.provider, c.account, c.label, c.amount, b.currency, c.kind, c.original ?? null, now());
   const month = now().slice(0, 7);
   const alerted = get<{ budget_alerted: string | null }>(ctx.db, 'SELECT budget_alerted FROM orgs WHERE id = ?', ctx.orgId)?.budget_alerted ?? '';
   const money = (n: number) => `${n.toFixed(2)} ${b.currency}`;
@@ -106,7 +129,7 @@ export async function checkBudget(ctx: Ctx) {
         : `Spending is on course for ${money(f.forecast)} this month, ${Math.round((f.forecast / b.monthly) * 100)}% of your ${money(b.monthly)} budget.`, { severity: level === 'over' ? 'critical' : 'warning' });
     }
   }
-  return { currency: b.currency, budget: b.monthly, soFar: Number(f.soFar.toFixed(2)), forecast: Number(f.forecast.toFixed(2)), level, acted, costs: usable.map((c) => ({ provider: c.provider, account: c.account, label: c.label, amount: Number(c.amount.toFixed(2)), kind: c.kind, original: c.original })), problems };
+  return { currency: b.currency, budget: b.monthly, soFar: Number(f.soFar.toFixed(2)), forecast: Number(f.forecast.toFixed(2)), level, acted, costs: usable.map((c) => ({ provider: c.provider, account: c.account, label: c.label, amount: Number(c.amount.toFixed(2)), kind: c.kind, original: c.original })), unknown: unknown.map((u) => ({ provider: u.provider, account: u.account, label: u.label, why: u.why })), problems };
 }
 
 // What Unit7 itself can trim (its own servers' load, not other providers' bills), only if switched on
@@ -137,7 +160,7 @@ function restoreMax(ctx: Ctx): string[] {
 
 defineTool({
   name: 'budget.check', title: 'Costs and budget', risk: 'read', action: 'read', timeoutMs: 5 * 60_000,
-  description: 'What this month costs so far across providers (spent from Vercel, Railway, DigitalOcean; fixed prices from Hostinger, Cloudflare, Heroku; your own entries for the rest), the forecast for the month, and how it compares with your budget. Warden checks daily and alerts at 80% forecast and at 100% spent.',
+  description: 'What this month costs so far across providers (spent from Vercel, Railway, DigitalOcean; fixed prices from Hostinger, Cloudflare, Heroku; your own entries for the rest), the forecast for the month, and how it compares with your budget. unknown lists what Unit7 knows is there but can’t price: the totals don’t include those, so say so. Warden checks daily and alerts at 80% forecast and at 100% spent.',
   input: z.object({}),
   run: (ctx) => checkBudget(ctx),
 });

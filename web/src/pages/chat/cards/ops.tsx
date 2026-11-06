@@ -311,7 +311,10 @@ export function BudgetCard({ output: b }: { output: any }) {
           )}
         </Fold>
       )}
-      {!b.costs?.length && <p className="mt-2 text-[12.5px] text-muted">No costs found yet.</p>}
+      {b.unknown?.length > 0 && (
+        <p className="mt-2 text-[12.5px] text-muted">Not in these totals, amount unknown: {b.unknown.map((u: { label: string; why?: string }) => `${u.label}${u.why ? ` (${u.why})` : ''}`).join('; ')}.</p>
+      )}
+      {!b.costs?.length && !b.unknown?.length && <p className="mt-2 text-[12.5px] text-muted">No costs found yet.</p>}
       {b.problems?.length > 0 && (
         <p className="mt-2 text-[12.5px] text-muted">
           <button type="button" onClick={() => setWhy((x) => !x)} aria-expanded={why} className="underline decoration-dotted underline-offset-4 hover:text-ink">Couldn’t read {plural(b.problems.length, 'account')}</button>

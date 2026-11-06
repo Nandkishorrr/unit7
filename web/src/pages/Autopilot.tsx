@@ -24,7 +24,7 @@ interface View {
   rotation: { links: number; databases: number };
   autoSync: AutoSync;
   budget: { monthly: number | null; currency: string; actions: { scaleDown?: boolean; stopPreviews?: boolean }; manual: { label: string; monthly: number }[];
-    costs: { provider: string; account: string; label: string; amount: number; kind: 'spent' | 'monthly'; original: string | null }[]; soFar: number; forecast: number; checkedAt: string | null };
+    costs: { provider: string; account: string; label: string; amount: number; kind: 'spent' | 'period' | 'monthly' | 'unknown'; original: string | null }[]; soFar: number; forecast: number; checkedAt: string | null };
   blocked: { total: number; denied: number; rejected: number; expired: number; reasons: { tool: string; why: string; who: string; count: number; last: string }[] };
 }
 
@@ -257,8 +257,8 @@ function BudgetCard({ b, admin, reload }: { b: View['budget']; admin: boolean; r
             <li key={n} className="flex items-center gap-3 py-2.5 text-[13px]">
               <BrandLogo id={c.provider} size={18} />
               <span className="min-w-0 flex-1 truncate">{c.label}</span>
-              <span className="hidden text-muted sm:inline">{c.kind === 'monthly' ? 'per month' : 'this month'}</span>
-              <span className="tabular w-24 text-right font-medium">{money(c.amount)}</span>
+              <span className="hidden min-w-0 truncate text-muted sm:inline" title={c.kind === 'unknown' ? c.original ?? undefined : undefined}>{c.kind === 'unknown' ? 'not in the total' : c.kind === 'monthly' ? 'per month' : 'this month'}</span>
+              <span className={cx('tabular w-24 text-right', c.kind === 'unknown' ? 'text-muted' : 'font-medium')}>{c.kind === 'unknown' ? 'Unknown' : money(c.amount)}</span>
             </li>
           ))}
         </ul>

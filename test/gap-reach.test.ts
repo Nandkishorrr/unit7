@@ -3,14 +3,22 @@
 // a fake hosted MCP that speaks JSON-RPC, and virtual time for the long call.
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { testApp, testOrg, ok } from './helpers.ts';
 import { fakeApi, account, type Req } from './clouds-fakes.ts';
-import { get, id, run } from '../src/db.ts';
+import { all, get, id, run } from '../src/db.ts';
 import type { App } from '../src/app.ts';
 import { HttpMcp } from '../src/connectors/mcp-http.ts';
 import { HOSTED_MCP } from '../src/connectors/mcp-oauth.ts';
 import { PROFILES } from '../src/ops/index.ts';
 import { plainRead } from '../src/policy.ts';
+import { perMonth, subCost } from '../src/tools/budget.ts';
+import { autopilotView } from '../src/tools/autopilot.ts';
+import { costRadar } from '../src/care/radar.ts';
+import { githubManifestPage, provider, startConnect } from '../src/connectors/oneclick.ts';
 
 type Tool = { name: string; description?: string; annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean }; inputSchema?: object };
 // a hosted MCP: JSON-RPC over POST, the tools it was given, each answered by reply()
@@ -191,4 +199,224 @@ test('the pass-through is in the keys people make, and a read key can’t reach 
   assert.ok(PROFILES.read!.includes('connection.tools'));
   assert.ok(!PROFILES.read!.includes('connection.call'));
   for (const p of ['deploy', 'ops']) for (const t of ['connection.tools', 'connection.call']) assert.ok(PROFILES[p]!.includes(t), `${p}: ${t}`);
+});
+
+// --- the bill: a Hostinger plan never drops out without a word ---------------------------------------------------------------
+const FUTURE = new Date(Date.now() + 90 * 86400_000).toISOString(), PAST = new Date(Date.now() - 86400_000).toISOString();
+const plan = (name: string, o: object) => ({ id: name, name, status: 'active', billing_period: 1, billing_period_unit: 'month', currency_code: 'USD', ...o });
+
+test('subCost: every status and missing field from Hostinger’s docs', () => {
+  assert.deepEqual(subCost(plan('kvm', { renewal_price: 2000, total_price: 1000 })), { monthly: 20, currency: 'USD' });
+  assert.deepEqual(subCost(plan('kvm', { status: 'not_renewing', renewal_price: 0, total_price: 47976, billing_period: 24, expires_at: FUTURE })), { monthly: 19.99, currency: 'USD' }, 'auto-renew off, paid up front: still a server you pay for');
+  assert.deepEqual(subCost(plan('kvm', { status: 'in_trial', total_price: 1200, billing_period: 1, billing_period_unit: 'YEAR' })), { monthly: 1, currency: 'USD' });
+  assert.equal(subCost(plan('gone', { status: 'not_renewing', total_price: 900, expires_at: PAST })), undefined);
+  for (const status of ['cancelled', 'transferred']) assert.equal(subCost(plan('gone', { status, total_price: 900 })), undefined, status);
+  assert.deepEqual(subCost(plan('p', { status: 'paused', total_price: 900 })), { why: 'its status is paused' });
+  assert.deepEqual(subCost(plan('f', { status: 'future', total_price: 900 })), { why: 'its status is future' });
+  assert.deepEqual(subCost(plan('n', { renewal_price: null, total_price: 0 })), { why: 'Hostinger gave no price' });
+  assert.deepEqual(subCost(plan('u', { total_price: 900, billing_period_unit: undefined })), { why: 'Hostinger didn’t say how often it’s billed' });
+  assert.deepEqual(subCost(plan('c', { total_price: 900, currency_code: undefined })), { why: 'Hostinger gave no currency' });
+});
+
+test('perMonth: a period under a month isn’t rounded up to one', () => {
+  assert.equal(Math.round(perMonth(1, 1, 'day') * 10), 304);
+  assert.equal(perMonth(120, 1, 'year'), 10);
+  assert.equal(perMonth(30, 3, 'Month'), 10);
+});
+
+test('the bill keeps a 16 GB VPS with auto-renew off, and marks what it can’t price as unknown', async () => {
+  const app = testApp(), o = await testOrg(app);
+  account(app, o.orgId, 'hostinger', 'hostinger-token-123456');
+  const subs = [
+    plan('.com domain', { billing_period_unit: 'year', renewal_price: 1644, total_price: 1644 }),
+    plan('KVM 4', { status: 'not_renewing', billing_period: 24, renewal_price: 0, total_price: 47976, expires_at: FUTURE }),
+    plan('Business email', { renewal_price: null, total_price: null }),
+    plan('Paused box', { status: 'paused', total_price: 999 }),
+    plan('Old box', { status: 'cancelled', total_price: 999 }),
+    plan('Euro box', { currency_code: 'EUR', total_price: 1000 }),
+  ];
+  const data = [JSON.stringify(subs), JSON.stringify({ data: subs })];
+  app.services.hostinger = { call: async () => data.shift() } as never;
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ rates: {} }))) as typeof fetch; // no rate for EUR today
+  try {
+    for (const round of ['bare list', 'wrapped in data']) {
+      const r = ok(await o.h('budget.check'));
+      assert.deepEqual(r.costs.map((c: { label: string; amount: number }) => [c.label, c.amount]), [['.com domain', 1.37], ['KVM 4', 19.99]], round);
+      assert.deepEqual(r.unknown.map((u: { label: string }) => u.label), ['Business email', 'Paused box', 'Euro box'], round);
+      assert.match(r.unknown[2].why, /10\.00 EUR, no exchange rate to USD/);
+      assert.ok(r.forecast >= 21.35 && r.forecast < 21.37, `${round}: ${r.forecast}`);
+    }
+    // the other views show them too, at no amount, and say so
+    const view = autopilotView(app.db, o.orgId).budget;
+    assert.equal(view.costs.filter((c: { kind: string }) => c.kind === 'unknown').length, 3);
+    assert.ok(Math.abs(view.forecast - 21.36) < 0.02);
+    const radar = await costRadar({ db: app.db, orgId: o.orgId });
+    assert.ok(radar.notes.some((n: string) => /Business email: amount unknown \(Hostinger gave no price\)/.test(n)));
+    assert.ok(Math.abs(radar.total - 21.36) < 0.02);
+  } finally { globalThis.fetch = real; }
+});
+
+// --- GitHub Actions --------------------------------------------------------------------------------------------------------
+async function fakeGitHub() {
+  const st = { secrets: ['OLD_KEY'], reruns: [] as string[], blobAuth: 'unset' }, calls: Req[] = [];
+  let base = '';
+  const server = createServer(async (req, res) => {
+    let body = ''; for await (const c of req) body += c;
+    const auth = String(req.headers.authorization ?? ''), p = new URL(req.url!, 'http://x').pathname;
+    calls.push({ method: req.method!, path: req.url!, auth, body, headers: req.headers });
+    const send = (status: number, data: unknown) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(data));
+    if (p === '/blob/job-71.log') { st.blobAuth = auth; return res.writeHead(200, { 'content-type': 'text/plain' }).end('\x1b[32m2026-11-06T10:00:00.1234567Z Run npm test\x1b[0m\n2026-11-06T10:00:01.1234567Z ##[error]Process completed with exit code 1.\nleaked ghp_abcdefghijklmnopqrstuvwxyz0123456789'); }
+    if (auth !== 'Bearer ghp_testtoken1234567890') return send(401, { message: 'Bad credentials' });
+    if (p === '/repos/acme/locked/actions/runs') return send(403, { message: 'Resource not accessible by integration' });
+    if (p === '/repos/acme/shop') return send(200, { private: true });
+    if (p === '/repos/acme/shop/actions/runs') return send(200, { workflow_runs: [{ id: 7, name: 'CI', display_title: 'Fix checkout', status: 'completed', conclusion: 'failure', head_branch: 'main', head_sha: 'abc1234def', event: 'push', html_url: 'https://github.example/run/7', updated_at: '2026-11-06T10:00:00Z' }] });
+    if (p === '/repos/acme/shop/actions/runs/7') return send(200, { id: 7, name: 'CI', status: 'completed', conclusion: 'failure', head_branch: 'main', head_sha: 'abc1234def', html_url: 'https://github.example/run/7' });
+    if (p === '/repos/acme/shop/actions/runs/7/jobs') return send(200, { jobs: [{ id: 70, name: 'lint', status: 'completed', conclusion: 'success', steps: [] }, { id: 71, name: 'test', status: 'completed', conclusion: 'failure', html_url: 'https://github.example/job/71', steps: [{ name: 'Run tests', conclusion: 'failure' }] }] });
+    if (p === '/repos/acme/shop/actions/jobs/71/logs') return res.writeHead(302, { location: `${base}/blob/job-71.log` }).end();
+    if (req.method === 'POST' && /\/actions\/runs\/7\/rerun(-failed-jobs)?$/.test(p)) { st.reruns.push(p.split('/').pop()!); return send(201, {}); }
+    if (p === '/repos/acme/shop/actions/secrets') return send(200, { secrets: st.secrets.map((name) => ({ name, updated_at: '2026-11-01T00:00:00Z' })) });
+    send(404, { message: 'Not Found' });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  return { base, calls, st, close: () => server.close() };
+}
+// a stand-in gh: writes down how it was started, its token and what came on stdin
+function fakeGh() {
+  const dir = mkdtempSync(join(tmpdir(), 'gh-')), bin = join(dir, 'gh'), out = join(dir, 'calls.jsonl');
+  writeFileSync(bin, `#!/usr/bin/env node\nconst fs = require('fs'); let s = ''; process.stdin.on('data', (d) => s += d).on('end', () => { fs.appendFileSync(${JSON.stringify(out)}, JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN, prompt: process.env.GH_PROMPT_DISABLED, stdin: s }) + '\\n'); if (process.env.FAKE_GH_FAIL) { console.error('HTTP 403: Resource not accessible by integration ' + process.env.GH_TOKEN); process.exit(1); } });\n`);
+  chmodSync(bin, 0o755);
+  process.env.UNIT7_GH_BIN = bin;
+  return { calls: () => (existsSync(out) ? readFileSync(out, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []) };
+}
+const github = (app: App, orgId: string) => account(app, orgId, 'github', 'ghp_testtoken1234567890', 'GitHub');
+
+test('Actions: what ran, why it failed (a redirect with no token on it), and what to do when GitHub says no', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeGitHub();
+  process.env.UNIT7_GITHUB_API = api.base;
+  try {
+    github(app, o.orgId);
+    const runs = ok(await o.a('github.runs', { repo: 'acme/shop' }));
+    assert.deepEqual(runs.runs.map((r: { id: number; conclusion: string; commit: string }) => [r.id, r.conclusion, r.commit]), [[7, 'failure', 'abc1234']]);
+    assert.match(runs.untrusted, /not instructions/);
+    assert.equal(ok(await o.a('github.runs', { repo: 'acme/shop', runId: 7 })).jobs[1].failedStep, 'Run tests');
+    assert.ok(api.calls.some((c) => /\/runs\?per_page=15$/.test(c.path)));
+    ok(await o.a('github.runs', { repo: 'acme/shop', failed: true }));
+    assert.ok(api.calls.some((c) => /status=failure/.test(c.path)));
+
+    const logs = ok(await o.a('github.run_logs', { repo: 'acme/shop', runId: 7 }));
+    assert.equal(logs.logs.length, 1, 'only the job that failed');
+    assert.deepEqual(logs.logs[0].errors, ['Process completed with exit code 1.']);
+    assert.doesNotMatch(logs.logs[0].tail, /\x1b|ghp_abc|2026-11-06T/, 'colours and timestamps go, and a token in a log is masked');
+    assert.equal(api.st.blobAuth, '', 'the token stays behind on the redirect');
+    const none = await o.a('github.run_logs', { repo: 'acme/shop', runId: 7, jobId: 999 });
+    assert.equal((none as { error: { code: string } }).error.code, 'not_found_there');
+
+    const no = await o.a('github.runs', { repo: 'acme/locked' });
+    assert.equal(no.status, 'error');
+    assert.match((no as { error: { message: string } }).error.message, /GitHub said no \(Resource not accessible by integration\).*give it Actions and Secrets read and write/);
+    assert.equal(((await o.a('github.runs', { repo: 'acme/missing' })) as { error: { code: string } }).error.code, 'not_found_there');
+    const seen = api.calls.length;
+    assert.equal((await o.a('github.runs', { repo: '../..' })).status, 'error', 'a path in a repo name goes nowhere');
+    assert.equal(api.calls.length, seen);
+  } finally { delete process.env.UNIT7_GITHUB_API; api.close(); }
+});
+
+test('no GitHub account says what to connect', async () => {
+  const app = testApp(), o = await testOrg(app);
+  const r = await o.a('github.runs', { repo: 'acme/shop' });
+  assert.match((r as { error: { message: string } }).error.message, /Connect one in Connections/);
+});
+
+test('several GitHub accounts: the one that can see the repo is used', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeGitHub();
+  process.env.UNIT7_GITHUB_API = api.base;
+  try {
+    account(app, o.orgId, 'github', 'ghp_someoneelse12345678', 'Other');
+    github(app, o.orgId);
+    assert.equal(ok(await o.a('github.runs', { repo: 'acme/shop' })).runs.length, 1);
+  } finally { delete process.env.UNIT7_GITHUB_API; api.close(); }
+});
+
+test('github.workflow_run: an AI asks first, a person runs it, failed jobs unless told otherwise', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeGitHub();
+  process.env.UNIT7_GITHUB_API = api.base;
+  try {
+    github(app, o.orgId);
+    assert.equal((await o.a('github.workflow_run', { repo: 'acme/shop', runId: 7 })).status, 'approval_required');
+    assert.deepEqual(api.st.reruns, []);
+    ok(await o.h('github.workflow_run', { repo: 'acme/shop', runId: 7 }));
+    ok(await o.h('github.workflow_run', { repo: 'acme/shop', runId: 7, failedOnly: false }));
+    assert.deepEqual(api.st.reruns, ['rerun-failed-jobs', 'rerun']);
+  } finally { delete process.env.UNIT7_GITHUB_API; api.close(); }
+});
+
+test('github.secret: sealed by gh with the token in its environment and the value on stdin, and Undo takes a new one back', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeGitHub(), gh = fakeGh();
+  process.env.UNIT7_GITHUB_API = api.base;
+  const VALUE = 'sk_live_supersecretvalue1234567890';
+  try {
+    github(app, o.orgId);
+    assert.deepEqual(ok(await o.a('github.secret', { repo: 'acme/shop' })).secrets.map((s: { name: string }) => s.name), ['OLD_KEY']);
+
+    const set = ok(await o.h('github.secret', { repo: 'acme/shop', op: 'set', name: 'STRIPE_KEY', secretValue: VALUE }));
+    const c = gh.calls()[0];
+    assert.deepEqual(c.args, ['secret', 'set', 'STRIPE_KEY', '--repo', 'acme/shop']);
+    assert.equal(c.token, 'ghp_testtoken1234567890');
+    assert.equal(c.stdin, VALUE);
+    assert.equal(c.prompt, '1');
+    assert.ok(!all<{ input: string }>(app.db, `SELECT input FROM audit WHERE tool = 'github.secret'`).some((a) => a.input?.includes('supersecret')), 'never in the audit');
+
+    // a new secret can be taken back; a replaced one can't, and it says so
+    ok(await o.h('change.undo', { changeId: set.changeId }));
+    assert.deepEqual(gh.calls()[1].args, ['secret', 'delete', 'STRIPE_KEY', '--repo', 'acme/shop']);
+    const again = ok(await o.h('github.secret', { repo: 'acme/shop', op: 'set', name: 'old_key', secretValue: VALUE }));
+    assert.equal(again.replaced, true);
+    assert.match(again.note, /can’t come back/);
+
+    // a reference goes in without an AI ever seeing it
+    ok(await o.h('vault.set', { ref: 'credential://app/shop/stripe', value: VALUE }));
+    ok(await o.h('github.secret', { repo: 'acme/shop', op: 'set', name: 'FROM_VAULT', secretValue: 'credential://app/shop/stripe' }));
+    assert.equal(gh.calls().at(-1).stdin, VALUE);
+
+    // an AI waits for a person, and what it asked for is sealed while it waits
+    const ask = await o.a('github.secret', { repo: 'acme/shop', op: 'set', name: 'NEW_KEY', secretValue: VALUE });
+    assert.equal(ask.status, 'approval_required');
+    assert.doesNotMatch(get<{ input: string }>(app.db, 'SELECT input FROM approvals WHERE id = ?', (ask as { approvalId: string }).approvalId)!.input, /supersecret/);
+
+    // removing needs the name, and an AI's waits too
+    assert.equal(((await o.h('github.secret', { repo: 'acme/shop', op: 'remove', name: 'OLD_KEY' })) as { error: { code: string } }).error.code, 'confirm_needed');
+    assert.equal((await o.a('github.secret', { repo: 'acme/shop', op: 'remove', name: 'OLD_KEY', confirmName: 'OLD_KEY' })).status, 'approval_required');
+    ok(await o.h('github.secret', { repo: 'acme/shop', op: 'remove', name: 'OLD_KEY', confirmName: 'OLD_KEY' }));
+    assert.deepEqual(gh.calls().at(-1).args, ['secret', 'delete', 'OLD_KEY', '--repo', 'acme/shop']);
+
+    assert.equal((await o.h('github.secret', { repo: 'acme/shop', op: 'set', name: 'GITHUB_TOKEN', secretValue: 'x' })).status, 'error');
+
+    // gh's own refusal comes through in plain words, with the token masked
+    process.env.FAKE_GH_FAIL = '1';
+    const no = await o.h('github.secret', { repo: 'acme/shop', op: 'set', name: 'ANOTHER', secretValue: VALUE });
+    assert.match((no as { error: { message: string } }).error.message, /GitHub refused that: HTTP 403/);
+    assert.doesNotMatch((no as { error: { message: string } }).error.message, /ghp_test/);
+  } finally { delete process.env.FAKE_GH_FAIL; delete process.env.UNIT7_GH_BIN; delete process.env.UNIT7_GITHUB_API; api.close(); }
+});
+
+test('no gh on this computer: it says so, and how to do it by hand', async () => {
+  const app = testApp(), o = await testOrg(app), api = await fakeGitHub();
+  process.env.UNIT7_GITHUB_API = api.base; process.env.UNIT7_GH_BIN = join(tmpdir(), 'no-such-gh-here');
+  try {
+    github(app, o.orgId);
+    const r = await o.h('github.secret', { repo: 'acme/shop', op: 'set', name: 'K', secretValue: 'value-123' });
+    assert.equal((r as { error: { code: string } }).error.code, 'gh_missing');
+    assert.match((r as { error: { message: string } }).error.message, /brew install gh.*Settings → Secrets and variables → Actions/);
+  } finally { delete process.env.UNIT7_GH_BIN; delete process.env.UNIT7_GITHUB_API; api.close(); }
+});
+
+test('Unit7’s GitHub pages ask for the rights these need', async () => {
+  const gh = provider('github')!;
+  assert.match(gh.alt!.keyUrl, /scopes=repo,workflow/);
+  assert.match(gh.alt!.hint, /Actions logs, re-runs and secrets/);
+  const app = testApp(), o = await testOrg(app), origin = 'http://localhost:4800';
+  const state = (await startConnect(app, { providerId: 'github', orgId: o.orgId, userId: o.userId, origin })).split('/').pop()!;
+  assert.match(githubManifestPage(state, o.userId, origin), /actions&quot;:&quot;write&quot;,&quot;secrets&quot;:&quot;write/);
 });

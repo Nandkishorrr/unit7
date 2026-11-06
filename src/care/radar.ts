@@ -56,7 +56,8 @@ export async function costRadar(ctx: { db: DB; orgId: string }, o: { fx?: Fx; at
   const at = o.at ?? new Date();
   const b = budgetOf(ctx);
   const notes: string[] = [];
-  const costs = all<{ provider: string; account: string; label: string; amount: number; kind: CostKind; at: string }>(db, 'SELECT provider, account, label, amount, kind, at FROM costs WHERE org_id = ?', orgId);
+  const costs = all<{ provider: string; account: string; label: string; amount: number; kind: CostKind; original: string | null; at: string }>(db, 'SELECT provider, account, label, amount, kind, original, at FROM costs WHERE org_id = ?', orgId);
+  for (const c of costs) if (c.kind === 'unknown') notes.push(`${c.label}: amount unknown (${c.original}), so it isn’t in these totals.`);
   const checkedAt = costs.map((c) => c.at).sort().at(-1) ?? null;
   const servers = all<{ id: string; name: string; monthly_price: number | null; price_currency: string | null; price_source: string | null; provider_ref: string | null }>(db,
     'SELECT id, name, monthly_price, price_currency, price_source, provider_ref FROM servers WHERE org_id = ? AND monthly_price IS NOT NULL', orgId);
@@ -68,7 +69,7 @@ export async function costRadar(ctx: { db: DB; orgId: string }, o: { fx?: Fx; at
     return [{ ...s, provider, monthly: s.monthly_price! * rate }];
   });
   // a Hostinger VPS's price is one of the Hostinger plans budget.check already read: counted once
-  const covered = (s: { provider: string }) => s.provider === 'hostinger' && costs.some((c) => c.provider === 'hostinger');
+  const covered = (s: { provider: string }) => s.provider === 'hostinger' && costs.some((c) => c.provider === 'hostinger' && c.kind !== 'unknown');
 
   // by provider: what each costs this month (usage so far is projected over the month: an estimate)
   const providers = new Map<string, { amount: number; kind: CostKind }[]>();

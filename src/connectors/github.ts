@@ -13,6 +13,7 @@ import type { Ctx } from '../tools/runtime.ts';
 import { get, json, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { dnsHost } from './dnsinfo.ts';
+import { assertReachable } from '../netguard.ts';
 import { githubAppToken } from './oneclick.ts';
 import { sysBin } from './shell.ts';
 
@@ -65,7 +66,7 @@ export async function githubApi<T>(token: string | undefined, path: string, init
   });
   if (!r.ok) {
     const why = (await r.json().catch(() => ({})) as { message?: string }).message;
-    throw new Unit7Error('github_api', `GitHub said ${r.status} for ${path}${why ? `: ${why}` : ''}`, 502);
+    throw new Unit7Error('github_api', `GitHub said ${r.status} for ${path}${why ? `: ${why}` : ''}`, 502, { status: r.status, why });
   }
   return r.status === 204 ? (undefined as T) : r.json() as Promise<T>;
 }
@@ -195,6 +196,47 @@ export async function pushFolder(files: { path: string; abs: string }[], repo: R
     if (changed || !o.existing) await git('push', '-q', 'origin', `HEAD:refs/heads/${o.branch}`);
     return (await git('rev-parse', 'HEAD')).stdout.trim();
   } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
+
+// --- Actions: what ran, why it failed, and running it again --------------------------------------------------------------
+export interface WorkflowRun { id: number; name: string; title: string; status: string; conclusion: string | null; branch: string; commit: string; event: string; url: string; at: string }
+const runOf = (r: any): WorkflowRun => ({ id: r.id, name: String(r.name ?? r.path ?? 'Workflow'), title: String(r.display_title ?? ''), status: r.status, conclusion: r.conclusion ?? null, branch: String(r.head_branch ?? ''), commit: String(r.head_sha ?? '').slice(0, 7), event: String(r.event ?? ''), url: r.html_url, at: r.updated_at ?? r.created_at });
+const actionsPath = (repo: Repo) => `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/actions`;
+export const workflowRuns = (repo: Repo, token: string, o: { branch?: string; status?: string; limit?: number } = {}) => {
+  const q = new URLSearchParams({ per_page: String(o.limit ?? 15), ...(o.branch && { branch: o.branch }), ...(o.status && { status: o.status }) });
+  return api<{ workflow_runs: any[] }>(token, `${actionsPath(repo)}/runs?${q}`).then((r) => r.workflow_runs.map(runOf));
+};
+export const workflowRun = (repo: Repo, id: number, token: string) => api<any>(token, `${actionsPath(repo)}/runs/${id}`).then(runOf);
+export interface WorkflowJob { id: number; name: string; status: string; conclusion: string | null; url: string; failedStep?: string }
+export const runJobs = (repo: Repo, runId: number, token: string) => api<{ jobs: any[] }>(token, `${actionsPath(repo)}/runs/${runId}/jobs?filter=latest&per_page=100`).then((r) => r.jobs.map((j): WorkflowJob => ({
+  id: j.id, name: String(j.name), status: j.status, conclusion: j.conclusion ?? null, url: j.html_url, failedStep: (j.steps as { name: string; conclusion: string | null }[] | undefined)?.find((s) => s.conclusion === 'failure')?.name })));
+// A job's log is a redirect to a short-lived address on another host: checked first, and the token stays behind
+export async function jobLog(repo: Repo, jobId: number, token: string): Promise<string> {
+  const path = `${actionsPath(repo)}/jobs/${jobId}/logs`;
+  const r = await fetch(`${API()}${path}`, { redirect: 'manual', headers: { accept: 'application/vnd.github+json', 'user-agent': 'Unit7', 'x-github-api-version': '2022-11-28', authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+  const where = r.status >= 300 && r.status < 400 ? r.headers.get('location') : undefined;
+  if (!where && !r.ok) throw new Unit7Error('github_api', `GitHub said ${r.status} for ${path}`, 502, { status: r.status });
+  if (!where) return r.text();
+  await assertReachable(new URL(where).hostname);
+  const log = await fetch(where, { signal: AbortSignal.timeout(30_000) });
+  if (!log.ok) throw new Unit7Error('github_log', 'GitHub no longer has this log, or it’s still being written. Try again in a minute.', 502);
+  return log.text();
+}
+export const rerunWorkflow = (repo: Repo, runId: number, failedOnly: boolean, token: string) => api(token, `${actionsPath(repo)}/runs/${runId}/${failedOnly ? 'rerun-failed-jobs' : 'rerun'}`, { method: 'POST', body: {} });
+export const actionsSecrets = (repo: Repo, token: string) => api<{ secrets: { name: string; updated_at?: string }[] }>(token, `${actionsPath(repo)}/secrets?per_page=100`).then((r) => r.secrets.map((s) => ({ name: s.name, updatedAt: s.updated_at })));
+
+// GitHub only takes a secret sealed to the repo's own key, which needs a crypto library Unit7 doesn't carry, so gh does the sealing.
+// The token goes in its environment and the value on stdin: neither is ever on a command line.
+export function ghSecret(args: string[], token: string, value?: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(process.env.UNIT7_GH_BIN ?? 'gh', ['secret', ...args], { timeout: 30_000, env: { ...process.env, GH_TOKEN: token, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' } }, (e, _out, err) => {
+      if (!e) return resolve();
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return reject(new Unit7Error('gh_missing', 'Setting a GitHub secret needs GitHub’s command-line tool (gh), and it isn’t installed on the computer running Unit7. Install it (brew install gh) and try again. It doesn’t need signing in. Or add the secret yourself on GitHub, under the repo’s Settings → Secrets and variables → Actions.', 409));
+      reject(new Unit7Error('gh_failed', `GitHub refused that: ${String(err || e.message).replaceAll(token, '***').trim().split('\n').filter(Boolean).pop()?.slice(0, 240) ?? 'no reason given'}`, 502));
+    });
+    child.stdin?.on('error', () => undefined); // gh exited first: the callback above says why
+    child.stdin?.end(value ?? '');
+  });
 }
 
 // GitHub's code search skips repos it hasn't indexed and says nothing, so an empty answer proves nothing: look in the code itself

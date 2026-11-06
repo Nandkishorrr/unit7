@@ -54,7 +54,7 @@ const accountsOf = (ctx: Ctx, provider: string, named?: string) => {
   return list;
 };
 // a value as given, or what a credential:// reference holds; the redactor knows it either way
-function valueOf(ctx: Ctx, v: string, label: string) {
+export function valueOf(ctx: Ctx, v: string, label: string) {
   if (!isRef(v)) { ctx.redactor.add(v, label); return v; }
   checkRef(ctx, { type: 'org', id: ctx.orgId, label: 'organization' }, v);
   return ctx.secret(v);
@@ -67,7 +67,7 @@ const askedByName = (c: { actor: Ctx['actor']; dryRun?: boolean }, i: { confirmN
   if (c.actor.kind !== 'user' && !c.dryRun && !i.confirmName) throw need('Give confirmName. The person approving types it again.');
 };
 // a change that isn't on a server, with what takes it back (Activity's Undo, CHANGE_UNDO below)
-function remember(ctx: Ctx, part: string, verb: string, summary: string, undo: object) {
+export function remember(ctx: Ctx, part: string, verb: string, summary: string, undo: object) {
   const changeId = id('chg');
   run(ctx.db, 'INSERT INTO changes (id, org_id, server_id, part, verb, summary, undo, status, actor) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)', changeId, ctx.orgId, part, verb, summary, JSON.stringify({ steps: [], ...undo }), 'done', ctx.actor.name);
   ctx.emit('change.made', `${summary}. It can be undone.`, { resource: part, data: { changeId, part, undo: 'change.undo' } });
