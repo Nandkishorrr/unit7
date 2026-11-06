@@ -270,7 +270,7 @@ export function emailStatus(hasMx: boolean, root: string[], dmarc: string[]) {
   return { status: missing.length ? (hasMx ? 'unprotected' : 'spoofable') : 'ok',
     detail: missing.length ? `${missing.join(' and ')} missing${hasMx ? ': your email may land in spam, and others can send as you' : ': this domain sends no email, but anyone can pretend it does'}` : spf ? 'SPF and DMARC set' : 'DMARC rejects anything sent in this name' };
 }
-// DNS can't list a domain's DKIM keys, so the names senders usually use are asked
+// ponytail: DNS can't list a domain's DKIM keys, so only these usual names are asked; email.check also reads a connected DNS host
 export const DKIM_SELECTORS = ['resend', 'google', 'default', 'selector1', 'selector2', 'k1', 's1', 's2', 'dkim', 'mail', 'smtp', 'zoho', 'hostingermail-a', 'fm1', 'protonmail', 'pm', 'cf2024-1'];
 export const isDkimKey = (t: string) => /(^|;)\s*p=[A-Za-z0-9+/]/.test(t);
 // (pure) signed, unsigned, or silent: a domain with no mail has nothing to sign

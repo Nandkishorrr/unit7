@@ -341,6 +341,7 @@ async function routingZone(ctx: Ctx, zone: string, named?: string) {
   for (const { id: acc } of accounts) { const z = await cloudflare.findZone(ctx, acc, zone).catch(() => undefined); if (z?.name === zone) return { acc, zoneId: z.id }; }
   throw new Unit7Error('not_found', `None of your connected Cloudflare accounts holds ${zone}.`, 404);
 }
+// ponytail: the first 50 rules and inboxes of an account, plenty for one person's domains; page through past that
 interface CfRule { id: string; name?: string; enabled?: boolean; matchers?: { type: string; field?: string; value?: string }[]; actions?: { type: string; value?: string[] }[] }
 const ruleFor = (rules: CfRule[], from: string) => rules.find((r) => r.matchers?.some((m) => m.type === 'literal' && m.field === 'to' && m.value?.toLowerCase() === from));
 const ruleBody = (from: string, to: string) => ({ name: `Unit7: ${from}`, enabled: true, matchers: [{ type: 'literal', field: 'to', value: from }], actions: [{ type: 'forward', value: [to] }] });
@@ -357,7 +358,7 @@ async function lookForward(ctx: Ctx, i: ForwardIn) {
   if (domain !== zone) throw new Unit7Error('unsupported', `Unit7 sets up forwarding on ${zone} itself, not on ${domain}. Use an address @${zone}.`, 400);
   const { acc, zoneId } = await routingZone(ctx, zone, i.accountId);
   const mx = await step<{ records: { value: string }[] }>(ctx, 'dns.list', { domain: zone, name: '@', type: 'MX', accountId: acc });
-  const [settings, rules, info, needed] = await Promise.all([routing<{ enabled?: boolean }>(ctx, acc, `/zones/${zoneId}/email/routing`), routing<CfRule[]>(ctx, acc, `/zones/${zoneId}/email/routing/rules`), routing<{ account: { id: string } }>(ctx, acc, `/zones/${zoneId}`),
+  const [settings, rules, info, needed] = await Promise.all([routing<{ enabled?: boolean }>(ctx, acc, `/zones/${zoneId}/email/routing`), routing<CfRule[]>(ctx, acc, `/zones/${zoneId}/email/routing/rules?per_page=50`), routing<{ account: { id: string } }>(ctx, acc, `/zones/${zoneId}`),
     routing<{ type: string; name: string; content: string; priority?: number }[] | { record?: { type: string; name: string; content: string; priority?: number }[] }>(ctx, acc, `/zones/${zoneId}/email/routing/dns`)]);
   const addresses = await routing<{ id: string; email: string; verified?: string | null }[]>(ctx, acc, `/accounts/${info.account.id}/email/routing/addresses?per_page=50`);
   const foreign = mx.records.filter((r) => !CF_MAIL.test(r.value.replace(/\.$/, ''))).map((r) => r.value), rule = ruleFor(rules, i.from);
@@ -414,7 +415,7 @@ CHANGE_UNDO['email.forward'] = async (ctx, ch) => {
   if (u.before) { const { id: _id, ...body } = u.before; await routing(ctx, u.accountId, `${rule}/${encodeURIComponent(u.ruleId)}`, { method: 'PUT', body }); }
   else await routing(ctx, u.accountId, `${rule}/${encodeURIComponent(u.ruleId)}`, { method: 'DELETE' });
   // the domain goes back only when nothing else forwards through it
-  const others = (await routing<CfRule[]>(ctx, u.accountId, rule)).some((r) => r.matchers?.some((m) => m.type === 'literal'));
+  const others = (await routing<CfRule[]>(ctx, u.accountId, `${rule}?per_page=50`)).some((r) => r.matchers?.some((m) => m.type === 'literal'));
   if (!u.turnedOn || others) return { rule: u.before ? 'put back' : 'removed', ...(others && { note: 'Other addresses still forward, so Email Routing stays on.' }) };
   await routing(ctx, u.accountId, `/zones/${u.zoneId}/email/routing/dns`, { method: 'DELETE' });
   const left: string[] = [];

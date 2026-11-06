@@ -994,11 +994,11 @@ test('project.readiness on a stack found on a server: sign-up emails and login, 
   assert.match(key(r, 'sender').detail, /can’t leave/);
   assert.deepEqual(key(r, 'sender').fix, { tool: 'email.connect_app', input: { domain: 'example.com', serverId: srv, part: 'coolify:shopsupa01' }, label: 'Connect the sender' }, 'the login is there, so this is the next step');
   assert.equal(key(r, 'login').ok, false);
-  assert.deepEqual(key(r, 'login').fix, { tool: 'auth.urls', input: { url: 'https://shop.example.com', serverId: srv, part: 'coolify:shopsupa01' }, label: 'Fix login' });
+  assert.deepEqual(key(r, 'login').fix, { ask: 'Make login work on https://shop.example.com for shop-supabase, and tell me what to change at Google or GitHub', label: 'Fix with AI' }, 'it leaves something to paste, which a button can’t say');
   assert.equal(key(r, 'dkim').ok, false);
   assert.match(key(r, 'dkim').detail, /no DKIM key found/);
-  assert.equal(key(r, 'dkim').fix.tool, 'email.check');
-  for (const k of ['sender', 'login', 'dkim']) { const f = key(r, k).fix; assert.equal(getTool(f.tool)!.input.safeParse(f.input).success, true, `${k}’s fix runs as it stands`); }
+  assert.match(key(r, 'dkim').fix.ask, /example\.com’s email/);
+  { const f = key(r, 'sender').fix; assert.equal(getTool(f.tool)!.input.safeParse(f.input).success, true, 'the fix runs as it stands'); }
 
   const good = await onServer(COOLIFY_HOST, (inv) => { inv.parts.find((p) => p.name === 'shop-supabase')!.env = [{ via: 'GOTRUE_SMTP_HOST', host: 'smtp.resend.com' }, { via: 'GOTRUE_SITE_URL', host: 'shop.example.com' }]; });
   run(good.app.db, `INSERT INTO watch (org_id, host, kind, status, detail, value) VALUES (?, 'example.com', 'email', 'ok', 'SPF and DMARC set', 'signed')`, good.o.orgId);
@@ -1033,7 +1033,7 @@ test('project.readiness and the Check-up flag an app on Supabase’s built-in se
     const r = ok(await o.h('project.readiness', { projectId: prj.id ?? prj.projectId }));
     assert.match(key(r, 'sender').detail, /stop after 2 an hour/);
     assert.deepEqual(key(r, 'sender').fix, { ask: 'Set up email sending for shop-db', label: 'Set up with AI' }, 'no domain seen on the map yet');
-    assert.deepEqual(key(r, 'login').fix, { tool: 'auth.urls', input: { url: 'https://shop.example.com', ref: REF }, label: 'Fix login' });
+    assert.match(key(r, 'login').fix.ask, /Make login work on https:\/\/shop\.example\.com for shop-db/);
 
     // the Check-up says so too, once an app on the map uses it
     run(app.db, `INSERT INTO assets (id, org_id, account_id, provider, kind, ext_id, name, url, meta, seen_at) VALUES ('ast_appshop00001', ?, NULL, 'vercel', 'app', 'shop', 'shop', NULL, ?, '2026-11-01')`, o.orgId, JSON.stringify({ hosts: ['shop.vercel.app', 'shop.example.com'] }));
@@ -1043,13 +1043,12 @@ test('project.readiness and the Check-up flag an app on Supabase’s built-in se
     assert.match(item.title, /shop-db: sign-up emails stop after 2 an hour/);
     assert.match(item.why, /only to your own team/);
     assert.equal(item.area, 'app');
-    assert.equal(item.who, 'unit7');
-    assert.deepEqual([item.fix.tool, item.fix.input], ['email.setup', { domain: 'example.com' }]);
+    assert.equal(item.who, 'your-ai');
+    assert.equal(item.fix.ask, 'Set up email sending from example.com for shop-db');
     assert.ok(c.checked.some((x: any) => x.id === 'mail'));
 
     // a fix ticks now, not at the next sync
     app.vault.put(o.orgId, 'credential://smtp/example-com/password', 'a-password', { kind: 'smtp', meta: { host: 'smtp.resend.com', user: 'resend' } });
-    assert.deepEqual([item.fix.tool, c.items.length > 0], ['email.setup', true]);
     ok(await o.h('email.connect_app', { domain: 'example.com', ref: REF }));
     ok(await o.h('auth.urls', { ref: REF, url: 'https://shop.example.com' }));
     const fine = ok(await o.h('project.readiness', { projectId: prj.id ?? prj.projectId }));

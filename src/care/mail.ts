@@ -58,13 +58,12 @@ export function authOfServices(db: DB, orgId: string, serviceIds: string[]): See
 export const senderProblem = (s: SeenAuth) => (s.sender === 'built-in' ? { title: `${s.name}: sign-up emails stop after 2 an hour`, why: 'Supabase’s built-in sender is for testing: 2 emails an hour, and only to your own team. Real people won’t get their sign-up and password emails.' }
   : { title: `${s.name}: sign-up emails can’t leave`, why: 'Its mail settings point at no real server, so sign-up and password emails never arrive.' });
 const hasLogin = (db: DB, orgId: string, domain: string) => !!get(db, 'SELECT 1 FROM secrets WHERE org_id = ? AND ref = ? AND retired_at IS NULL', orgId, makeRef('smtp', domain, 'password'));
-// one step at a time: a sender for the domain, then that sender in this Supabase
+// a button when one tool finishes it; setting up a sender takes a few steps, and login leaves something to paste, so those
+// go to the person's AI, which can say so (a fix button only shows Done)
 export function senderFix(db: DB, orgId: string, s: SeenAuth): Fix {
-  if (!s.domain) return { ask: `Set up email sending for ${s.name}`, label: 'Set up with AI' };
-  return hasLogin(db, orgId, s.domain) ? { tool: 'email.connect_app', input: { domain: s.domain, ...s.at }, label: 'Connect the sender' } : { tool: 'email.setup', input: { domain: s.domain }, label: 'Set up sending' };
+  return s.domain && hasLogin(db, orgId, s.domain) ? { tool: 'email.connect_app', input: { domain: s.domain, ...s.at }, label: 'Connect the sender' } : { ask: `Set up email sending${s.domain ? ` from ${s.domain}` : ''} for ${s.name}`, label: 'Set up with AI' };
 }
 
-// Ready for real users: its sign-up emails get out, and login works on its own domain
 export function mailChecks(db: DB, orgId: string, seen: SeenAuth[], own: string[], add: (key: string, label: string, ok: boolean, detail: string, fix?: Fix) => void) {
   if (!seen.length) return;
   const weak = seen.find((s) => s.sender !== 'own');
@@ -72,13 +71,13 @@ export function mailChecks(db: DB, orgId: string, seen: SeenAuth[], own: string[
   const sites = own.filter((h) => !seen.some((s) => s.api?.includes(h)));
   if (!sites.length) return;
   const apexes = sites.map((h) => apexOf(h)), off = seen.find((s) => !s.site || !apexes.includes(apexOf(s.site)));
-  add('login', 'Login works on its domain', !off, off ? `${off.name} still sends people to ${off.site ?? 'a local address or its own API'}` : 'Sign-in sends people to its own domain', off && { tool: 'auth.urls', input: { url: `https://${sites[0]}`, ...off.at }, label: 'Fix login' });
+  add('login', 'Login works on its domain', !off, off ? `${off.name} still sends people to ${off.site ?? 'a local address or its own API'}` : 'Sign-in sends people to its own domain', off && { ask: `Make login work on https://${sites[0]} for ${off.name}, and tell me what to change at Google or GitHub`, label: 'Fix with AI' });
 }
 
 // mail from its domains is signed, from the daily check (a domain with no mail has nothing to sign)
 export function dkimCheck(rows: { a: string; value?: string | null }[], add: (key: string, label: string, ok: boolean, detail: string, fix?: Fix) => void) {
   const sends = rows.filter((r) => r.value && r.value !== 'silent'), bare = sends.find((r) => r.value === 'unsigned');
-  if (sends.length) add('dkim', 'Email is signed', !bare, bare ? `${bare.a}: no DKIM key found, so mail from it can land in spam` : 'DKIM keys found', bare && { tool: 'email.check', input: { domain: bare.a }, label: 'See what’s missing' });
+  if (sends.length) add('dkim', 'Email is signed', !bare, bare ? `${bare.a}: no DKIM key found, so mail from it can land in spam` : 'DKIM keys found', bare && { ask: `Check ${bare.a}’s email and help me sign it with DKIM`, label: 'Fix with AI' });
 }
 
 // said in a result, never done: only a person's or an AI's next step changes anything
