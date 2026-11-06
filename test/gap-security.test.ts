@@ -18,7 +18,7 @@ import { classify } from '../src/discovery/actions.ts';
 import { HELD_OPS, HELD_TOOLS, runHeld } from '../src/ops/index.ts';
 import { ROUTINE_AGENT, routineActor } from '../src/tools/routines.ts';
 import { fakeApi, account } from './clouds-fakes.ts';
-import { dropsDatabase, statement, tokenize } from '../src/tools/datamask.ts';
+import { dropsDatabase, mongoCall, mongoQuery, statement, textMask, tokenize } from '../src/tools/datamask.ts';
 import { buildInventory, type Part } from '../src/discovery/xray.ts';
 import { saveXray } from '../src/tools/xray.ts';
 import { ROLE, vaultAccount } from '../src/serverapps/adapters.ts';
@@ -450,4 +450,117 @@ test('7. where every container’s settings are kept in the clear is secret, a n
   assert.equal(code(await o.h('file.read', { serverId: SRV, path: '/srv/app/link' })), 'not_a_file');
   leads = '/run/containerd/x/config.json';
   assert.equal(code(await o.a('file.read', { serverId: SRV, path: '/srv/app/link' })), 'secret_file');
+});
+
+test('8. only what’s proved shows: on a real Postgres, whatever a query calls it and however it’s built', real, async () => {
+  const { o, pg } = await withPg();
+  pg.sql(`CREATE TABLE orders (id int, user_id int, total numeric); INSERT INTO orders VALUES (1, 1, 10), (2, 2, 20);
+    CREATE TABLE notes (a text, b text); INSERT INTO notes VALUES ('$2b$12$hiddeninnotes', 'x');
+    CREATE VIEW safe_looking AS SELECT id, password_hash AS plan FROM users;
+    CREATE VIEW barrier WITH (security_barrier) AS SELECT id, password_hash AS plan FROM users;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${ROLE};`, 'shop');
+  const rows = async (sql: string) => ok<any>(await o.a('part.query', { serverId: SRV, part: PG, sql })).rows;
+  for (const sql of [
+    'select v from users, lateral (values (password_hash),(password_hash)) t(v)',
+    'select "Foo", "Bar" from (select email "Foo", password_hash "Bar" from users offset 0) "A B"',
+    'select b from users u(a, b)',
+    'select b from users as u(a, b)',
+    'select plan from users u(id, plan, x, email)',
+    'select "b" from only (users) u(a, b)',
+    'select plan from barrier',
+    'select plan from safe_looking',
+    'select substr(password_hash, 1, 4) from users',
+    'select ascii(substr(v, 1, 1)) from users, lateral (values (password_hash)) t(v)',
+    'select sum(ascii(substr(password_hash, 1, 1))) from users',
+    'select length(password_hash) from users',
+    'select id::text || password_hash from users',
+    'select plan from users union all select password_hash from users',
+    'select plan from users union select password_hash from users',
+    'select x from (select plan x from users union all select password_hash from users) s',
+    'select u from users u',
+    'select max(password_hash) from users',
+    'with recursive r(x) as (select password_hash from users union all select x from r where false) select x from r',
+    'select * from unnest(array(select password_hash from users)) v',
+    'select most_common_vals::text from pg_stats where tablename = \'users\'',
+    'select prosrc from pg_proc limit 1',
+  ]) {
+    const out = JSON.stringify(await rows(sql));
+    assert.ok(!/shash|\$2b|shop\.example|\b\d{2,}\b/.test(out), `${sql}: ${out}`);
+    assert.ok(out.includes('[hidden]') || out === '[]', `${sql}: ${out}`);
+  }
+  // what's proved still shows
+  assert.deepEqual(await rows('select id, plan from users order by id'), [['1', 'pro'], ['2', 'free']]);
+  assert.deepEqual(await rows('select u.plan, o.total from users u join orders o on o.user_id = u.id order by o.id'), [['pro', '10'], ['free', '20']]);
+  assert.deepEqual(await rows('select plan, count(*) from users group by plan order by plan'), [['free', '1'], ['pro', '1']]);
+  assert.deepEqual(await rows('select count(*), count(email), count(*) filter (where email like \'%x\') from users'), [['2', '2', '0']]);
+  assert.deepEqual(await rows('select sum(total), max(total) from orders'), [['30', '20']]);
+  assert.deepEqual(await rows('select plan from users union all select plan from users order by 1'), [['free'], ['free'], ['pro'], ['pro']]);
+  assert.deepEqual(await rows('select 1'), [['1']]);
+  assert.deepEqual(await rows('show max_connections'), [['30']]);
+  // an app's own setting can hold a key: Supabase keeps its JWT secret in one
+  pg.sql(`ALTER DATABASE shop SET app.settings.jwt_secret = 'jwt-secret-value'`);
+  assert.deepEqual(await rows(`show "app.settings.jwt_secret"`), [['[hidden]']]);
+  assert.deepEqual(await rows('show app.settings.jwt_secret'), [['[hidden]']]);
+});
+
+test('8. the database’s own error words stay with the database', real, async () => {
+  const { o, seen } = await withPg();
+  const said = async (sql: string) => JSON.stringify(await o.a('part.query', { serverId: SRV, part: PG, sql }));
+  for (const sql of ['select cast(password_hash as int) from users', `select string_agg(password_hash || ' ' || email, ', ')::int from users`, `select 1/(select 0 from users where email = 'ann@shop.example')::int, password_hash::int from users`]) {
+    const out = await said(sql);
+    assert.ok(!/shash|\$2b|shop\.example/.test(out), `${sql}: ${out}`);
+    assert.match(out, /query_failed/);
+  }
+  assert.match(await said('select nope from users'), /isn’t there/);
+  assert.match(await said('selct 1 from users'), /needs_write/);
+  assert.match(await said('select from from users'), /Check its syntax/);
+  // a person still hears it all
+  assert.match(JSON.stringify(await o.h('part.query', { serverId: SRV, part: PG, sql: 'select cast(password_hash as int) from users' })), /shash/);
+  assert.ok(seen.length);
+});
+
+test('8. MySQL: only a plain SELECT is proved, item by item', async () => {
+  const mask = (sql: string, columns: string[]) => textMask(tokenize(sql, 'my'), columns);
+  assert.equal(mask('select b, c, d from (select 1 a, 2 b, 3 c, 4 d, 5 e union all select * from users) x', ['b', 'c', 'd']).all, true, 'a subquery can put anything under any name');
+  assert.equal(mask('select plan from users union select password from users', ['plan']).all, true);
+  assert.equal(mask('with u as (select password p from users) select p from u', ['p']).all, true);
+  assert.ok(mask('select binary password from users', ['binary password']).hide.has(0), 'a word in front is an operator, not a column');
+  assert.ok(mask('select lower(plan) from users', ['lower(plan)']).hide.has(0));
+  assert.ok(mask('select @a := plan from users', ['@a := plan']).hide.has(0));
+  assert.ok(mask("select 'x' from users", ['x']).hide.has(0));
+  assert.ok(mask('select sum(ascii(password)) from users', ['sum']).hide.has(0));
+  const fine = mask('select distinct u.plan, status as state, count(*) n, sum(total) from users u', ['plan', 'state', 'n', 'sum(total)']);
+  assert.deepEqual([fine.all, [...fine.hide]], [false, []]);
+  assert.deepEqual([...mask('select * from users', ['id', 'email', 'plan']).hide], [1]);
+  assert.equal(mask('show variables', ['Variable_name', 'Value']).all, true);
+  assert.equal(mask('describe users', ['Field', 'Type']).all, false);
+});
+
+test('8. MongoDB for an AI is plain data: none of its text can run', async () => {
+  const { app, o } = await world();
+  foundDb(app, o.orgId, [part({ id: 'c:mg-db', name: 'mg-db', engine: 'mongo', image: 'mongo:7', containers: ['mg-db-1'], networks: ['shop_default'] })]);
+  const sent: string[] = [];
+  ssh(app).exec = async (_s, _c, x: ExecOptions = {}) => { sent.push(String(x.stdin ?? '')); return { code: 0, stdout: '[{"_id":1,"plan":"pro","n":3}]\n', stderr: '', truncated: false }; };
+  const q = (sql: string, who = o.a) => who('part.query', { serverId: SRV, part: 'c:mg-db', sql });
+  for (const sql of ['db.users.find().toArray().map(d=>d["pass"+"word"]+" "+this["pro"+"cess"].env.P.split("").reverse().join(""))', 'db.users.find({ $where: "sleep(1000) || true" })', 'this.process', 'db.users.find({}, { x: { $function: { body: "1" } } })',
+    'db.users.aggregate([{ $project: { x: { $getField: { $concat: ["pas", "sword"] } } } }])', 'db.users.aggregate([{ $project: { x: { $objectToArray: "$$ROOT" } } }])', 'db.users.aggregate([{ $lookup: { from: "secrets", as: "s" } }])',
+    'db.users.find().forEach(printjson)', 'db.users.find({ a: function () { return 1 } })', 'db.users.mapReduce(1, 2)', 'db.users.find(); process.exit()', 'db["users"].find()', 'db.users.find({ a: 1 }).map(x => x)']) {
+    assert.equal(code(await q(sql)), 'bad_statement', sql);
+  }
+  assert.equal(sent.length, 0, 'none of it was sent');
+  assert.equal(code(await q('db.users.deleteMany({})')), 'needs_write');
+  // what's plain data goes out as data
+  const asked = mongoQuery(`db.users.find({ plan: 'pro', _id: ObjectId("507f1f77bcf86cd799439011") }, { plan: 1 }).sort({ plan: -1 }).limit(5)`);
+  assert.equal(mongoCall(asked), `db.getCollection("users").find(...EJSON.parse(${JSON.stringify('[{"plan":"pro","_id":{"$oid":"507f1f77bcf86cd799439011"}},{"plan":1}]')})).sort(...EJSON.parse("[{\\"plan\\":-1}]")).limit(...EJSON.parse("[5]"))`);
+  assert.equal(mongoCall(mongoQuery(`db.users.find({ a: "\\");process.exit();//" })`)).includes('process.exit();//'), true, 'a string stays a string');
+  const fine = ok<any>(await q('db.users.find({ plan: "pro" })'));
+  assert.match(fine.rows[0][0], /"plan":"pro"/);
+  assert.match(sent.at(-1)!, /db\.getCollection\("users"\)\.find\(\.\.\.EJSON\.parse/);
+  assert.ok(!sent.at(-1)!.includes('db.users.find('), 'the text it was asked in never runs');
+  assert.deepEqual(JSON.parse(ok<any>(await q('db.users.aggregate([{ $match: { email: { $exists: true } } }, { $count: "n" }])')).rows[0][0]), { _id: 1, plan: 'pro', n: 3 }, 'a count shows, whatever it counted');
+  const named = ok<any>(await q(`db.users.aggregate([{ $project: { who: '$firstName' } }])`));
+  assert.ok(!named.rows[0][0].includes('pro') && !named.rows[0][0].includes(':3'), `numbers hide too: ${named.rows[0][0]}`);
+  // a person keeps the whole of mongosh, and a write an AI asks for stays data too
+  assert.equal(code(await q('db.users.find().limit(1).map(x => x)', o.h)), 'ok');
+  assert.equal(code(await o.a('part.query', { serverId: SRV, part: 'c:mg-db', sql: 'db.users.updateOne({ a: 1 }, { $set: { b: this.process } })', write: true, confirm: 'mg-db' })), 'bad_statement');
 });

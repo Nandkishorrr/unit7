@@ -870,15 +870,15 @@ test('what looks personal, and what doesn’t', () => {
   assert.equal(hideShapes('(415) 555-2671, a.b+c@shop.example'), '[hidden phone], [hidden email]');
 });
 
-test('masking a result: hidden, numbers only, or left alone', () => {
-  const m = { hide: new Set([1]), text: new Set([2]), all: false };
-  assert.deepEqual(maskRows(['id', 'email', 'x', 'y'], [['1', 'a', 'b', 'c'], ['2', 't', '3', 'sam@shop.example']], m), { rows: [['1', '[hidden]', '[hidden]', 'c'], ['2', 't', '3', '[hidden email]']], masked: ['email', 'x', 'y'] });
-  assert.deepEqual(maskRows(['a'], [['x'], ['12'], ['']], { hide: new Set(), text: new Set(), all: true }).rows, [['[hidden]'], ['12'], ['']]);
+test('masking a result: hidden, or left alone', () => {
+  const m = { hide: new Set([1]), all: false };
+  assert.deepEqual(maskRows(['id', 'email', 'y'], [['1', 'a', 'c'], ['2', 't', 'sam@shop.example']], m), { rows: [['1', '[hidden]', 'c'], ['2', 't', '[hidden email]']], masked: ['email', 'y'] });
+  assert.deepEqual(maskRows(['a'], [['x'], ['12'], ['']], { hide: new Set(), all: true }).rows, [['[hidden]'], ['[hidden]'], ['']], 'a number can spell out a value too');
   // without a plan's outputs, nothing is assumed
   assert.equal(planMask({ 'Node Type': 'Result' }, ['a'], []).all, true);
   const toks = tokenize('SELECT count(email) n, plan FROM users', 'my');
   assert.equal(textMask(toks, ['n', 'plan']).all, false, 'a count of anything is a number');
-  assert.equal(textMask(tokenize('SELECT email AS n FROM users', 'my'), ['n']).all, true);
+  assert.ok(textMask(tokenize('SELECT email AS n FROM users', 'my'), ['n']).hide.has(0));
 });
 
 test('a dump is checked for what reaches the server’s shell, and data in a COPY block isn’t', () => {
