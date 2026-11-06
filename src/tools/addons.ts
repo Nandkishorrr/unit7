@@ -132,7 +132,7 @@ export const ADDONS: Addon[] = [
   // anonymous access its base config allows is turned off.
   { id: 'cloudbeaver', name: 'CloudBeaver', logo: 'dbeaver', category: 'Database admin', group: 'Data & search', line: 'Browse and edit your databases in the browser', memoryMb: 768, sub: 'db', template: 'cloudbeaver', part: 'cloudbeaver',
     claim: { env: (pw) => ({ CB_SERVER_NAME: 'CloudBeaver', CB_ADMIN_NAME: 'cbadmin', CB_ADMIN_PASSWORD: pw }), user: 'cbadmin', extra: { CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED: 'false' } }, firstVisit: SIGNED },
-  { id: 'seaweedfs', name: 'SeaweedFS', logo: 'seaweedfs', category: 'File storage (S3)', group: 'Storage', line: 'S3-style storage for uploads, with a web admin (Coolify’s one-click MinIO is off)', memoryMb: 512, sub: 'files', template: 'seaweedfs', part: 'seaweedfs-admin',
+  { id: 'seaweedfs', name: 'SeaweedFS', logo: 'seaweedfs', category: 'File storage (S3)', group: 'Storage', line: 'S3-style storage for uploads, with a web admin (Coolify’s one-click MinIO is off)', memoryMb: 512, sub: 'files', template: 'seaweedfs', part: 'seaweedfs-admin', urls: { 'seaweedfs-admin': ':23646' },
     creds: [{ key: 'SERVICE_USER_ADMIN', label: 'Admin user' }, { key: 'SERVICE_PASSWORD_ADMIN', label: 'Admin password' }, { key: 'SERVICE_USER_S3', label: 'S3 access key' }, { key: 'SERVICE_PASSWORD_S3', label: 'S3 secret key' }],
     wire: { note: 'Your app uploads with any S3 library, using the S3 keys and the S3 address. Open the address given here to manage buckets.', env: [{ key: 'S3_ENDPOINT', from: 'part:seaweedfs-master' }, { key: 'S3_ACCESS_KEY_ID', from: 'cred:SERVICE_USER_S3' }, { key: 'S3_SECRET_ACCESS_KEY', from: 'cred:SERVICE_PASSWORD_S3' }] } },
   { id: 'meilisearch', name: 'Meilisearch', logo: 'meilisearch', category: 'Search', group: 'Data & search', line: 'Fast, typo-friendly search for your app', memoryMb: 512, sub: 'search', template: 'meilisearch', part: 'meilisearch',
@@ -223,7 +223,7 @@ export const ADDONS: Addon[] = [
   // project console is that sign-up (501 after: Account/Http/Account/Create.php), so Unit7 makes it. Three parts share the address by path,
   // which also rules out the extra password in front. Its docs ask for 2 CPUs and 4 GB.
   { id: 'appwrite', name: 'Appwrite', logo: 'appwrite', category: 'Backend', group: 'Backend', line: 'A full backend: sign-in, databases, storage and functions', memoryMb: 4096, sub: 'appwrite', template: 'appwrite', part: 'appwrite-console',
-    urls: { 'appwrite-console': '', appwrite: '/v1', 'appwrite-realtime': '/v1/realtime' }, claim: { api: 'appwrite', part: 'appwrite', port: 80 }, firstVisit: SIGNED,
+    urls: { 'appwrite-console': ':3000', appwrite: '/v1', 'appwrite-realtime': '/v1/realtime' }, claim: { api: 'appwrite', part: 'appwrite', port: 80 }, firstVisit: SIGNED,
     wire: { note: 'Make a project in its console, then point Appwrite’s SDK at this address.', env: [{ key: 'APPWRITE_ENDPOINT', from: 'url:/v1' }] } },
   // Garage has no admin page: its keys are what protect it, Coolify makes them, and the bucket `default` comes with them. The
   // template names no address of its own, so it needs a domain, and that domain says its S3 port.
@@ -248,6 +248,7 @@ const SITE_ID = /^wordpress-[a-z0-9-]{1,36}$/;
 export const wordpressSite = (hostname: string): Addon => {
   const slug = hostname.replace(/[^a-z0-9]+/g, '-');
   return { ...ADDONS.find((a) => a.id === 'wordpress')!, id: `wordpress-${slug.length > 36 ? `${slug.slice(0, 28).replace(/-+$/, '')}-${createHash('sha256').update(hostname).digest('hex').slice(0, 7)}` : slug}` };
+};
 const byId = (x: string): Addon => ADDONS.find((a) => a.id === x || a.template === x) ?? (SITE_ID.test(x) ? { ...ADDONS.find((a) => a.id === 'wordpress')!, id: x } : anyTemplate(x));
 const UNKNOWN = (name: string) => `Unit7 doesn’t know how ${name} handles its first run: whoever opens it first may become its admin, or it may have a default password. Open it as soon as it’s up, make your own admin login, and check its docs.`;
 const credRef = (serverId: string, addon: string, key: string) => makeRef('addon', `${serverId}-${addon}`, key);
@@ -470,18 +471,28 @@ function checkHost(ctx: Ctx, serverId: string, hostname: string, mine?: string) 
   if (lastXray(ctx.db, ctx.orgId, serverId)?.data.parts?.some((p) => p.hosts?.includes(hostname) && !(mine && p.coolify?.uuid === mine))) throw new Unit7Error('domain_taken', `${hostname} is already live on this server. Pick another name.`, 409);
 }
 
+// what's free right now, asked of the server; the last reading if it doesn't answer
+async function roomNow(ctx: Ctx, s: ServerRow) {
+  const r = await ssh(ctx.app).exec(s, script(`awk '/^MemAvailable/{print $2}' /proc/meminfo`), { timeoutMs: 15_000, signal: ctx.signal }).catch(() => undefined);
+  const kb = Number(r?.stdout.trim());
+  return kb > 0 ? Math.round(kb / 1024) : freeMb(ctx, s.id).mb;
+}
+
 function catalogOf(ctx: Pick<Ctx, 'db' | 'orgId'>, s: ServerRow) {
   const coolify = !!coolifyAccount(ctx, s.id);
   const room = freeMb(ctx, s.id), root = rootDomain(ctx);
+  // templates outside the list that are on this server: shown too, so they can be seen and taken off
+  const more = all<{ key: string }>(ctx.db, `SELECT key FROM made WHERE org_id = ? AND kind = 'addon' AND key LIKE ?`, ctx.orgId, `${s.id}:%`).map((r) => r.key.slice(s.id.length + 1)).filter((k) => byId(k).unknown).map(anyTemplate);
   return {
     server: { id: s.id, name: s.name, coolify }, freeMb: room.mb, ...(room.at && { at: room.at }), root,
-    items: ADDONS.map((a) => {
+    items: [...ADDONS, ...more].map((a) => {
       const had = madeGet<AddonMade>(ctx, 'addon', `${s.id}:${a.id}`);
       const how = a.off ? 'off' : coolify && a.template ? 'coolify' : a.unit7 ? 'unit7' : 'needs_coolify';
       return {
-        id: a.id, name: a.name, logo: a.logo, category: a.category, line: a.line, memoryMb: a.memoryMb, how, suggest: root ? `${a.sub}.${root}` : undefined,
+        id: a.id, name: a.name, logo: a.logo, category: a.category, group: a.group ?? a.category, line: a.line, memoryMb: a.memoryMb, how, suggest: root && !a.unknown ? `${a.sub}.${root}` : undefined,
         ...(room.mb !== undefined && { fits: room.mb - a.memoryMb >= SPARE_MB }), ...(a.off && { off: a.off, instead: a.instead }),
         ...(how === 'needs_coolify' && { off: `${a.name} has several parts, so Unit7 adds it through Coolify. Connect Coolify on ${s.name} first.` }),
+        ...(a.domainOnly && { domainOnly: a.domainOnly }), ...(a.warn && { warn: a.warn }), ...(a.unknown && { unknown: true, warn: UNKNOWN(a.name) }),
         installed: had ? { url: had.url, healthy: had.healthy ?? null, at: had.at, keys: had.creds.length, ...(had.gate && { gated: true }) } : null,
       };
     }),
@@ -490,7 +501,7 @@ function catalogOf(ctx: Pick<Ctx, 'db' | 'orgId'>, s: ServerRow) {
 
 defineTool({
   name: 'addon.catalog', title: 'Tools to add to a server', risk: 'read', action: 'read',
-  description: 'The tools Unit7 can add to a server in one click (Umami analytics, Uptime Kuma, n8n, Listmonk, CloudBeaver, SeaweedFS storage, Meilisearch, GlitchTip, Statusnook, Databasus, WordPress, Unleash; Plausible is listed but off in Coolify right now), each with the memory it needs against the server’s free room, how it would be added (Coolify’s one-click, or Unit7’s own deploy), whether it’s already there, and a suggested subdomain. Without serverId: the server with Coolify connected, else the first one.',
+  description: 'The tools Unit7 can add to a server in one click (analytics, uptime and dashboards, automation, AI chat and flows, blogs and CMSs, backends, code hosting, a password vault, search, S3 storage…), each with the memory it needs against the server’s free room, how it would be added (Coolify’s one-click, or Unit7’s own deploy), whether it’s already there, and a suggested subdomain. Plausible, MinIO and Dify are listed but off in Coolify right now; each says what does the same job. Any other Coolify template key also works with addon.install, with a warning. Without serverId: the server with Coolify connected, else the first one.',
   input: z.object({ serverId: fid('srv').optional() }),
   run(ctx, i) {
     const servers = all<{ id: string; name: string }>(ctx.db, `SELECT id, name FROM servers WHERE org_id = ? ORDER BY created_at`, ctx.orgId).map((s) => ({ ...s, coolify: !!coolifyAccount(ctx, s.id) }));
@@ -506,39 +517,46 @@ export async function installAddon(ctx: Ctx, a: Addon, i: { serverId: string; do
   if (a.off) throw new Unit7Error('not_available', `${a.off}${a.instead ? ` ${byId(a.instead).name} does the same job.` : ''}`, 409);
   const had = madeGet<AddonMade>(ctx, 'addon', key);
   if (had?.url) return { installed: true, already: true, addon: a.id, name: a.name, url: had.url, note: `${a.name} is already on ${s.name}.` };
+  if (a.domainOnly && !i.domain) throw new Unit7Error('needs_domain', `${a.domainOnly} Give it a subdomain of yours, like ${a.sub}.example.com.`, 400);
+  if (a.unknown && i.domain) throw new Unit7Error('no_part', `Unit7 doesn’t know which part of ${a.name} takes an address. Add it on its free test address, then give that part your domain in Coolify.`, 400);
   if (i.domain) { checkHost(ctx, s.id, i.domain, had?.uuid); await mayTakeOver(i.domain, ipOf(s), i.takeover); }
   const c = coolifyAccount(ctx, s.id) && a.template ? coolifyFor(ctx, s) : undefined;
-  if (!c && !a.unit7) throw new Unit7Error('needs_coolify', `${a.name} has several parts, so Unit7 adds it through Coolify. Connect Coolify on ${s.name} first, or pick a server that has it.`, 409);
+  // ponytail: no plain Docker Compose path: it would need each compose file, Coolify's generated values, a proxy route and a way to take it off
+  if (!c && !a.unit7) throw new Unit7Error('needs_coolify', `${a.name} ${a.unknown ? 'is a Coolify template' : 'has several parts'}, so Unit7 adds it through Coolify, and ${s.name} has none connected. Connect Coolify on ${s.name} (install it from coolify.io first if it isn’t there), or pick a server that has it. Without Coolify, Unit7 can only add Umami and Unleash.`, 409);
+  const free = await roomNow(ctx, s);
+  if (free !== undefined && free - a.memoryMb < SPARE_MB) throw new Unit7Error('no_room', `${s.name} has ${free} MB of memory free. ${a.memoryMb ? `${a.name} needs about ${a.memoryMb} MB, and Unit7` : 'Unit7'} keeps ${SPARE_MB} MB free for the server itself, so it didn’t add ${a.name}. Stop something you don’t need, or move to a bigger server, then try again.`, 409);
   const cl = a.claim ?? {};
   if (c && cl.gate && proxyFor(s).kind !== 'coolify') throw new Unit7Error('no_gate', `${a.name} makes its admin from its first visitor, and ${s.name}’s web proxy isn’t one Unit7 can put a password in front of, so Unit7 won’t add it here.`, 409);
   const presets = c && (cl.env || cl.extra);
-  const titles = c ? ['Set up the Tools project', `Add ${a.name}`, ...(presets ? ['Set its admin login before it starts'] : []), ...(cl.gate ? ['Put an extra password in front of it'] : []), 'Start it and check it’s healthy',
+  const titles = c ? ['Set up the Tools project', `Add ${a.name}`, ...(presets ? [cl.env && cl.user ? 'Set its admin login before it starts' : 'Set it up before it starts'] : []), ...(cl.gate ? ['Put an extra password in front of it'] : []), 'Start it and check it’s healthy',
     ...(cl.api || cl.socket ? ['Set its admin login'] : []), ...(i.domain ? [`Point ${i.domain} here`] : []), ...(a.creds?.length ? ['Keep its keys in the vault'] : []), ...(a.id === 'uptime-kuma' ? ['Watch your sites'] : [])]
     : ['Set up the Tools project', `Add ${a.name}`, ...(a.unit7!.db ? ['Give it a database'] : []), 'Deploy it and check it’s healthy', ...(cl.api ? ['Set its admin login'] : []), ...(i.domain ? [`Point ${i.domain} at it`] : [])];
   let n = 0;
   const say = () => ctx.progress(`Step ${++n} of ${titles.length}: ${titles[n - 1]}`);
   const rec: AddonMade = { via: c ? 'coolify' : 'unit7', creds: [], ...(i.domain && { domain: i.domain }) };
-  let url: string | undefined, healthy = false, status: string | undefined, dns: Record<string, unknown> | undefined, signedIn = false, socketWhy: string | undefined;
+  let url: string | undefined, healthy = false, status: string | undefined, dns: Record<string, unknown> | undefined, signedIn = false, socketWhy: string | undefined, detail: any;
+  const urlsOf = (part?: string) => String(list(detail?.applications).find((x) => (part ? x?.name === part : x?.fqdn))?.fqdn ?? '').split(',').map((x) => x.trim()).filter((x) => /^https?:\/\//.test(x));
   if (c) {
     say();
     const p = await inside(ctx, 'coolify.create_project', { serverId: s.id, name: 'Tools', description: 'Tools added from Unit7', environment: 'production' });
     say();
     // made but not started: its admin login (or the extra password) is in place before it ever answers anyone
     const made = await c.api.call('POST', '/services', { project_uuid: p.project, environment_name: 'production', server_uuid: await coolifyServerUuid(c.api, s.host), name: a.id, instant_deploy: false,
-      ...(a.compose ? { docker_compose_raw: b64(a.compose) } : { type: a.template }), ...(i.domain && { urls: [{ name: a.part, url: `https://${i.domain}` }] }) });
+      ...(a.compose ? { docker_compose_raw: b64(a.compose) } : { type: a.template }), ...(i.domain && { urls: Object.entries(a.urls ?? { [a.part!]: '' }).map(([name, tail]) => ({ name, url: `https://${i.domain}${tail}` })) }) })
+      .catch((e) => { throw a.unknown && (e as Unit7Error).code === 'not_found' ? new Unit7Error('no_template', `Coolify has no template called ${a.id}, so nothing was added. Check the name in Coolify’s list when you add a new resource.`, 404) : e; });
     const uuid = typeof made?.uuid === 'string' && /^[a-z0-9]{3,64}$/i.test(made.uuid) ? made.uuid as string : undefined;
     if (!uuid) throw new Unit7Error('coolify_error', `Coolify made ${a.name} but didn’t say which one it is.`, 502);
     Object.assign(rec, { uuid, project: p.project });
     madeSet(ctx, 'addon', key, rec); // written down now, so it can be taken off even if a later step fails
-    const detail = await c.api.call('GET', `/services/${encodeURIComponent(uuid)}`).catch(() => undefined);
-    const fqdns = String(list(detail?.applications).find((x) => x?.name === a.part)?.fqdn ?? '').split(',').map((x) => x.trim()).filter((x) => /^https?:\/\//.test(x));
+    detail = await c.api.call('GET', `/services/${encodeURIComponent(uuid)}`).catch(() => undefined);
+    const fqdns = urlsOf(a.part);
     const given = hostsOf(Array.isArray(made.domains) ? made.domains.join(',') : made.domains);
     url = i.domain ? `https://${i.domain}` : fqdns[0]?.replace(/\/$/, '') ?? (given[0] && `http://${given[0]}`);
     if (presets) {
       say();
       const env: Record<string, string> = { ...cl.extra };
       const pw = cl.env ? adminPassword() : undefined;
-      if (pw) { Object.assign(env, cl.env!(pw)); keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (user ${cl.user})`, pw, cl.user); }
+      if (pw) { Object.assign(env, cl.env!(pw)); keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', cl.label ?? `Admin password (user ${cl.user})`, pw, cl.user); }
       await setEnvs(c.api, 'service', uuid, Object.entries(env).map(([k, value]) => ({ key: k, value })));
       madeSet(ctx, 'addon', key, rec);
     }
@@ -550,12 +568,12 @@ export async function installAddon(ctx: Ctx, a: Addon, i: { serverId: string; do
     if (cl.api) {
       say();
       // its own setup, from inside the server, before its domain points here; if someone else got there first, it's stopped
-      const got = await claimFirst(ctx, s, a, `${a.part}-${uuid}`, cl.port ?? 8000, url).catch(async (e) => {
+      const got = await claimFirst(ctx, s, a, `${cl.part ?? a.part}-${uuid}`, cl.port ?? 8000, url).catch(async (e) => {
         if ((e as Unit7Error).detail && ((e as Unit7Error).detail as { stop?: boolean }).stop) await c.api.call('POST', `/services/${encodeURIComponent(uuid)}/stop`).catch(() => undefined);
         throw e;
       });
       keepCred(ctx, rec, s, a, 'UNIT7_ADMIN_PASSWORD', `Admin password (${got.user})`, got.pw, got.user);
-      if (cl.gate) await dropGate(ctx, s, rec).catch(() => undefined); // if it can't go now, “I’ve finished setup” takes it away
+      await dropGate(ctx, s, rec).catch(() => undefined); // its login is made: if the extra password can't go now, “I’ve finished setup” takes it away
       madeSet(ctx, 'addon', key, rec);
     }
     if (cl.socket) {
@@ -635,10 +653,10 @@ export async function installAddon(ctx: Ctx, a: Addon, i: { serverId: string; do
   }
   Object.assign(rec, { url, healthy });
   madeSet(ctx, 'addon', key, rec);
-  const refs = Object.fromEntries(rec.creds.map((x, k) => [a.creds?.find((y) => y.label === x.label)?.key ?? String(k), x.ref]));
+  const refOf = (k: string) => rec.creds.find((x) => x.ref === credRef(s.id, a.id, k))?.ref;
   const wire = a.wire && url ? {
     note: a.wire.note, ...(a.wire.snippet && { snippet: a.wire.snippet.replace('{url}', url) }),
-    env: (a.wire.env ?? []).map((e) => ({ key: e.key, value: e.from === 'url' ? url : e.from.startsWith('url:') ? `${url}${e.from.slice(4)}` : refs[e.from.slice(5)] })).filter((e): e is { key: string; value: string } => !!e.value),
+    env: (a.wire.env ?? []).map((e) => ({ key: e.key, value: e.from === 'url' ? url : e.from.startsWith('url:') ? `${url}${e.from.slice(4)}` : e.from.startsWith('part:') ? urlsOf(e.from.slice(5))[0] : refOf(e.from.slice(5)) })).filter((e): e is { key: string; value: string } => !!e.value),
   } : undefined;
   // Uptime Kuma: Unit7 adds a monitor for each site it knows (uptime.sync, with the login it just made); without that
   // login, the sites are listed for the person to add
@@ -654,6 +672,7 @@ export async function installAddon(ctx: Ctx, a: Addon, i: { serverId: string; do
     installed: true, addon: a.id, name: a.name, server: s.name, via: rec.via, url, healthy, status, ...(dns && { dns }), ...(rec.gate && { gated: true }),
     credentials: [...rec.creds.map((x) => ({ label: x.label, saved: true })), ...(a.creds ?? []).filter((cr) => !rec.creds.some((x) => x.label === cr.label)).map((cr) => ({ label: cr.label, saved: false }))],
     ...(a.creds?.length && rec.creds.length < a.creds.length && rec.via === 'coolify' && { credentialsNote: 'Coolify didn’t share some of its keys (that needs a token with read:sensitive): they’re in Coolify, in the service’s settings.' }),
+    ...(a.unknown && { warning: UNKNOWN(a.name), credentialsNote: 'Any passwords it made are in Coolify, in the service’s settings.' }), ...(a.warn && { warning: a.warn }),
     ...(a.firstVisit && { firstVisit: signedIn ? SIGNED : a.firstVisit }), ...(wire && !signedIn && { wire }), ...(monitors && { monitors }),
     ...(!healthy && { next: `${a.name} is still starting (${status}). Give it a minute, then open it.` }),
     undo: `addon.remove takes ${a.name} off ${s.name}; its data is kept unless a person chooses otherwise.`,
@@ -663,13 +682,14 @@ export async function installAddon(ctx: Ctx, a: Addon, i: { serverId: string; do
 export const HOST = z.string().trim().toLowerCase().regex(/^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/, 'a subdomain like analytics.example.com');
 defineTool({
   name: 'addon.install', title: 'Add a tool to a server', risk: 'write', action: 'service_write', timeoutMs: 30 * 60_000,
-  description: 'Add one of addon.catalog’s tools to a server, as one action: through Coolify’s one-click service where Coolify is connected (else Unit7 deploys it, for the ones that are one container and a database), on the domain given (a subdomain like analytics.example.com: its DNS record is written where the domain lives) or a free test address, then waits until it’s healthy. Its admin login is never left for the first visitor: Unit7 sets it before it starts (or through the tool’s own setup right after, before its domain points here), or it stays behind an extra password until the person finishes setup (addon.unlock); a name that already points somewhere else is never taken over unless a person types it as takeover. Keeps the admin keys in the vault (a person sees them with addon.credentials), and returns the wiring: a tracking snippet, settings for an app (addresses and vault references, never values), and for Uptime Kuma the sites to watch.',
-  input: z.object({ serverId: fid('srv'), addon: z.enum(IDS), domain: HOST.optional(),
+  description: 'Add one of addon.catalog’s tools to a server, as one action: through Coolify’s one-click service where Coolify is connected (else Unit7 deploys it, for the ones that are one container and a database), on the domain given (a subdomain like analytics.example.com: its DNS record is written where the domain lives) or a free test address, then waits until it’s healthy. Checks the server’s free memory first and refuses, with the reason, if it won’t fit. Its admin login is never left for the first visitor: Unit7 sets it before it starts (or through the tool’s own setup right after, before its domain points here), or it stays behind an extra password until the person finishes setup (addon.unlock); a name that already points somewhere else is never taken over unless a person types it as takeover. Keeps the admin keys in the vault (a person sees them with addon.credentials), and returns the wiring: a tracking snippet, settings for an app (addresses and vault references, never values), and for Uptime Kuma the sites to watch. Any other Coolify template key works too, on a free test address, but Unit7 doesn’t know its first run: an AI asks a person first, and the result says what to check.',
+  input: z.object({ serverId: fid('srv'), addon: ADDON, domain: HOST.optional(),
     takeover: z.string().max(253).optional().describe('People only: the domain typed again, to move a name that already points somewhere else to this server.') }),
   peopleOnly: (i) => !!i.takeover,
   assess: (ctx, i) => {
     const a = byId(i.addon), s = get<{ name: string }>(ctx.db, 'SELECT name FROM servers WHERE id = ? AND org_id = ?', i.serverId, ctx.orgId);
-    return { tier: 2, impact: `Adds ${a.name} to ${s?.name ?? 'the server'} (about ${a.memoryMb} MB)${i.domain ? ` at ${i.domain}, writing its DNS record` : ' on a free test address'}; its keys go to the vault.` };
+    const what = `Adds ${a.name} to ${s?.name ?? 'the server'}${a.memoryMb ? ` (about ${a.memoryMb} MB)` : ''}${i.domain ? ` at ${i.domain}, writing its DNS record` : ' on a free test address'}; its keys go to the vault.`;
+    return { tier: 2, impact: [what, a.warn, a.unknown && UNKNOWN(a.name)].filter(Boolean).join(' '), ...(a.unknown && { ask: UNKNOWN(a.name) }) };
   },
   run: (ctx, i) => installAddon(ctx, byId(i.addon), i),
 });
@@ -687,7 +707,7 @@ export function forgetLogin(ctx: Ctx, serverId: string, a: Addon) {
 defineTool({
   name: 'addon.remove', title: 'Take a tool off a server', risk: 'destructive', action: (i) => (i.deleteData ? 'database_delete' : 'service_delete'), peopleOnly: true, timeoutMs: 5 * 60_000,
   description: 'Take an add-on off a server (addon.install made it). Its data is kept unless deleteData, which needs its name typed as confirmName. Its keys leave the vault (restorable for 30 days); the DNS record stays where it is. People only.',
-  input: z.object({ serverId: fid('srv'), addon: ADDON_ID, deleteData: z.boolean().default(false), confirmName: z.string().max(80).optional() })
+  input: z.object({ serverId: fid('srv'), addon: ADDON, deleteData: z.boolean().default(false), confirmName: z.string().max(80).optional() })
     .refine((i) => !i.deleteData || i.confirmName?.trim() === i.addon, 'To delete its data too, type its name as confirmName.'),
   async run(ctx, i) {
     requireHuman(ctx, 'take a tool off a server');
@@ -709,8 +729,8 @@ defineTool({
 
 defineTool({
   name: 'addon.unlock', title: 'Remove a tool’s extra password', risk: 'write', action: 'proxy_config', peopleOnly: true, timeoutMs: 60_000,
-  description: 'People only: “I’ve finished setup”. Takes away the extra password Unit7 put in front of a tool that makes its admin from its first visitor (Uptime Kuma, Statusnook), once the person has made their own admin login there. Its address then answers anyone, and the tool’s own sign-in protects it.',
-  input: z.object({ serverId: fid('srv'), addon: ADDON_ID }),
+  description: 'People only: “I’ve finished setup”. Takes away the extra password Unit7 put in front of a tool that makes its admin from its first visitor (Forgejo, Nextcloud, Statusnook, Uptime Kuma), once the person has made their own admin login there. Its address then answers anyone, and the tool’s own sign-in protects it.',
+  input: z.object({ serverId: fid('srv'), addon: ADDON }),
   async run(ctx, i) {
     requireHuman(ctx, 'take a tool’s extra password away');
     requireRole(ctx, ['owner', 'admin'], 'take a tool’s extra password away');
@@ -728,7 +748,7 @@ defineTool({
 defineTool({
   name: 'addon.credentials', title: 'Show a tool’s sign-in keys', risk: 'read', action: 'secret_reveal', peopleOnly: true,
   description: 'The admin keys an add-on generated (kept in the vault by addon.install), shown to the person who asks. People only, owners and admins, audited.',
-  input: z.object({ serverId: fid('srv'), addon: ADDON_ID }),
+  input: z.object({ serverId: fid('srv'), addon: ADDON }),
   run(ctx, i) {
     requireHuman(ctx, 'see a tool’s keys');
     requireRole(ctx, ['owner', 'admin'], 'see a tool’s keys');

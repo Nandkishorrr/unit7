@@ -12,6 +12,7 @@ import { githubApps, need, splitImage } from './coolify.ts';
 import { parseRepo } from '../connectors/github.ts';
 import { ENGINES, byName, envResources, list as items, type Coolify, type EngineName } from '../connectors/coolify.ts';
 import { ask, stamp, threadFor, type AskSpec } from '../agent/asks.ts';
+import { ADDONS } from './addons.ts';
 import type { ServerRow } from '../connectors/ssh.ts';
 
 // --- the sentence → what the person wants ------------------------------------------------------------------
@@ -26,8 +27,11 @@ const DBS: [RegExp, EngineName][] = [
   [/\b(postgres(ql)?|pg)\b/i, 'postgresql'], [/\bmysql\b/i, 'mysql'], [/\bmaria(db)?\b/i, 'mariadb'], [/\bmongo(db)?\b/i, 'mongodb'],
   [/\bredis\b/i, 'redis'], [/\bkeydb\b/i, 'keydb'], [/\bdragonfly(db)?\b/i, 'dragonfly'], [/\bclickhouse\b/i, 'clickhouse'],
 ];
-// Coolify one-click templates people name in a sentence (any other key works through coolify.create_service)
-const TEMPLATES: Record<string, string> = { supabase: 'Supabase', pocketbase: 'PocketBase', appwrite: 'Appwrite', minio: 'MinIO', n8n: 'n8n', umami: 'Umami', plausible: 'Plausible' };
+// Coolify one-click templates people name in a sentence. Those in Unit7's catalog go through addon.install, so their admin
+// login is claimed and their keys kept; any other key works through coolify.create_service.
+const TEMPLATES: Record<string, string> = { supabase: 'Supabase', pocketbase: 'PocketBase', appwrite: 'Appwrite', n8n: 'n8n', umami: 'Umami' };
+// the ones Coolify has switched off: the person hears what does the same job, instead of a step that can't work ("a plausible plan" isn't Plausible)
+const SWITCHED_OFF: [RegExp, string][] = [[/\bminio\b/i, 'minio'], [/\bplausible analytics\b|\b(with|add|use|using|and) plausible\b/i, 'plausible']];
 const NOT_DOMAINS = /^(github\.com|gitlab\.com|ghcr\.io|docker\.io|quay\.io|next\.js|node\.js|nuxt\.js|nest\.js)$/i;
 
 export interface Wish {
@@ -49,7 +53,10 @@ export function parseWish(w: Wish): Intent {
   const repo = w.repo ?? /\b(?:https?:\/\/)?github\.com\/[\w-]+\/[\w.-]+/i.exec(t)?.[0]?.replace(/\.git$|[.,;]$/, '') ?? /\b(?:repo|from)\s+([A-Za-z0-9-]+\/[\w.-]*\w)(?=[\s,;]|$)/i.exec(t)?.[1];
   const image = w.image ?? /\bimage\s+([\w.-]+(?::\d+)?(?:\/[\w.-]+)*(?::[\w.-]+)?)/i.exec(t)?.[1]?.replace(/[.,;]$/, '');
   const wantsApp = !!(repo || image || w.dockerfile || fw || /\b(app|site|website|web ?app|api|frontend|backend|bot|repo|github)\b/i.test(t));
-  const services = [...new Set([...(w.service ? [w.service] : []), ...Object.keys(TEMPLATES).filter((k) => new RegExp(`\\b${k}\\b`, 'i').test(t))])];
+  const named = [...new Set([...(w.service ? [w.service] : []), ...Object.keys(TEMPLATES).filter((k) => new RegExp(`\\b${k}\\b`, 'i').test(t))])];
+  // an answer to "use this instead" comes back as service, with the sentence still saying the old name
+  const off = ADDONS.filter((x) => x.off && (w.service ? x.id === w.service : SWITCHED_OFF.some(([re, id]) => id === x.id && re.test(t))));
+  const services = named.filter((k) => !off.some((x) => x.id === k));
   let databases = [...new Set([...(w.database ? [w.database] : []), ...DBS.filter(([re]) => re.test(t)).map(([, e]) => e)])];
   // "a database" with no engine is Postgres, unless Supabase (it has its own) or the engine was named
   if (!databases.length && !services.includes('supabase') && /\b(database|db)\b/i.test(t)) databases = ['postgresql'];
@@ -64,6 +71,7 @@ export function parseWish(w: Wish): Intent {
   else if (wantsApp && !repo && !image && !w.dockerfile) {
     missing.push({ field: 'repo', ask: /\b(repo|github|git)\b/i.test(t) || fw ? 'Which GitHub repo? (coolify.repos and github.repos list them)' : 'Where is the code: a GitHub repo, or a ready image?' });
   }
+  for (const x of off) missing.push({ field: 'service', ask: `${x.off}${x.instead ? ` ${ADDONS.find((y) => y.id === x.instead)!.name} does the same job: use it? (service: ${x.instead})` : ''}` });
   const dockerfile = /\bdockerfile\b/i.test(t) && repo;
   return {
     name, project: w.project ?? name, environment, databases, services, ...(domain && { domain }), missing,
@@ -116,6 +124,12 @@ export async function makePlan(api: Coolify, s: ServerRow, it: Intent): Promise<
     changes.push({ label: `${e.label} database`, after: `${name}, private to the server${byName(there.database, name) ? ', already there' : ''}` });
   }
   for (const type of it.services) {
+    const tool = ADDONS.find((x) => x.id === type && x.template);
+    if (tool) {
+      steps.push({ tool: 'addon.install', title: `Add ${tool.name}`, input: { serverId: s.id, addon: tool.id } });
+      changes.push({ label: tool.name, after: `${tool.line}, in the Tools project. Unit7 claims its admin login and keeps its keys in your vault` });
+      continue;
+    }
     const name = it.name === type ? type : `${it.name}-${type}`, label = TEMPLATES[type] ?? type;
     const wire = a && type === 'supabase';
     if (wire) wired.push('SUPABASE_URL', 'SUPABASE_ANON_KEY', ...(a.framework === 'Next.js' ? ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'] : []));
@@ -237,6 +251,7 @@ defineTool({
       if (typeof out?.undo === 'string') undo.push(out.undo);
       if (st.tool === 'coolify.create_app' && out?.domains?.[0]) url ??= `https://${out.domains[0]}`;
       if (st.tool === 'coolify.set_domain' && p.intent.domain) url = `https://${p.intent.domain}`;
+      if (st.tool === 'addon.install' && typeof out?.url === 'string') url ??= out.url;
       done.push({ step: st.title, ...(out?.reused && { reused: true }), ...(out?.wired?.length && { wired: out.wired }), ...(out?.status && { status: out.status }) });
     }
     ctx.emit('coolify.built', `Built ${p.intent.name} on ${s.name} through Coolify${url ? ` at ${url.replace(/^https?:\/\//, '')}` : ''}`, { severity: 'success', resource: s.id });
