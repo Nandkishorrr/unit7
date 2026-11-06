@@ -19,7 +19,7 @@ Nothing is sent to us. There's no Unit7 cloud, no telemetry and no account. It's
 - An AI doing something you didn't ask for. Every action passes one gate, whoever asks. Risky ones wait for a person.
 - An AI reading text written by an attacker. Logs are data. Prompts are built from parsed fields, and Unit7's own checks need no AI.
 - A leaked Unit7 key doing damage. Keys can be scoped to read-only, or to findings only.
-- A bad delete. An AI's delete waits 48 hours, even after a yes. A person can cancel it.
+- A bad delete. An AI's delete goes to a person at any autonomy, then waits 48 hours, even after a yes. A person can cancel it. What comes back from a trash or an undo copy doesn't wait.
 
 **What it doesn't protect against**
 - Someone with your server's root password, or your Mac unlocked. They don't need Unit7.
@@ -51,19 +51,22 @@ Unit7 can use an AI you connect: an API key, a local model, or your own signed-i
 
 ## What an AI can read
 
-- supabase.sql denies an AI vault, key and sign-in tables by name. An app’s own table under a plain name is only column-masked.
+- supabase.sql denies an AI vault, key and sign-in tables by name, and for a read anything that makes one value of a row, plus settings, scheduled jobs and function bodies. An app’s own table under a plain name is only column-masked.
 - wp-cli output is data. WordPress admin passwords reach only the vault and the person asking, and a failed update’s automatic put-back touches files, never the database.
-- An AI can’t open secret files on a server, even through a link, and can’t change who can sign in. File contents stay out of the audit log.
+- An AI can’t open secret files on a server, even through a link, and can’t change who can sign in. That covers where Docker, containerd and panels keep every container’s settings, and Unit7’s own copies. A named volume’s files aren’t covered. /proc is closed to everyone. File contents stay out of the audit log.
 - Mail record changes need a person’s yes. The proxy only restarts when asked for, through the gate.
 - A deploy key’s private half goes only to Coolify. Unit7’s own Coolify key can delete, because Coolify needs that to replace things, and approvals still decide.
 - Unit7 never removes its own key or the last working key on a server. Key changes update the break-in baseline line by line. server.move only reads the old server, apart from a fresh backup file.
 - Hostinger deploys overwrite with no undo: a site with content needs update, an AI needs a person, and WordPress, Builder and Horizons sites are refused. Uploads to Hostinger and servers are repacked from checked files, so left-out keys never leave.
 - Your GitHub token goes to Azure or AWS only to connect your repo. A key in finished files stops publishing.
 - A dropped ZIP is never trusted: paths leaving the site stop it, links are dropped, and bytes are counted as they unpack. An AI hears an upload’s id, name and stack, never a path.
-- An AI reads found databases only through a read-only login in a throwaway container. That login can see every row, so people-only limits still apply, and exports are people-only.
+- An AI reads found databases only through a read-only login in a throwaway container. That login can see every row, so people-only limits still apply, and exports are people-only. An AI sees a column only if it’s plain and its name isn’t personal, or a count, or a sum, average, smallest or largest of such a column. Anything computed comes back hidden, past copies included. A database’s error text stays with the database. MongoDB takes plain data from an AI, never JavaScript.
 - Unit7 claims an add-on’s admin at install, or keeps it behind an extra password. Templates outside the catalogue are unprotected, so an AI asks first.
 - connection.call masks secret fields for an AI, treats unlisted tools as destructive, and leaves buying to people. stripe.webhooks shares only setting names and modes.
-- move.switch always needs a person. Copying readable settings needs a person’s yes, and values are never shown.
+- move.switch always needs a person. Copying readable settings needs a person’s yes, and values are never shown. A stored key named in a repo’s .env or on an old host is never opened: only a person gives one.
+- A compose file can run anything on the server, as root, so compose from a repo asks a person the way a raw compose file does, for each new app, update and deploy an AI asks for.
+- A stored key or an existing database’s password goes into an app only on a person’s yes, because the app’s code can read it.
+- A dump can’t run client commands or COPY … PROGRAM, and server.move reads only the roles at the top of a dump, never a visitor’s text.
 - SMTP passwords stay in the vault and reach apps by reference. Resend apps get a send-only key. An AI can’t rewrite a login in use, and always asks before forwarding mail or placing a login in a Coolify app.
 
 ## Licence promise

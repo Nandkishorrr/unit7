@@ -38,6 +38,7 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 ## Hosted Supabase and Neon
 
 - Self-hosted Supabase: auth changes need Coolify, there are no sign-in providers or email templates, realtime off lasts until the next deploy, and functions have no history.
+- supabase.sql’s checks for an AI are a list of names and forms. A column named like json or xml, or named like its own table, is a person’s to read.
 
 ## WordPress
 
@@ -65,7 +66,9 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 ## Databases
 
-- Hiding personal columns is best effort: a filter can reveal a value slowly. Switching to a new major version works for Postgres on Coolify or Compose only. part.query needs psql 12 or newer. Restoring to a moment in time isn’t built: the best case is the last copy.
+- For an AI, a column shows when its name isn’t personal, so a secret under a plain name still shows, and a filter can reveal a value slowly. Only plain columns, counts and simple sums prove themselves, so anything computed comes back hidden. MySQL can’t show what a view renamed. Redis has no columns, so only key names and value shapes are checked. database.query, on databases Unit7 runs itself, doesn’t hide anything.
+- A dump is checked for what it says, not what it builds: SQL put together while it runs, such as in a DO block, isn’t caught. So load only dumps you trust. A plain string with a backslash right before a quote is refused: double it or use E''.
+- Switching to a new major version works for Postgres on Coolify or Compose only. part.query needs psql 12 or newer. Restoring to a moment in time isn’t built: the best case is the last copy.
 
 ## One-click apps
 
@@ -75,7 +78,7 @@ On a Mac, Unit7 stops when the Mac sleeps. The Always on page shows the hours it
 
 - Stripe shows a signing secret once, so stripe.webhooks infers mismatches, and comparing test and live needs both connected. Setting GitHub secrets needs gh installed. With no AI connected, the ask box answers four fixed asks.
 
-- A move doesn’t copy data, cron or host redirects, and never removes the old site.
+- A move doesn’t copy data, cron or host redirects, and never removes the old site. A site that runs from a compose file asks a person when it’s made and at each update.
 
 ## Email
 
