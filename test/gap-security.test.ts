@@ -410,6 +410,10 @@ test('6. the delete of a tool that does many things waits too, and only its dele
   assert.ok(!c.calls.some((x) => x.startsWith('DELETE')));
   assert.equal(get<{ n: number }>(app.db, 'SELECT count(*) n FROM held_deletes')!.n, 1);
   assert.notEqual((await o.a('coolify.task', { ...task, op: 'list' })).status, 'approval_required');
+  // and one a provider's own passthrough runs by name
+  account(app, o.orgId, 'hostinger', 'tok-demo');
+  assert.equal((await o.a('hostinger.do', { operation: 'dns_records_delete' })).status, 'approval_required');
+  assert.equal((await o.a('hostinger.batch', { operations: [{ operation: 'vps_virtual-machines_list' }, { operation: 'dns_records_delete' }] })).status, 'approval_required');
 });
 
 test('6. what waits: every delete with nothing to come back from; a trash doesn’t, and a routine is a person’s own step', async () => {

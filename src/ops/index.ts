@@ -120,8 +120,11 @@ export function holdDelete(app: App, orgId: string, a: { id: string; tool: strin
 }
 // tools that do many things hold only their delete
 export const HELD_OPS: Record<string, string> = { 'supabase.functions': 'delete', 'supabase.storage': 'delete', 'neon.branch': 'delete', 'github.secret': 'remove', 'supabase.secrets': 'unset', 'coolify.task': 'delete' };
+// a provider's own operations, run by name
+const DELETES = /delete|remove|destroy|drop|wipe|purge/i;
+const opsOf = (tool: string, i: Record<string, unknown>) => (tool === 'hostinger.do' ? [i.operation] : tool === 'connection.call' ? [i.tool] : tool === 'hostinger.batch' ? (i.operations as { operation: string }[]).map((o) => o.operation) : []);
 // a routine is a person's own saved step, not an AI deciding, so it runs when they say yes
-setHolds({ isHeld: (tool, input, actor) => actor.agent !== ROUTINE_AGENT && (HELD_TOOLS.has(tool) || (!!HELD_OPS[tool] && input.op === HELD_OPS[tool])), hold: (app, orgId, a) => holdDelete(app, orgId, a) });
+setHolds({ isHeld: (tool, input, actor) => actor.agent !== ROUTINE_AGENT && (HELD_TOOLS.has(tool) || (!!HELD_OPS[tool] && input.op === HELD_OPS[tool]) || opsOf(tool, input).some((o) => DELETES.test(String(o)))), hold: (app, orgId, a) => holdDelete(app, orgId, a) });
 export async function runHeld(app: App, nowMs = Date.now()) {
   const done: string[] = [];
   for (const h of all<{ id: string; org_id: string; approval_id: string; tool: string; actor: string; by: string }>(app.db, `SELECT id, org_id, approval_id, tool, actor, by FROM held_deletes WHERE status = 'held' AND run_at <= ?`, new Date(nowMs).toISOString())) {
