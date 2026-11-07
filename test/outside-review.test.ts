@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { testApp, testOrg } from './helpers.ts';
 import { get, id, run } from '../src/db.ts';
 import { ssh } from '../src/connectors/ssh.ts';
@@ -9,6 +10,14 @@ import { assertReachable, classify } from '../src/netguard.ts';
 import { createHttp } from '../src/server/http.ts';
 import { createToken } from '../src/auth.ts';
 import { closeInterrupted, drainTools } from '../src/tools/runtime.ts';
+
+test('a database counts as ready over TCP: on first boot a temporary server answers on the socket alone, then restarts', () => {
+  for (const f of ['src/tools/backups.ts', 'src/tools/databases.ts', 'src/fleet/dr.ts']) {
+    const text = readFileSync(f, 'utf8');
+    assert.doesNotMatch(text, /pg_isready -U|admin ping -h localhost|mysqladmin ping -u/, f);
+    assert.match(text, /pg_isready -h 127\.0\.0\.1/, f);
+  }
+});
 
 test('the network guard goes by the address, however it’s written', async () => {
   const same: Record<string, string[]> = {

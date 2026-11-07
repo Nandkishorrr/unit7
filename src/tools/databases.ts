@@ -93,10 +93,10 @@ defineTool({
     ctx.app.vault.put(ctx.orgId, pwRef, password, { kind: 'db_password', by: ctx.actor.name });
     ctx.resources.push(serviceId);
 
-    // wait until it accepts connections
+    // wait until it accepts connections, over TCP: on first boot a temporary server answers on the socket alone, then restarts
     const ready: Record<Engine, string> = {
-      postgres: `docker exec "$1" pg_isready -U postgres`, mysql: `docker exec "$1" mysqladmin ping -h localhost --silent`,
-      mariadb: `docker exec "$1" mariadb-admin ping -h localhost --silent`, mongo: `docker exec "$1" mongosh --quiet --eval "db.runCommand({ping:1})"`,
+      postgres: `docker exec "$1" pg_isready -h 127.0.0.1 -U postgres`, mysql: `docker exec "$1" mysqladmin ping -h 127.0.0.1 --silent`,
+      mariadb: `docker exec "$1" mariadb-admin ping -h 127.0.0.1 --silent`, mongo: `docker exec "$1" mongosh --quiet --eval "db.runCommand({ping:1})"`,
       redis: `docker exec "$1" redis-cli ping`,
     };
     await ssh(ctx.app).check(s, script(`for n in $(seq 1 60); do ${ready[i.engine]} >/dev/null 2>&1 && exit 0; sleep 1; done; docker logs --tail 20 "$1" >&2; exit 1`, container), { what: `Waiting for ${i.engine}`, timeoutMs: 90_000 });

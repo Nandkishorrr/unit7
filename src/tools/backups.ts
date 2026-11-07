@@ -198,7 +198,8 @@ export async function verifyBackup(ctx: Ctx, backupId: string, location?: string
     }
     const env = db.engine === 'postgres' ? ['-e', 'POSTGRES_PASSWORD=verify'] : db.engine === 'mongo' ? [] : ['-e', 'MYSQL_ROOT_PASSWORD=verify'];
     await pool.check(s, cmd('docker', 'run', '-d', '--rm', '--name', scratch, ...env, image), { what: 'Starting a throwaway database', timeoutMs: 120_000 });
-    const ready = db.engine === 'postgres' ? 'pg_isready -U postgres' : db.engine === 'mongo' ? 'mongosh --quiet --eval 1' : 'mysqladmin ping -uroot -pverify --silent';
+    // over TCP: on first boot a temporary server answers on the socket alone, then restarts, and a load that starts then is lost
+    const ready = db.engine === 'postgres' ? 'pg_isready -h 127.0.0.1 -U postgres' : db.engine === 'mongo' ? 'mongosh --quiet --eval 1' : '$(command -v mysqladmin || command -v mariadb-admin) ping -h 127.0.0.1 -uroot -pverify --silent';
     await pool.check(s, script(`for i in $(seq 60); do docker exec "$1" sh -c "$2" >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1`, scratch, ready), { what: 'Waiting for the throwaway database', timeoutMs: 90_000 });
     const { PG_SAID, provePostgres } = await import('./partbackup.ts');
     const load: Record<string, string> = {

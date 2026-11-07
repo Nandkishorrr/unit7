@@ -96,8 +96,9 @@ const mainDownSince = (db: DB, svc: ServiceRow) => { const s = svc.server_id ? s
 // --- the database copies ----------------------------------------------------------------------------------------------
 const DATA = new Set(['postgres', 'mysql', 'mariadb', 'mongo']); // Redis is a cache: its copy starts empty
 const PATHS: Record<string, string> = { postgres: '/var/lib/postgresql/data', mysql: '/var/lib/mysql', mariadb: '/var/lib/mysql', mongo: '/data/db', redis: '/data' };
+// over TCP: on first boot a temporary server answers on the socket alone, then restarts
 const READY: Record<string, string> = {
-  postgres: 'docker exec "$1" pg_isready -U postgres', mysql: 'docker exec "$1" mysqladmin ping -h localhost --silent', mariadb: 'docker exec "$1" mariadb-admin ping -h localhost --silent',
+  postgres: 'docker exec "$1" pg_isready -h 127.0.0.1 -U postgres', mysql: 'docker exec "$1" mysqladmin ping -h 127.0.0.1 --silent', mariadb: 'docker exec "$1" mariadb-admin ping -h 127.0.0.1 --silent',
   mongo: 'docker exec "$1" mongosh --quiet --eval "db.runCommand({ping:1})"', redis: 'docker exec "$1" redis-cli ping',
 };
 const envOfDb = (engine: string, pw: string, database: string): Record<string, string> => ({
