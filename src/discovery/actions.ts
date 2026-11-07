@@ -194,8 +194,8 @@ const RULES: Record<string, Rule> = {
   file: (a) => (has(a, /^(-[a-zA-Z]*C|--comp)/) ? R(2, 'writes to a file') : READS),
   lastlog: (a) => (has(a, /^(-[a-zA-Z]*[CS]|--(cl|se))/) ? R(2, 'changes the login records') : READS),
   ...Object.fromEntries(['iptables-save', 'ip6tables-save'].map((p) => [p, (a) => (a.slice(1).every((x, k, r) => /^(-c|--counters|-t\w*|--table(=.*)?)$/.test(x) || /^(-t|--table)$/.test(r[k - 1] ?? '')) ? READS : R(2, 'writes a file or runs a program'))])),
-  // ps with a BSD-style e prints every process's environment; a word after a flag is that flag's value (ps -o etime)
-  ps: (a) => (a.slice(1).some((x, k, r) => /^[a-zA-Z]*e[a-zA-Z]*$/.test(x) && !r[k - 1]?.startsWith('-')) ? R(4, 'would show secret values') : READS),
+  // ps with a BSD-style e prints every process's environment. A word after a flag, or after one that takes a value, is that value (ps -o etime, ps axo etime, ps U deploy).
+  ps: (a) => (a.slice(1).some((x, k, r) => /^[a-zA-Z]*e[a-zA-Z]*$/.test(x) && !/^-|o$|^[UGptq]$/.test(r[k - 1] ?? '')) ? R(4, 'would show secret values') : READS),
   // harmless alone, but not on the read-only list: they're how text gets into files and other programs
   echo: () => R(2, 'isn’t on Unit7’s read-only list'), printf: () => R(2, 'isn’t on Unit7’s read-only list'),
   ...Object.fromEntries(['cat', 'tac', 'nl', 'head', 'tail', 'zcat', 'strings', 'od', 'hexdump', 'diff', 'base64', 'cut', 'column', 'comm', 'cmp'].map((p) => [p, prints()])),
@@ -250,6 +250,7 @@ const RULES: Record<string, Rule> = {
     const p = pos(a.slice(1), new Set(['-p', '--property', '-t', '--type', '--state', '-n', '--lines', '-o', '--output']));
     const s = p[0] ?? '';
     if (s === 'show-environment') return R(4, 'would show secret values');
+    if (s === 'cat' || (s === 'show' && (!has(a, /^(-p|--property)/) || has(a, /Environment/)))) return R(2, 'prints settings, values included'); // a unit's Environment= lines, as docker inspect
     if (!s || ['status', 'show', 'list-units', 'list-unit-files', 'list-timers', 'list-sockets', 'list-dependencies', 'list-jobs', 'list-machines', 'is-active', 'is-enabled',
       'is-failed', 'is-system-running', 'cat', 'help', 'get-default'].includes(s)) return READS;
     if (['stop', 'disable', 'mask', 'kill'].includes(s) && p.slice(1).some((u) => FIREWALL_OR_SSH.test(u))) return R(4, 'turns off the firewall or SSH');

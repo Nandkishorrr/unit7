@@ -36,7 +36,12 @@ test('the flags that turn a reader into a writer, or a runner', () => {
 
 test('what prints secrets stays a no: other programs, and a process’s environment', () => {
   for (const c of [`cut -c1- /root/.env`, `column /root/.env`, `comm /root/.env /dev/null`, `cmp -l /root/.env /dev/null`, `jq -n env`, `jq -n '$ENV'`, `jq -n 'env.TOKEN'`, `ps e`, `ps auxe`, `ps aux e`, `ps ewwax`]) assert.equal(tier(c), 4, c);
-  for (const c of [`ps aux`, `ps -ef`, `ps -eo pid,etime`, `ps -o etime`, `ps -C postgres`, `ps -u www-data`, `ps aux --sort -rss`, `cut -d: -f1 /etc/passwd`]) assert.equal(tier(c), 0, c);
+  for (const c of [`ps aux`, `ps -ef`, `ps -eo pid,etime`, `ps -o etime`, `ps axo etime`, `ps U deploy`, `ps -C postgres`, `ps -u www-data`, `ps aux --sort -rss`, `cut -d: -f1 /etc/passwd`]) assert.equal(tier(c), 0, c);
+});
+
+test('a service’s settings hold its secrets, as docker inspect’s do', () => {
+  for (const c of [`systemctl show app`, `systemctl cat app`, `systemctl show app -p Environment`]) assert.ok(tier(c) >= 2, c);
+  for (const c of [`systemctl status app`, `systemctl is-active app`, `systemctl show app -p ActiveState`, `systemctl list-units`]) assert.equal(tier(c), 0, c);
 });
 
 test('the gate: a trick that used to read as read-only reaches no server, for anyone it was meant to stop', async () => {
