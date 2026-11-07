@@ -183,29 +183,60 @@ const DB_CLIENT: Rule = (a) => (/\bdrop\s+(database|schema)\b|\bflushall\b|\bdro
 const FIREWALL_OR_SSH = /^(ufw|firewalld|nftables|iptables|ip6tables|netfilter-persistent|ssh|sshd)(\.(service|socket))?$/;
 
 const RULES: Record<string, Rule> = {
-  ...Object.fromEntries(['ls', 'pwd', 'whoami', 'id', 'uname', 'uptime', 'df', 'du', 'free', 'ps', 'w', 'who', 'last', 'lastlog', 'lsblk', 'lscpu', 'lsmem', 'nproc',
-    'ss', 'netstat', 'stat', 'file', 'wc', 'tree', 'which', 'whereis', 'realpath', 'readlink', 'basename', 'dirname', 'true', 'false', 'test', '[', 'md5sum', 'sha1sum',
+  ...Object.fromEntries(['ls', 'pwd', 'whoami', 'id', 'uname', 'uptime', 'df', 'du', 'free', 'w', 'who', 'last', 'lsblk', 'lscpu', 'lsmem', 'nproc',
+    'netstat', 'stat', 'wc', 'which', 'whereis', 'realpath', 'readlink', 'basename', 'dirname', 'true', 'false', 'test', '[', 'md5sum', 'sha1sum',
     'sha256sum', 'sha512sum', 'cksum', 'lsof', 'vmstat', 'iostat', 'mpstat', 'pidstat', 'findmnt', 'lsmod', 'lspci', 'lsusb', 'getconf', 'arch', 'tty', 'locale', 'pgrep',
-    'pstree', 'cd', 'sleep', 'type', 'nslookup', 'dig', 'host', 'ping', 'traceroute', 'tracepath', 'column', 'cut', 'tr', 'comm', 'cmp', 'seq', 'pg_isready', 'iptables-save',
-    'ip6tables-save', 'dpkg-query', 'apt-cache'].map((p) => [p, T0])),
+    'pstree', 'cd', 'sleep', 'type', 'nslookup', 'dig', 'host', 'ping', 'traceroute', 'tracepath', 'tr', 'seq', 'pg_isready',
+    'dpkg-query', 'apt-cache'].map((p) => [p, T0])),
+  // read-only but for a flag or two, which write a file, cut a connection or run a program. GNU long names can be shortened, so these match the start
+  ss: (a) => (has(a, /^(-[a-zA-Z]*[KD]|--(k|di))/) ? R(2, 'cuts connections or writes a file') : READS),
+  tree: (a) => (has(a, /^-[a-zA-Z]*o/) ? R(2, 'writes to a file') : READS),
+  file: (a) => (has(a, /^(-[a-zA-Z]*C|--comp)/) ? R(2, 'writes to a file') : READS),
+  lastlog: (a) => (has(a, /^(-[a-zA-Z]*[CS]|--(cl|se))/) ? R(2, 'changes the login records') : READS),
+  ...Object.fromEntries(['iptables-save', 'ip6tables-save'].map((p) => [p, (a) => (a.slice(1).every((x, k, r) => /^(-c|--counters|-t\w*|--table(=.*)?)$/.test(x) || /^(-t|--table)$/.test(r[k - 1] ?? '')) ? READS : R(2, 'writes a file or runs a program'))])),
+  // ps with a BSD-style e prints every process's environment; a word after a flag is that flag's value (ps -o etime)
+  ps: (a) => (a.slice(1).some((x, k, r) => /^[a-zA-Z]*e[a-zA-Z]*$/.test(x) && !r[k - 1]?.startsWith('-')) ? R(4, 'would show secret values') : READS),
   // harmless alone, but not on the read-only list: they're how text gets into files and other programs
   echo: () => R(2, 'isn’t on Unit7’s read-only list'), printf: () => R(2, 'isn’t on Unit7’s read-only list'),
-  ...Object.fromEntries(['cat', 'tac', 'nl', 'head', 'tail', 'zcat', 'strings', 'od', 'hexdump', 'diff', 'jq', 'base64'].map((p) => [p, prints()])),
-  sort: (a, ws) => (has(a, /^(-o|--output)/) ? (a.some((w) => PROTECTED.test(w.replace(/^(-o|--output=?)/, ''))) ? R(4, 'changes who can sign in to the server') : R(2, 'writes to a file')) : prints()(a, ws)),
+  ...Object.fromEntries(['cat', 'tac', 'nl', 'head', 'tail', 'zcat', 'strings', 'od', 'hexdump', 'diff', 'base64', 'cut', 'column', 'comm', 'cmp'].map((p) => [p, prints()])),
+  // env and $ENV print what a process was started with; .env is only a field
+  jq: (a, ws) => (has(a, /(^|[^.\w])env\b|\$ENV/) ? R(4, 'would show secret values') : has(a, /\b(import|include)\b|^(-[a-zA-Z]*[fL]|--from-file)/) ? R(2, 'runs a jq program Unit7 can’t read') : prints()(a, ws)),
+  sort: (a, ws) => (has(a, /^--co/) ? R(2, 'runs a program to compress its work') : has(a, /^(-[a-zA-Z]*o|--o)/) ? (a.some((w) => PROTECTED.test(w.replace(/^(-[a-zA-Z]*o|--o[a-z]*=?)/, ''))) ? R(4, 'changes who can sign in to the server') : R(2, 'writes to a file')) : prints()(a, ws)),
   uniq: (a, ws) => (pos(a.slice(1)).length > 1 ? (PROTECTED.test(pos(a.slice(1))[1]) ? R(4, 'changes who can sign in to the server') : R(2, 'writes to a file')) : prints()(a, ws)),
   xxd: (a, ws) => (has(a, /^-r/) || pos(a.slice(1)).length > 1 ? (pos(a.slice(1)).slice(1).some((f) => PROTECTED.test(f)) ? R(4, 'changes who can sign in to the server') : R(2, 'writes to a file')) : prints()(a, ws)),
   ...Object.fromEntries(['grep', 'egrep', 'fgrep', 'zgrep', 'rg'].map((p) => [p, (a, ws) => (has(a, /^(-[a-zA-Z]*[rR]|--recursive|--dereference-recursive|-d)/) || p === 'rg'
     ? R(2, 'searches whole folders, which can include secret files') : prints({ pattern: true })(a, ws))])),
   sed: (a, ws) => {
     if (has(a, /^(-[a-zA-Z]*i|--in-place)/)) return pos(a.slice(1)).some((f) => PROTECTED.test(f)) ? R(4, 'changes who can sign in to the server') : R(2, 'edits a file');
-    const p = pos(a.slice(1), new Set(['-e', '--expression', '-f', '--file']));
-    const e = a.indexOf('-e'), script = (e > 0 ? a[e + 1] : p[0]) ?? '';
-    if (has(a, /^(-f|--file)/) || !/^((\d+|\$)(,(\d+|\$))?|\/[^/]*\/)p$/.test(script)) return R(2, 'runs a sed script, which can write files');
-    return prints()(a, ws.filter((w) => w.v !== script));
+    // GNU sed's e runs a command and its w writes a file, one more -e away. So every script counts, however it's spelled, each must be a
+    // plain print, and only these options read: anything else (--exp=, a name GNU lets you shorten) isn't read-only.
+    const no = R(2, 'runs a sed script, which can write files or run commands');
+    const scripts: string[] = [], rest: string[] = [];
+    for (let k = 1; k < a.length; k++) {
+      const x = a[k]!, e = /^-[nErsuz]*e(.*)$/s.exec(x), long = /^--expression(?:=(.*))?$/s.exec(x);
+      if (x === '--') { rest.push(...a.slice(k + 1)); break; }
+      if (e) scripts.push(e[1] || (a[++k] ?? ''));
+      else if (long) scripts.push(long[1] ?? a[++k] ?? '');
+      else if (x === '-' || !x.startsWith('-')) rest.push(x);
+      else if (!/^(-[nErsuz]+|--(quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|debug|sandbox))$/.test(x)) return no;
+    }
+    if (!scripts.length && rest[0]) scripts.push(rest[0]);
+    if (!scripts.length || !scripts.every((s) => /^((\d+|\$)(,(\d+|\$))?|\/[^/\n]*\/)p$/.test(s))) return no;
+    return prints()(a, ws.filter((w) => !scripts.includes(w.v)));
   },
   ...Object.fromEntries(['awk', 'gawk', 'mawk'].map((p) => [p, (a, ws) => {
-    const prog = pos(a.slice(1), new Set(['-F', '-v']))[0] ?? '';
-    return has(a, /^(-f|--file)/) || /system|getline|[|>]|close|fflush/.test(prog) ? R(2, 'runs an awk program that can write files or run commands') : prints()(a, ws.filter((w) => w.v !== prog));
+    // only -F and -v: gawk's -e, --source, -i and -l bring in more code, its -o, -d and -p write files. awk stops reading options at the program.
+    const no = R(2, 'runs an awk program that can write files or run commands');
+    let k = 1;
+    for (; k < a.length && a[k]!.startsWith('-') && a[k] !== '-'; k++) {
+      if (a[k] === '--') { k++; break; }
+      if (a[k] === '-F' || a[k] === '-v') k++;
+      else if (!/^-[Fv]./.test(a[k]!)) return no;
+    }
+    const prog = a[k] ?? '';
+    if (/ENVIRON/.test(prog)) return R(4, 'would show secret values');
+    // ARGV in the program picks the files it reads, past the check below; @ is gawk's way to call system by a name built at run time
+    return /system|getline|[|>]|close|fflush|ARGV|ARGC|@/.test(prog) ? no : prints()(a, ws.filter((w) => w.v !== prog));
   }])),
   find: (a, ws) => {
     if (has(a, /^-delete$/)) return pos(a.slice(1)).some((p) => p === '/' || p === '/*') ? R(4, 'deletes folders for good') : R(3, 'deletes files');
@@ -246,7 +277,8 @@ const RULES: Record<string, Rule> = {
     return R(2, 'changes containers');
   },
   git: (a) => {
-    if (has(a, /^(--output|--ext-diff|--upload-pack|--receive-pack|--exec|-u$)/)) return has(a, /^(--upload-pack|--receive-pack|--exec)/) ? R(3, 'runs a command Unit7 can’t read') : R(2, 'writes files or runs a program');
+    if (has(a, /^--no-i/)) return R(2, 'reads files outside the repository');
+    if (has(a, /^(--outp|--ext|--op|--config-env|-O|--upload-pack|--receive-pack|--exec|-u$)/)) return has(a, /^(--upload-pack|--receive-pack|--exec)/) ? R(3, 'runs a command Unit7 can’t read') : R(2, 'writes files or runs a program');
     if (has(a, /^-c$/)) return R(2, 'changes git’s settings for this run');
     const p = pos(a.slice(1), new Set(['-C', '--git-dir', '--work-tree', '-n', '--max-count', '--format', '--pretty', '--since', '--until', '--author']));
     const [s = '', ...rest] = p;
@@ -352,7 +384,7 @@ function unwrap(a: string[], ws: Word[]): { a: string[]; ws: Word[]; res: Res } 
       for (;;) {
         const x = a[k];
         if (x === undefined) break;
-        if (/^(-S|--split-string)/.test(x)) return { a, ws, res: worst(res, R(3, 'runs a command Unit7 can’t follow')) };
+        if (/^(-[a-zA-Z0]*S|--s)/.test(x)) return { a, ws, res: worst(res, R(3, 'runs a command Unit7 can’t follow')) };
         if (/^-[u]$/.test(x)) k += 2;
         else if (x.startsWith('-')) k++;
         else if (/^[A-Za-z_]\w*=/.test(x)) { if (!SAFE_ENV.test(x.split('=')[0]!)) res = worst(res, R(2, `sets ${x.split('=')[0]}, which changes what runs`)); k++; }
