@@ -67,7 +67,7 @@ const READ = `r=$(readlink -f -- "$1") || exit 3
 [ -r "$r" ] || exit 5
 printf '%s\\n' "$r"
 stat -c '%s|%Y|%a|%U' -- "$r"
-if [ "$(stat -c %s -- "$r")" -le "$3" ]; then sha256sum -- "$r" | cut -d' ' -f1; else echo -; fi
+if [ "$(stat -c %s -- "$r")" -le "$3" ]; then sha256sum < "$r" | cut -d' ' -f1; else echo -; fi
 head -c "$2" -- "$r" | base64`;
 // where a path really leads, following links; the part that doesn't exist yet stays as it is
 const REAL = `p=$1; rest=
@@ -78,6 +78,7 @@ printf '%s\\n' "$r"
 if [ -d "$r" ]; then echo folder; elif [ -e "$r" ]; then echo file; else echo none; fi`;
 // Received in full next to the target first: a cut connection looks like the end of the file to cat, so the hash decides. An
 // existing file is written through (it keeps its owner and mode, and a single-file mount can't be renamed over).
+// sha256sum reads the file from stdin here: given a path with a backslash in it, GNU's puts a \ before the hash
 const WRITE = `set -e
 f=$1; keep=$2; want=$3; sha=$4; mode=$5
 [ ! -d "$f" ] || exit 4
@@ -86,10 +87,10 @@ umask 077
 t="$f.unit7-new.$$"
 trap 'rm -f -- "$t"' EXIT
 cat > "$t"
-[ "$(sha256sum -- "$t" | cut -d' ' -f1)" = "$sha" ] || exit 9
+[ "$(sha256sum < "$t" | cut -d' ' -f1)" = "$sha" ] || exit 9
 if [ -e "$f" ]; then
   [ -f "$f" ] || exit 6
-  old=$(sha256sum -- "$f" | cut -d' ' -f1)
+  old=$(sha256sum < "$f" | cut -d' ' -f1)
   [ -z "$want" ] || [ "$want" = "$old" ] || exit 8
   mkdir -p "$(dirname -- "$keep")"
   cp -p -- "$f" "$keep"
@@ -103,7 +104,7 @@ else
   echo absent
 fi`;
 // an undo never goes over something newer than what Unit7 wrote
-const UNDO_WRITE = `[ ! -e "$1" ] || [ "$(sha256sum -- "$1" | cut -d' ' -f1)" = "$4" ] || { echo "$1 changed after Unit7 wrote it, so Unit7 left it alone" >&2; exit 3; }
+const UNDO_WRITE = `[ ! -e "$1" ] || [ "$(sha256sum < "$1" | cut -d' ' -f1)" = "$4" ] || { echo "$1 changed after Unit7 wrote it, so Unit7 left it alone" >&2; exit 3; }
 ${RESTORE}`;
 const MOVE = `[ -e "$1" ] || [ -L "$1" ] || { echo "$1 isn't there" >&2; exit 3; }
 [ ! -e "$2" ] && [ ! -L "$2" ] || { echo "$2 is already there" >&2; exit 7; }

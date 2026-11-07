@@ -23,7 +23,7 @@ function repo() {
 }
 function apply(bare: string, env: Record<string, string>) {
   const file = join(mkdtempSync(join(tmpdir(), 'unit7-env-')), 'e.env');
-  writeFileSync(file, Object.entries({ GIT_TOKEN: 'x', REPO: 'sam/shop', BASE: 'main', GIT_URL: '/repo', MANAGER: 'pip', UP_PROD: '', UP_DEV: '', AUDIT: '0', MSG: 'Update 2 libraries', REVERT: '', ...env }).map(([k, v]) => `${k}=${v}`).join('\n'));
+  writeFileSync(file, Object.entries({ GIT_TOKEN: 'x', REPO: 'sam/shop', BASE: 'main', GIT_URL: '/repo', MANAGER: 'pip', UP_PROD: '', UP_DEV: '', AUDIT: '0', MSG: 'Update 2 libraries', REVERT: '', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*', ...env }).map(([k, v]) => `${k}=${v}`).join('\n'));
   return execFileSync('docker', ['run', '--rm', '--env-file', file, '-v', `${bare}:/repo`, 'python:3.13-alpine', 'sh', '-c', APPLY], { encoding: 'utf8' });
 }
 

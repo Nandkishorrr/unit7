@@ -255,7 +255,7 @@ async function guarded(ctx: Ctx, s: ServerRow, p: Part, how: How, o: { verb: Ver
 const EDIT = `set -e
 f=$1; b=$2$1; drop=$3; head=$4
 mkdir -p "$(dirname "$b")"
-if [ -f "$f" ]; then cp -p -- "$f" "$b"; sha256sum -- "$b" | cut -d' ' -f1; else echo absent; mkdir -p "$(dirname "$f")"; fi
+if [ -f "$f" ]; then cp -p -- "$f" "$b"; sha256sum < "$b" | cut -d' ' -f1; else echo absent; mkdir -p "$(dirname "$f")"; fi
 IFS= read -r line || [ -n "$line" ]
 umask 077
 t="$f.unit7-new"
@@ -264,7 +264,7 @@ if [ -f "$f" ]; then cat -- "$t" > "$f"; rm -f -- "$t"; else mv -- "$t" "$f"; fi
 // puts a copy back after checking it's the one Unit7 made (or removes a file that didn't exist before)
 export const RESTORE = `set -e
 if [ -z "$2" ]; then rm -f -- "$1"; exit 0; fi
-[ "$(sha256sum -- "$2" | cut -d' ' -f1)" = "$3" ] || { echo "the undo copy of $1 changed since Unit7 made it" >&2; exit 3; }
+[ "$(sha256sum < "$2" | cut -d' ' -f1)" = "$3" ] || { echo "the undo copy of $1 changed since Unit7 made it" >&2; exit 3; }
 cat -- "$2" > "$1"`;
 async function editFile(ctx: Ctx, s: ServerRow, file: string, drop: string, header: string, line: string) {
   const dir = `${manageDirs.undo}/${stamp()}`;
