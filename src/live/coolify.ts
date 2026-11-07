@@ -21,12 +21,14 @@ export async function step<T = any>(ctx: Ctx, tool: string, input: Record<string
 
 // a private repo holding this site, new or updated
 export async function repoFor(ctx: Ctx, p: Put): Promise<{ repo: Repo; branch: string }> {
-  if (p.site.repo) return { repo: p.site.repo, branch: p.site.branch ?? 'main' };
+  if (p.site.repo && !p.site.home) return { repo: p.site.repo, branch: p.site.branch ?? 'main' };
   const token = await githubToken(ctx);
   if (!token) throw new Unit7Error('no_account', 'This host builds from a GitHub repo, and GitHub isn’t connected yet. Connect it in Connections, then run this again.', 400);
   ctx.progress('Saving your code in a private GitHub repo…');
-  const had = p.update ? await repoExists(token, p.name) : undefined;
-  const repo = had ?? await createRepo(token, p.name, { private: true });
+  // a site given a home page goes up from a copy: never a push to the person's own repo
+  const name = p.site.repo ? `${p.name}-site` : p.name;
+  const had = p.update ? await repoExists(token, name) : undefined;
+  const repo = had ?? await createRepo(token, name, { private: true });
   await pushFolder(p.site.files, repo, token, { branch: 'main', message: p.update ? 'Update from Unit7' : 'First version, from Unit7', existing: !!had });
   return { repo, branch: 'main' };
 }
@@ -49,7 +51,7 @@ export const coolifyHost: Host = addHost({
   id: 'coolify', name: 'Coolify on your server', builds: true, price: OWN_PRICE, sizes: OWN_SIZES, pushes: true, tunes: true,
   places: (ctx) => all<{ id: string; name: string; server_id: string; srv: string }>(ctx.db, `SELECT a.id, a.name, s.id server_id, s.name srv FROM accounts a JOIN servers s ON s.org_id = a.org_id AND a.provider = 'coolify' AND a.status != 'failing' AND json_extract(a.meta, '$.serverId') = s.id WHERE a.org_id = ?`, ctx.orgId)
     .map((a) => ({ host: 'coolify', accountId: a.id, serverId: a.server_id, label: `Coolify on ${a.srv}` })),
-  fit: (site) => ({ ok: true, best: !!site.detection.dockerfile || site.detection.builder === 'compose' || !!site.detection.needs.length, why: 'It runs on your own server, and any app works.' }),
+  fit: (site) => ({ ok: true, best: !!site.detection.dockerfile || site.detection.builder === 'compose' || !!site.detection.needs.length, why: site.detection.stack === 'unknown' ? 'Coolify will try to work out the build. Unit7 can’t tell what this is, so it may not work.' : 'It runs on your own server, and any app works.' }),
   async put(ctx, p) {
     const serverId = p.place.serverId!, row = serverRow(ctx, serverId);
     const { repo, branch } = await repoFor(ctx, p);
@@ -67,7 +69,7 @@ export const coolifyHost: Host = addHost({
     const pushes = await step<{ hears?: string; next?: string }>(ctx, 'coolify.auto_deploy', { serverId, uuid: app.uuid, on: true }).catch((e: Error) => ({ next: e.message, hears: undefined }));
     const url = app.domains?.[0] ? `https://${String(app.domains[0]).replace(/^https?:\/\//, '')}` : '';
     const free = !!url && !p.domain && !app.reused;
-    return { url, project: app.uuid, notes: [...(p.site.repo ? [] : [`The code is in the private repo ${repo.owner}/${repo.name}.`]), ...(free ? ['This is a free test address, and its certificate can take a few minutes. Add your domain for one that’s yours.'] : []), ...(url ? [] : ['Coolify gave it no address yet. Add a domain to reach it.']), ...(pushes.next ? [`A push won’t go live by itself yet: ${pushes.next}`] : [])], autoDeploy: !!pushes.hears };
+    return { url, project: app.uuid, notes: [...(p.site.repo && !p.site.home ? [] : [`The code is in the private repo ${repo.owner}/${repo.name}.`]), ...(free ? ['This is a free test address, and its certificate can take a few minutes. Add your domain for one that’s yours.'] : []), ...(url ? [] : ['Coolify gave it no address yet. Add a domain to reach it.']), ...(pushes.next ? [`A push won’t go live by itself yet: ${pushes.next}`] : [])], autoDeploy: !!pushes.hears };
   },
   logs: async (ctx, r) => (await step<{ lines?: string[] }>(ctx, 'coolify.logs', { serverId: r.place.serverId, uuid: r.project, kind: 'application', lines: 200 })).lines ?? [],
 });

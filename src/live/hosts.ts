@@ -75,7 +75,7 @@ export function finished(site: Site): { dir: string; files: SiteFile[] } | undef
   if (d.dockerfile || d.builder === 'compose' || runsServer(d)) return undefined;
   const has = (dir: string) => site.files.some((f) => f.path === (dir === '.' ? 'index.html' : `${dir}/index.html`));
   const plain = d.stack === 'static';
-  const dir = plain && has('.') ? '.' : [...(plain ? ['public', 'site', '_site'] : [d.staticDir]), 'dist', 'build', 'out'].find((x) => x && has(x)) ?? (plain ? '.' : undefined);
+  const dir = plain && has('.') ? '.' : [...(plain ? [d.staticDir, 'public', 'site', '_site'] : [d.staticDir]), 'dist', 'build', 'out'].find((x) => x && has(x)) ?? (plain ? '.' : undefined);
   if (!dir) return undefined;
   return { dir, files: dir === '.' ? site.files : site.files.filter((f) => f.path.startsWith(`${dir}/`)).map((f) => ({ ...f, path: f.path.slice(dir.length + 1) })) };
 }

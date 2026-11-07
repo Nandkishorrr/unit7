@@ -102,5 +102,5 @@ export function parts(project: string, n = 1) {
   return p;
 }
 
-export const keptIn = (p: Put, r: Repo) => (p.site.repo ? [] : [`The code is in the private repo ${r.owner}/${r.name}.`]);
+export const keptIn = (p: Put, r: Repo) => (p.site.repo && !p.site.home ? [] : [`The code is in the private repo ${r.owner}/${r.name}.`]);
 export const taken = (host: string, name: string) => new Unit7Error('already_exists', `${name} already exists on ${host}. Choose another name, or say you want to update it.`, 409);

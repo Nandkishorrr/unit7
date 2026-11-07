@@ -17,7 +17,7 @@ async function productionOf(ctx: Ctx, name: string) {
 }
 
 async function sourceOf(ctx: Ctx, p: Put): Promise<Source> {
-  if (p.site.repo) return { type: 'git', repo: `${p.site.repo.owner}/${p.site.repo.name}`, ...(p.site.branch && { branch: p.site.branch }) };
+  if (p.site.repo && !p.site.home) return { type: 'git', repo: `${p.site.repo.owner}/${p.site.repo.name}`, ...(p.site.branch && { branch: p.site.branch }) };
   ctx.progress('Packing your files…');
   return { type: 'upload', uploadId: saveUpload(ctx.app, ctx.orgId, ctx.actor.userId, await packFiles(p.site.dir, p.site.files.map((f) => f.path))) };
 }
@@ -49,7 +49,7 @@ export const serverHost: Host = addHost({
     // or a plain redeploy later would build the upload the service started with
     if (fresh.source) run(ctx.db, `UPDATE services SET config = json_set(config, '$.source', json(?)) WHERE id = ?`, JSON.stringify(fresh.source), serviceId);
     return {
-      url: d.url ?? '', project: serviceId, deployment: d.deploymentId, autoDeploy: !!p.site.repo, point: { serviceId },
+      url: d.url ?? '', project: serviceId, deployment: d.deploymentId, autoDeploy: !!p.site.repo && !p.site.home, point: { serviceId },
       notes: d.previousDeploymentId ? [`deployment.rollback with serviceId ${serviceId} and deploymentId ${d.previousDeploymentId} puts the version before this one back.`] : [],
     };
   },

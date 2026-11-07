@@ -66,7 +66,8 @@ export function dockerfileFor(d: Detection, envKeys: string[]): string | undefin
     if (!d.buildCommand) {
       // the files are copied into a first stage and pruned there, so .git, .env and Unit7's own
       // Dockerfile never reach a layer of the served image (.well-known is kept: it's meant to be public)
-      return `FROM ${CADDY} AS files\nCOPY ${out === '.' ? '.' : out} /srv\nRUN find /srv -mindepth 1 -name '.*' ! -name .well-known -prune -exec rm -rf {} + && rm -f /srv/Dockerfile.unit7\n\nFROM ${CADDY}\nCOPY --from=files /srv /srv\nRUN printf '${STATIC_CADDYFILE}' > /etc/caddy/Caddyfile\nEXPOSE 80\n`;
+      const home = d.home && /^[\w./-]+$/.test(d.home) ? `RUN cp /srv/${d.home.split('/').pop()} /srv/index.html\n` : '';
+      return `FROM ${CADDY} AS files\nCOPY ${out === '.' ? '.' : out} /srv\n${home}RUN find /srv -mindepth 1 -name '.*' ! -name .well-known -prune -exec rm -rf {} + && rm -f /srv/Dockerfile.unit7\n\nFROM ${CADDY}\nCOPY --from=files /srv /srv\nRUN printf '${STATIC_CADDYFILE}' > /etc/caddy/Caddyfile\nEXPOSE 80\n`;
     }
     return `FROM ${node(d)} AS build
 WORKDIR /app

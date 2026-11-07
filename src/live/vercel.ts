@@ -45,7 +45,7 @@ async function project(ctx: Ctx, p: Put, acc: string, team: string | undefined) 
   }
   const framework = FRAMEWORK[p.site.detection.stack];
   const base = { name: p.name, ...(framework !== undefined && { framework }), ...settingsOf(p.tuned) };
-  const repo = p.site.repo && { gitRepository: { type: 'github', repo: `${p.site.repo.owner}/${p.site.repo.name}` } };
+  const repo = p.site.repo && !p.site.home && { gitRepository: { type: 'github', repo: `${p.site.repo.owner}/${p.site.repo.name}` } };
   let made = await send(ctx, acc, '/v11/projects', { team, body: { ...base, ...repo } });
   const notes: string[] = [];
   // linking needs Vercel's GitHub app on that repo. The site can still go live from the files, just without deploy on push

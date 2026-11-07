@@ -12,6 +12,8 @@ export interface Detection {
   startCommand?: string;
   port: number;                // the port Unit7 will route to
   staticDir?: string;          // for SPAs/static sites
+  home?: string;               // a plain site with no index.html: the page that opens first
+  pages?: string[];            // and the pages a person can pick from instead
   needs: string[];             // "postgres", "redis"… inferred from deps
   envKeys: string[];           // every env var the code reads
   healthPath: string;
@@ -39,6 +41,13 @@ export interface RepoFacts {
 }
 
 const has = (files: string[], re: RegExp) => files.some((f) => re.test(f));
+// what a build service can run once it knows the language, which needs no more from Unit7 than the port
+const OTHER: [RegExp, string, number][] = [[/(^|\/)Gemfile$/, 'ruby', 3000], [/(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/, 'java', 8080], [/\.(csproj|fsproj|sln)$/, 'dotnet', 8080], [/(^|\/)mix\.exs$/, 'elixir', 4000], [/(^|\/)deno\.jsonc?$/, 'deno', 8000]];
+// the web pages in a folder, nearest the top first, leaving out the files a Mac adds beside them
+const pagesOf = (files: string[]) => files.filter((f) => /\.html?$/i.test(f) && !/(^|\/)\._/.test(f)).sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b)).slice(0, 200);
+const NOT_HOME = /^(404|500|error|test|demo|terms|privacy)/i;
+const nameOf = (f: string) => f.slice(f.lastIndexOf('/') + 1);
+export const homeOf = (pages: string[]) => pages.find((f) => /^(index|default)\./i.test(nameOf(f))) ?? pages.find((f) => /^home/i.test(nameOf(f))) ?? pages.find((f) => /^(main|start|landing)/i.test(nameOf(f))) ?? pages.find((f) => !NOT_HOME.test(nameOf(f))) ?? pages[0]!;
 const PORT = (s: string, d: number) => { const m = s.match(/\b(?:PORT|port)\b\D{0,4}(\d{2,5})/); return m ? Number(m[1]) : d; };
 // the port a Dockerfile declares (the last EXPOSE: the final stage is what runs)
 const EXPOSE = (s: string) => { const m = [...s.matchAll(/^\s*EXPOSE\s+(\d{2,5})\b/gim)].pop(); return m ? Number(m[1]) : undefined; };
@@ -197,11 +206,16 @@ function detectStack(facts: RepoFacts): Detection {
     return { ...base, stack: 'python', runtime: 'python', packageManager: pmgr, port: 8000, notes: [...notes, 'Python app; set a start command if detection is wrong.'] };
   }
 
-  // 5. Go, Rust, PHP, static
+  // 5. Go, Rust, the other languages, PHP, static
   if (files.some((f) => /go\.mod$/.test(f))) return { ...base, stack: 'go', runtime: 'go', buildCommand: 'go build -o app .', startCommand: './app', port: PORT(allManifestText(manifests), 8080) };
   if (files.some((f) => /Cargo\.toml$/.test(f))) return { ...base, stack: 'rust', runtime: 'rust', port: 8080 };
   if (files.some((f) => /composer\.json$/.test(f))) return { ...base, stack: has(files, /artisan$/) ? 'laravel' : 'php', runtime: 'php', port: 80, healthPath: '/' };
+  for (const [re, stack, port] of OTHER) if (has(files, re)) return { ...base, stack, runtime: stack, port };
+  if (files.includes('index.php')) return { ...base, stack: 'php', runtime: 'php', port: 80, healthPath: '/' };
   if (has(files, /(^|\/)index\.html$/)) return { ...base, stack: 'static', builder: 'static', staticDir: files.some((f) => /^(public|dist|site|_site)\/index\.html$/.test(f)) ? files.find((f) => /index\.html$/.test(f))!.replace(/\/index\.html$/, '') : '.', port: 80, notes: [...notes, 'Static HTML, served by Caddy.'] };
+
+  const pages = pagesOf(files);
+  if (pages.length) { const home = homeOf(pages), at = home.slice(0, home.lastIndexOf('/') + 1); return { ...base, stack: 'static', builder: 'static', staticDir: at.slice(0, -1) || '.', home, pages, port: 80, notes: [...notes, `Static HTML with no index.html: ${home} opens first.`] }; }
 
   return { ...base, notes: [...notes, 'Could not detect the stack. Add a Dockerfile, or set the build and start commands.'] };
 }

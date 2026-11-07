@@ -18,16 +18,18 @@ import { Note, host } from '../make/parts';
 import { SiteDrop } from './drop';
 
 interface Size { id: string; label: string; price: string; paid?: boolean }
-interface Place { to: string; label: string; accountId?: string; serverId?: string; ok: boolean; why: string; recommended: boolean; costs?: string; price?: string; sizes?: Size[]; pushes?: boolean; tunes?: boolean }
-interface Other { to: string; name: string; ok: boolean; why: string }
-interface Site { name: string; stack: string; runtime: string | null; files: number; mb: number; needs: string[]; settings: string[]; buildCommand?: string | null; startCommand?: string | null; output?: string | null; port?: number }
+interface Place { to: string; label: string; accountId?: string; serverId?: string; ok: boolean; why: string; recommended: boolean; costs?: string; price?: string; money?: Money; sizes?: Size[]; pushes?: boolean; tunes?: boolean }
+type Money = 'free' | 'included' | 'paid';
+interface Other { to: string; name: string; ok: boolean; why: string; price?: string; money?: Money }
+interface Guide { what: string | null; advice: string | null; ai: boolean; connected: string[] }
+interface Site { name: string; stack: string; runtime: string | null; files: number; mb: number; needs: string[]; settings: string[]; buildCommand?: string | null; startCommand?: string | null; output?: string | null; port?: number; home?: string; pages?: string[] }
 interface Found { site: Site; places: Place[]; notConnected: Other[]; keysFound?: string; publishRefused?: boolean }
 type Source = { name: string } & ({ uploadId: string } | { repo: string; branch?: string });
 interface Put { url: string; name: string; verified: boolean; autoDeploy: boolean; notes: string[]; domain?: { error?: string; addThese?: { type: string; name: string; value: string }[]; at?: string; also?: string[] }; site: Site }
 interface Plan { plan: number; websites: string[] }
 interface Run { at: number; where: string; input: Record<string, unknown>; lines: string[]; out?: Put; failed?: Exclude<ToolResult, { status: 'ok' }>; plans?: Plan[]; proof?: string }
 interface Tune { buildCommand?: string; startCommand?: string; output?: string; port?: string }
-interface State { source?: Source; found?: Found; looking?: boolean; error?: string; pick?: string; name: string; domain: string; env: Record<string, string>; size?: string; tune: Tune; run?: Run }
+interface State { source?: Source; found?: Found; guide?: Guide; home?: string; looking?: boolean; error?: string; pick?: string; name: string; domain: string; env: Record<string, string>; size?: string; tune: Tune; run?: Run }
 
 // a reload (signing in to a host can take the whole tab) keeps the site, so nobody drops it twice
 const SAVED = 'unit7-live-site';
@@ -56,22 +58,26 @@ async function look() {
   patch({ looking: true, error: undefined });
   const r = await runTool('live.options', inputOf(source)).catch(unreachable);
   if (me !== asked) return;
-  if (r.status === 'ok') patch({ found: r.output, looking: false });
+  if (r.status === 'ok') {
+    patch({ found: r.output, looking: false });
+    const g = await runTool('live.guide', inputOf(source)).catch(unreachable);
+    if (me === asked && g.status === 'ok') patch({ guide: g.output });
+  }
   else if (r.status === 'error' && r.error.code === 'not_found') choose(undefined, 'That upload isn’t here anymore. Drop it again.');
   else patch({ looking: false, error: said(r) });
 }
 
 const CONNECT: Record<string, string> = { coolify: '/servers' }; // a host's own connect page; the rest are tiles on Connections
 const connectHref = (to: string) => CONNECT[to] ?? `/connections?connect=${encodeURIComponent(to)}`;
-const STACK: Record<string, string> = { static: 'A plain website', unknown: 'Unit7 works out how to build it', nest: 'NestJS', compose: 'Docker Compose', 'python-django': 'Django', 'python-fastapi': 'FastAPI', 'python-flask': 'Flask' };
+const STACK: Record<string, string> = { static: 'A plain website', unknown: 'Unit7 can’t tell what this is yet', nest: 'NestJS', compose: 'Docker Compose', 'python-django': 'Django', 'python-fastapi': 'FastAPI', 'python-flask': 'Flask' };
 const stackWords = (s: string) => STACK[s] ?? providerName(stackLogo({ kind: 'app', stack: s }));
 const DATA: Record<string, string> = { postgres: 'a Postgres database', mysql: 'a MySQL database', redis: 'Redis', mongo: 'a MongoDB database' };
 const NAME = /^[a-z0-9][a-z0-9-]{0,51}$/, DOMAIN = /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
 function go(place: Place, update = false) {
-  const { source, name, domain, env, tune } = state, size = sizeOf(place, state);
+  const { source, name, domain, env, tune, home } = state, size = sizeOf(place, state);
   const filled = Object.fromEntries(Object.entries(env).filter(([, v]) => v.trim()));
-  const input = { ...inputOf(source!), to: place.to, accountId: place.accountId, serverId: place.serverId, name, ...(domain && { domain }), ...(Object.keys(filled).length && { env: filled }), ...(size && { size: size.id }), ...(place.tunes && tuneOf(tune)), update };
+  const input = { ...inputOf(source!), ...(home && { home }), to: place.to, accountId: place.accountId, serverId: place.serverId, name, ...(domain && { domain }), ...(Object.keys(filled).length && { env: filled }), ...(size && { size: size.id }), ...(place.tunes && tuneOf(tune)), update };
   void putLive(input, place.label);
 }
 // a host's steps are tools of their own, so theirs are said here too
@@ -148,7 +154,7 @@ function Steps({ s, wanted }: { s: State; wanted?: string }) {
           {s.error && <Note tone="bad">{s.error}</Note>}
           {s.error && !found && <Button className="mt-3" size="sm" variant="secondary" icon={<RefreshCw size={13} />} onClick={() => void look()}>Try again</Button>}
           {!found && !s.error && <Looking repo={!!s.source && 'repo' in s.source} />}
-          {found && <Where found={found} place={place} wanted={wanted} />}
+          {found && <Where s={s} found={found} place={place} wanted={wanted} />}
           {found && place && !found.publishRefused && <Yours s={s} place={place} />}
         </Step>
       ) : <Step n={2} title="Make it yours" muted />}
@@ -181,7 +187,64 @@ function SiteRow({ s }: { s: State }) {
   );
 }
 
-function Where({ found, place, wanted }: { found: Found; place?: Place; wanted?: string }) {
+const MONEY: Record<Money, { label: string; tone: 'ok' | 'neutral' | 'warn' } | undefined> = { free: { label: 'Free', tone: 'ok' }, included: { label: 'No extra cost', tone: 'neutral' }, paid: { label: 'Paid', tone: 'warn' } };
+function MoneyBadge({ m }: { m?: Money }) {
+  const b = m && MONEY[m];
+  return b ? <Badge tone={b.tone} className="h-5 px-2 text-[11px]">{b.label}</Badge> : null;
+}
+
+// what the project is, read from its README and description, never its code, then one question away from the AI
+function GuideCard({ s, found }: { s: State; found: Found }) {
+  const name = s.source!.name, g = s.guide, unknown = found.site.stack === 'unknown';
+  return (
+    <div className="rounded-[18px] bg-raised/60 p-3.5" aria-live="polite">
+      <p className="text-[13px] font-semibold text-ink">{g?.ai ? 'What AI read in your project' : 'Your project'}</p>
+      <p className="mt-1 text-[13px] leading-snug text-ink-2">{g ? g.what ?? `${stackWords(found.site.stack)}, with ${found.site.files} files.` : 'Reading its description…'}</p>
+      {g?.advice && <p className="mt-1 text-[13px] leading-snug text-ink-2">{g.advice}</p>}
+      {g && !g.ai && <p className="mt-1 text-[12.5px] leading-snug text-muted">It only reads the README and description, never your code.</p>}
+      <div className="mt-2.5">
+        <AskButton size="md" label={unknown ? 'Ask Unit7 how to put this live' : 'Ask Unit7 for a full plan'} prompt={`I want to put ${name} live${s.source && 'repo' in s.source ? ` from the repo ${s.source.repo}` : ''}. Unit7 sees: ${stackWords(found.site.stack)}. Use live.options, then tell me what it is, the best place for it, which choices are free and which are paid, and what else it needs. Read only its README and description, not all its code.`} />
+      </div>
+    </div>
+  );
+}
+
+// after the hosts: the other things a new site usually wants, free ones named first, with a way to connect what isn't yet
+interface Extra { name: string; price: string; to?: string; href?: string }
+const EMAIL: Extra[] = [{ name: 'Resend', price: 'Free for 3,000 emails a month', to: 'resend' }, { name: 'Brevo', price: 'Has a free plan', href: 'https://www.brevo.com/pricing/' }];
+const LIST: Extra[] = [{ name: 'Kit', price: 'Has a free plan', href: 'https://kit.com/pricing' }, { name: 'Brevo', price: 'Has a free plan', href: 'https://www.brevo.com/pricing/' }];
+const DATABASE: Extra[] = [{ name: 'Supabase', price: 'Has a free plan', to: 'supabase' }, { name: 'Neon', price: 'Has a free plan', to: 'neon' }];
+function Extras({ s, found }: { s: State; found: Found }) {
+  const connected = s.guide?.connected ?? [];
+  const row = (title: string, items: Extra[]) => (
+    <div key={title}>
+      <p className="text-[13px] font-medium text-ink">{title}</p>
+      <ul className="mt-1 space-y-1">
+        {items.map((x) => (
+          <li key={x.name} className="flex flex-wrap items-center gap-x-2 text-[12.5px] text-ink-2">
+            <span className="font-medium">{x.name}</span><span className="text-muted">{x.price}</span>
+            {x.to && connected.includes(x.to) ? <Badge tone="lime" className="h-5 px-2 text-[11px]">Connected</Badge>
+              : x.to ? <A href={connectHref(x.to)} className="font-medium text-blue-text hover:underline">Connect</A>
+              : <a href={x.href} target="_blank" rel="noreferrer" className="font-medium text-blue-text hover:underline">See plans</a>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+  return (
+    <details className="rounded-[18px] border border-line p-3.5">
+      <summary className="cursor-pointer text-[13.5px] font-medium text-ink">What else your site may want</summary>
+      <div className="mt-3 space-y-3">
+        {row('Send email from your site', EMAIL)}
+        {row('Build an email list', LIST)}
+        {!!found.site.needs.length && row('A database', DATABASE)}
+        <p className="text-[12.5px] text-muted">Plans change, so check each one’s own page.</p>
+      </div>
+    </details>
+  );
+}
+
+function Where({ s, found, place, wanted }: { s: State; found: Found; place?: Place; wanted?: string }) {
   const can = found.notConnected.filter((h) => h.ok).sort((a, b) => Number(b.to === wanted) - Number(a.to === wanted));
   const missing = wanted && !found.places.some((p) => p.to === wanted) ? found.notConnected.find((h) => h.to === wanted) : undefined;
   const best = found.places.find((p) => p.ok);
@@ -195,6 +258,7 @@ function Where({ found, place, wanted }: { found: Found; place?: Place; wanted?:
             : <><b className="font-semibold">These files hold keys, so they shouldn’t be in the code.</b> {found.keysFound}. It can still go live, but a key in code can end up where people can read it. Move them to settings first if you can.</>}</p>
         </div>
       )}
+      <GuideCard s={s} found={found} />
       {found.publishRefused ? null : <>
       {!!found.site.needs.length && <p className="text-[13px] text-ink-2">It uses {found.site.needs.map((n) => DATA[n] ?? n).join(' and ')}. Unit7 can add {found.site.needs.length > 1 ? 'them' : 'one'} once it’s live.</p>}
       {missing && !missing.ok && <Note tone="warn">{missing.name} can’t take this one: {missing.why}</Note>}
@@ -210,7 +274,8 @@ function Where({ found, place, wanted }: { found: Found; place?: Place; wanted?:
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span className={cx('text-[14px] font-medium [overflow-wrap:anywhere]', p.ok ? 'text-ink' : 'text-muted')}>{p.label}</span>
-                    {p === best && <Badge tone="lime" className="h-5 px-2 text-[11px]">Best fit</Badge>}
+                    {p === best && found.site.stack !== 'unknown' && <Badge tone="lime" className="h-5 px-2 text-[11px]">Best fit</Badge>}
+                    {p.ok && <MoneyBadge m={p.money} />}
                   </span>
                   <span className="block text-[12.5px] leading-snug text-muted">{p.why}</span>
                   {p.ok && p.price && <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-2">{p.price}</span>}
@@ -223,19 +288,24 @@ function Where({ found, place, wanted }: { found: Found; place?: Place; wanted?:
       )}
       {!best && <p className="text-[14px] font-medium text-ink">{found.places.length ? 'Nothing you’ve connected can host this.' : 'Nothing is connected yet.'} Connect one of these and it shows up here.</p>}
       {!!can.length && (
+        <>
+        <p className="text-[13px] font-medium text-ink">You could also connect</p>
         <ul className="space-y-2" aria-label="Hosts you could connect">
           {can.map((h) => (
             <li key={h.to} className={cx('flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[18px] border border-dashed border-line-strong p-3', h.to === wanted && !best && 'border-blue')}>
               <LogoTile id={h.to} size={42} />
               <span className="min-w-0 flex-1 basis-[200px]">
-                <span className="block text-[14px] font-medium text-ink">{h.name}</span>
+                <span className="flex flex-wrap items-center gap-x-2 text-[14px] font-medium text-ink">{h.name}<MoneyBadge m={h.money} /></span>
                 <span className="block text-[12.5px] leading-snug text-muted">{h.why}</span>
+                {h.price && <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-2">{h.price}</span>}
               </span>
               <Button size="sm" variant={best ? 'secondary' : 'primary'} onClick={() => navigate(connectHref(h.to))}>Connect {h.to === 'coolify' ? 'a server' : h.name}<ArrowRight size={13} /></Button>
             </li>
           ))}
         </ul>
+        </>
       )}
+      <Extras s={s} found={found} />
       {!best && !can.length && <p className="text-[13px] text-muted">Go to <A href="/connections" className="font-medium text-blue-text hover:underline">Connections</A> to add a host.</p>}
       </>}
     </div>
@@ -255,6 +325,13 @@ function Yours({ s, place }: { s: State; place: Place }) {
         <Field label="Your domain (optional)" hint={domainOk ? 'Leave it empty for a free address.' : <span className="text-bad">It should look like shop.example.com.</span>}>
           <Input value={s.domain} placeholder="shop.example.com" spellCheck={false} autoCapitalize="none" inputMode="url" aria-invalid={!domainOk} onChange={(e) => patch({ domain: e.target.value.trim().toLowerCase() })} />
         </Field>
+        {site.home && (
+          <Field label="Home page" hint="There’s no index.html, so this page opens first. Your code isn’t changed.">
+            <select className="h-10 w-full rounded-[12px] border border-line bg-surface px-3 text-[14px] text-ink" value={s.home ?? site.home} onChange={(e) => patch({ home: e.target.value })}>
+              {site.pages?.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </Field>
+        )}
         {repo && <Branch key={repo.branch} now={repo.branch ?? ''} onChange={(branch) => { const source = { ...repo, branch }; keep(source); patch({ source, found: undefined }); }} />}
       </div>
       <Variables s={s} keys={site.settings} />
