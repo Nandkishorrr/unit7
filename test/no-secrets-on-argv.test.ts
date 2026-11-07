@@ -144,7 +144,7 @@ const backupRow = (app: App, orgId: string, svc: string, kind: string) => {
   run(app.db, `INSERT INTO backups (id, org_id, service_id, kind, reason, location, status, checksum) VALUES (?, ?, ?, ?, 'manual', '/var/lib/unit7/backups/x.gz', 'done', 'abc')`, b, orgId, svc, kind);
   return b;
 };
-const answers = (c: string) => (c.includes('gunzip -t') ? done('abc\n') : c.includes('wc -c') ? done('10\nabc\n') : c.includes('{{.Config.Image}}') ? done('postgres:17-alpine\n') : c.includes('-tAc') || c.includes(' -N -e') ? done('3\n') : undefined);
+const answers = (c: string) => (c.includes('gunzip -t') ? done('abc\n') : c.includes('/^COPY /') ? done('postgres\tpublic.items\t3\n') : c.includes('-AtqX') ? done('public.items|3\n') : c.includes('wc -c') ? done('10\nabc\n') : c.includes('{{.Config.Image}}') ? done('postgres:17-alpine\n') : c.includes('-tAc') || c.includes(' -N -e') ? done('3\n') : undefined);
 
 test('a backup, its check and a restore: the database password only ever travels on stdin', async () => {
   for (const kind of ['postgres', 'mysql']) {

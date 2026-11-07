@@ -391,7 +391,7 @@ test('part.update on Coolify: the fresh copy comes first, and no copy means no u
   const before = calls.filter((x) => x.stdin.includes('/deploy?uuid=relaydb01')).length;
   const r = await o.h('part.update', { serverId: srv, part: 'coolify:relaydb01', confirm: 'relay-db' });
   assert.equal(r.status, 'error');
-  assert.match(error(r).message, /came out empty/);
+  assert.match(error(r).message, /did not finish/);
   assert.equal(calls.filter((x) => x.stdin.includes('/deploy?uuid=relaydb01')).length, before, 'nothing deployed');
   // an app has no data to copy: straight to the deploy, as before
   ok(await o.h('part.update', { serverId: srv, part: 'coolify:shopapp01' }));

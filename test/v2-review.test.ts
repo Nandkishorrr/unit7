@@ -320,7 +320,7 @@ test('Warden’s extra copies keep to a few, and after a break-in nothing is pru
   app.events.emit(o.orgId, 'breakin.found', 'x', { severity: 'critical', resource: SRV });
   ok(await o.as(WARDEN as never)('part.backup', { serverId: SRV, part: 'coolify:live', reason: 'before a deploy' }));
   assert.equal(count(), 5, 'after a break-in the old copies are the clean ones');
-  assert.ok(!seen.some((x) => /rm -f/.test(x.command)));
+  assert.ok(!seen.some((x) => /sh -c 'rm -f "\$1"'/.test(x.command)));
   run(app.db, `DELETE FROM events WHERE type = 'breakin.found'`);
   ok(await o.as(WARDEN as never)('part.backup', { serverId: SRV, part: 'coolify:live', reason: 'before a deploy' }));
   assert.equal(count(), 3, 'only the newest few stay');

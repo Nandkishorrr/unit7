@@ -65,7 +65,7 @@ test('“Back up daily with Unit7”: the right dump per engine, a schedule, the
 
   const out = ok(await o.h('part.backup_schedule', { serverId: SRV, part: 'coolify:shopsupa01' }));
   // Supabase's Postgres: every database, as its own admin, inside its own container
-  assert.match(lastDump(seen), /docker exec "\$2" sh -c 'PGPASSWORD="\$POSTGRES_PASSWORD" pg_dumpall -h 127\.0\.0\.1 -U supabase_admin' \| gzip > "\$3"/);
+  assert.match(lastDump(seen), /docker exec "\$2" sh -c 'PGPASSWORD="\$POSTGRES_PASSWORD" pg_dumpall -h 127\.0\.0\.1 -U supabase_admin'; echo \$\? > "\$3\.rc"; \} \| gzip > "\$3"/);
   assert.match(lastDump(seen), /'supabase-db-shopsupa01'/);
   assert.deepEqual([out.scheduled, out.keep, out.firstBackup.offServer], ['daily', 7, ['this computer']]);
   const sch = get<{ frequency: string; keep: number; last_run_at: string | null }>(app.db, 'SELECT frequency, keep, last_run_at FROM part_backup_schedules WHERE server_id = ? AND part = ?', SRV, 'coolify:shopsupa01')!;
@@ -104,12 +104,12 @@ test('“Back up daily with Unit7”: the right dump per engine, a schedule, the
 
   // the other engines, each with its own dump, inside its own container
   const want: Record<string, RegExp> = {
-    'coolify:relaydb01': /docker exec "\$2" sh -c 'pg_dumpall -U "\$\{POSTGRES_USER:-postgres\}"' \| gzip/,
-    'c:mysql-db': /mysqldump -uroot --all-databases --single-transaction 2>\/dev\/null \|\| mariadb-dump -uroot --all-databases --single-transaction' \| gzip/,
+    'coolify:relaydb01': /docker exec "\$2" sh -c 'pg_dumpall -U "\$\{POSTGRES_USER:-postgres\}"'; echo \$\? > "\$3\.rc"; \} \| gzip/,
+    'c:mysql-db': /mysqldump -uroot --all-databases --single-transaction 2>\/dev\/null \|\| mariadb-dump -uroot --all-databases --single-transaction'; echo \$\? > "\$3\.rc"; \} \| gzip/,
     'c:mariadb-db': /export MYSQL_PWD="\$\{MYSQL_ROOT_PASSWORD:-\$MARIADB_ROOT_PASSWORD\}"; mysqldump/,
     // the password only in a 0600 file inside the container, never on a command line
-    'c:mongo-db': /mongodump --quiet --archive --username="\$MONGO_INITDB_ROOT_USERNAME" --authenticationDatabase=admin --config="\$f".*exec mongodump --quiet --archive' \| gzip/,
-    'c:redis-db': /REDISCLI_AUTH=.*redis-cli BGSAVE.*while \[ "\$\(redis-cli LASTSAVE\)" = "\$t" \].*cat "\$\{d:-\/data\}\/\$\{f:-dump\.rdb\}"' \| gzip/,
+    'c:mongo-db': /mongodump --quiet --archive --username="\$MONGO_INITDB_ROOT_USERNAME" --authenticationDatabase=admin --config="\$f".*exec mongodump --quiet --archive'; echo \$\? > "\$3\.rc"; \} \| gzip/,
+    'c:redis-db': /REDISCLI_AUTH=.*redis-cli BGSAVE.*while \[ "\$\(redis-cli LASTSAVE\)" = "\$t" \].*cat "\$\{d:-\/data\}\/\$\{f:-dump\.rdb\}"'; echo \$\? > "\$3\.rc"; \} \| gzip/,
   };
   for (const [part, re] of Object.entries(want)) {
     seen.length = 0;
