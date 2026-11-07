@@ -6,7 +6,7 @@ import { defineTool, execute, type Ctx } from './runtime.ts';
 import { all, get, id, json, now, run } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
-import { cmd, script, safeName, secretIn, shq } from '../connectors/shell.ts';
+import { cmd, gzipInto, script, safeName, secretIn, shq } from '../connectors/shell.ts';
 import { serverRow } from './servers.ts';
 import { fid, isAgent, requireHuman } from './helpers.ts';
 import { forbidden } from '../errors.ts';
@@ -82,8 +82,7 @@ function dumpCommand(db: DbServiceConfig): { dump: string; args: string[] } {
 // this shell's environment; `docker exec -e NAME` forwards it by name, so no command line ever holds the value.
 const PW_IN = secretIn('PGPASSWORD', 'MYSQL_PWD', 'REDISCLI_AUTH');
 
-// {dump} | gzip, keeping the dump's exit code (POSIX sh has no pipefail)
-const wrapDump = (dump: string) => `{ ${dump} 2>"$2.err"; echo $? > "$2.rc"; } | gzip > "$2"; rc=$(cat "$2.rc"); rm -f "$2.rc"; if [ "$rc" != 0 ]; then cat "$2.err" >&2; rm -f "$2" "$2.err"; exit 1; fi; rm -f "$2.err"; test -s "$2"`;
+const wrapDump = (dump: string) => `${gzipInto(`${dump} 2>"$2.err"`, '$2', 'cat "$2.err" >&2; rm -f "$2.err"')}; rm -f "$2.err"; test -s "$2"`;
 
 export async function takeBackup(ctx: Ctx, serviceId: string, reason: string): Promise<{ backupId: string; size: number; location: string }> {
   const host = backupHost(ctx, serviceId);
@@ -191,6 +190,8 @@ export async function verifyBackup(ctx: Ctx, backupId: string, location?: string
   };
   ctx.progress(`Restoring ${svc.name}'s backup into a throwaway copy to prove it works…`);
   try {
+    // a file cut short (a full disk, a lost connection) can still load some tables, so it has to read back whole first
+    if ((await pool.exec(s, script('gunzip -t "$1"', b.location), { timeoutMs: 10 * 60_000 })).code !== 0) return finish(false, 'the file is damaged: it doesn’t read back whole');
     if (db.engine === 'redis') {
       const r = await pool.exec(s, script('gunzip -c "$1" | docker run -i --rm "$2" sh -c "cat > /tmp/d.rdb && redis-check-rdb /tmp/d.rdb" 2>&1', b.location, image), { timeoutMs: 5 * 60_000 });
       return finish(/RDB looks OK/.test(r.stdout), /RDB looks OK/.test(r.stdout) ? 'the snapshot checks out' : r.stdout.trim().slice(-200));
@@ -199,8 +200,10 @@ export async function verifyBackup(ctx: Ctx, backupId: string, location?: string
     await pool.check(s, cmd('docker', 'run', '-d', '--rm', '--name', scratch, ...env, image), { what: 'Starting a throwaway database', timeoutMs: 120_000 });
     const ready = db.engine === 'postgres' ? 'pg_isready -U postgres' : db.engine === 'mongo' ? 'mongosh --quiet --eval 1' : 'mysqladmin ping -uroot -pverify --silent';
     await pool.check(s, script(`for i in $(seq 60); do docker exec "$1" sh -c "$2" >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1`, scratch, ready), { what: 'Waiting for the throwaway database', timeoutMs: 90_000 });
+    const { PG_SAID, provePostgres } = await import('./partbackup.ts');
     const load: Record<string, string> = {
-      postgres: `gunzip -c "$1" | docker exec -i "$2" psql -U postgres -q >/dev/null 2>"$1.verr"; true`,
+      // psql carries on past an error, and some are harmless (a role the throwaway doesn't have), so what came back is the test, not how it went
+      postgres: `gunzip -c "$1" | docker exec -i "$2" psql -U postgres -q 2>&1 >/dev/null | ${PG_SAID}; true`,
       mysql: `gunzip -c "$1" | docker exec -i "$2" mysql -uroot -pverify 2>"$1.verr"`,
       mariadb: `gunzip -c "$1" | docker exec -i "$2" mariadb -uroot -pverify 2>"$1.verr"`,
       mongo: `gunzip -c "$1" | docker exec -i "$2" mongorestore --archive --gzip --quiet 2>"$1.verr"`,
@@ -213,14 +216,16 @@ export async function verifyBackup(ctx: Ctx, backupId: string, location?: string
     }
     const q = (COUNT[db.engine] ?? COUNT.mysql!)(name);
     const pw = db.passwordRef ? ctx.secret(db.passwordRef) : '';
-    const inCopy = db.engine === 'postgres'
-      ? (await pool.exec(s, script('docker exec "$1" psql -U postgres -tAc "$2"', scratch, q))).stdout.trim()
-      : (await pool.exec(s, script('docker exec "$1" mysql -uroot -pverify -N -e "$2"', scratch, q))).stdout.trim();
     // only its own live database is a fair comparison
     const inLive = !own ? 'NaN' : db.engine === 'postgres'
       ? (await pool.exec(s, script(PW_IN + 'docker exec -e PGPASSWORD "$1" psql -U "$3" -d "$4" -tAc "$2"', c, q, db.userRef ? 'unit7' : 'postgres', name), { stdin: `${pw}\n` })).stdout.trim()
       : (await pool.exec(s, script(PW_IN + 'docker exec -e MYSQL_PWD "$1" mysql -uroot -N -e "$2"', c, q), { stdin: `${pw}\n` })).stdout.trim();
-    const [copy, live] = [Number(inCopy), Number(inLive)];
+    const live = Number(inLive);
+    if (db.engine === 'postgres') { // table by table and row by row: a table count can't tell a full table from an empty one
+      const proof = await provePostgres(ctx, s, scratch, image, b.location, loaded.stderr.split('\n').filter(Boolean)), empty = proof.empty && live === 0;
+      return finish(proof.ok || !!empty, empty ? 'the database is empty, and so is its backup' : proof.note);
+    }
+    const copy = Number((await pool.exec(s, script('docker exec "$1" mysql -uroot -pverify -N -e "$2"', scratch, q))).stdout.trim());
     if (!Number.isFinite(copy)) return finish(false, 'the copy could not be read back');
     // tables can be added after the backup, so the copy may trail the live database, never exceed it wildly
     return finish(copy > 0 || live === 0, `${copy} table${copy === 1 ? '' : 's'} restored${Number.isFinite(live) ? ` (live has ${live})` : ''}`);

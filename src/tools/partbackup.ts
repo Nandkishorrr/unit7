@@ -17,7 +17,7 @@ import { lastXray, runXray } from './xray.ts';
 import { CHANGE_UNDO, ROOM_PROBE, findPart, freshBackup, manageDirs, mongoAs, roomVerdict } from './manage.ts';
 import { copyOffsite, removeOffsite } from './offsite.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
-import { script, secretIn, shq } from '../connectors/shell.ts';
+import { gzipInto, script, secretIn, shq } from '../connectors/shell.ts';
 import { engineOf, type Inventory, type Part, type Sizes } from '../discovery/xray.ts';
 import { makeRef } from '../vault.ts';
 import { canDump } from '../discovery/findings.ts';
@@ -222,7 +222,7 @@ defineTool({
     if (containers.length) {
       ctx.progress(`Copying ${p.name}’s settings…`);
       const file = `${dir}/${t}.settings.json.gz`;
-      await ssh(ctx.app).check(s, asRoot(s) + script('f="$1"; shift; umask 077; mkdir -p "$(dirname "$f")" && docker inspect "$@" | gzip > "$f" && test -s "$f"', file, ...containers), { what: `Copying ${p.name}’s settings`, timeoutMs: 120_000, signal: ctx.signal });
+      await ssh(ctx.app).check(s, asRoot(s) + script(`f="$1"; shift; umask 077; mkdir -p "$(dirname "$f")"; ${gzipInto('docker inspect "$@"', '$f')}`, file, ...containers), { what: `Copying ${p.name}’s settings`, timeoutMs: 120_000, signal: ctx.signal });
       await keep('settings', file);
     }
     const removed = warden ? await prunePart(ctx, s, part, 6) : 0; // two files a run: the newest three runs
@@ -242,7 +242,7 @@ COUNT.mariadb = COUNT.mysql!;
 
 // Postgres: what the file really holds, table by table. "More than nothing" proves nothing: Supabase's image starts with tables of
 // its own, and a database that isn't called postgres starts with none where a simple count would look.
-export const PG_MANIFEST = String.raw`gunzip -c "$1" | awk 'inc && /^\\\.$/ { print db "\t" t "\t" n; inc = 0; next } inc { n++; next } /^\\connect / { db = $2; gsub(/"/, "", db); next } /^COPY / { t = $0; sub(/^COPY /, "", t); sub(/ *(\(.*\))? *FROM stdin;$/, "", t); n = 0; inc = 1 }'`;
+export const PG_MANIFEST = String.raw`gunzip -c "$1" | awk 'BEGIN { db = "postgres" } inc && /^\\\.$/ { print db "\t" t "\t" n; inc = 0; next } inc { n++; next } /^\\connect / { db = $2; gsub(/"/, "", db); next } /^COPY / { t = $0; sub(/^COPY /, "", t); sub(/ *(\(.*\))? *FROM stdin;$/, "", t); n = 0; inc = 1 }'`;
 export interface Table { db: string; table: string; rows: number }
 export const parseManifest = (text: string): Table[] => text.split('\n').flatMap((l) => { const [db, table, rows] = l.split('\t'); return db && table && rows ? [{ db, table, rows: Number(rows) }] : []; });
 export const countsSql = (tables: Table[]) => tables.map((t) => `select '${t.table.replace(/'/g, `''`)}', count(*) from ${t.table};`).join('\n') + '\n';
@@ -251,10 +251,10 @@ export const parseCounts = (text: string) => new Map(text.split('\n').flatMap((l
 // the row in CONTEXT stay out, and so do the lines psql makes of a table's rows once its COPY never started.
 export const PG_SAID = String.raw`awk '/syntax error at or near|invalid command/ { next } /ERROR:/ { if (e != "") print e; e = $0; sub(/^.*ERROR: */, "", e); sub(/: ".*$/, "", e); next } /^CONTEXT: +COPY / { t = $3; sub(/,$/, "", t); print t ": " e; e = "" } END { if (e != "") print e }' | cut -c1-200 | tail -n 200 >&2`;
 // (pure) did it all come back? A table counts as short if it's gone or has fewer rows than the file
-export function proofOf(want: Table[], got: Map<string, number>, said: string[] = []) {
+export function proofOf(want: Table[], got: Map<string, number>, said: string[] = []): { ok: boolean; note: string; empty?: boolean } {
   const count = (t: Table) => got.get(`${t.db}\t${t.table}`);
   const short = want.filter((t) => (count(t) ?? -1) < t.rows), rows = want.reduce((n, t) => n + t.rows, 0);
-  if (!want.length) return { ok: false, note: 'the file holds no tables' };
+  if (!want.length) return { ok: false, note: 'the file holds no tables', empty: true };
   const why = [...new Set(short.flatMap((t) => said.find((l) => l.includes(t.table.split('.').pop()!.replace(/"/g, ''))) ?? []))].slice(0, 2);
   return short.length ? { ok: false, note: `${short.length} of ${want.length} tables came back short: ${short.slice(0, 5).map((t) => `${t.table} (${count(t) === undefined ? 'missing' : `${count(t)!.toLocaleString('en-US')} of ${t.rows.toLocaleString('en-US')} rows`})`).join(', ')}${why.length ? `. Postgres said: ${why.join('; ')}` : ''}` }
     : { ok: true, note: `all ${want.length} table${want.length === 1 ? '' : 's'} and ${rows.toLocaleString('en-US')} row${rows === 1 ? '' : 's'} came back` };
@@ -594,7 +594,7 @@ defineTool({
   async run(ctx, i) {
     const { s, c } = await theCopy(ctx, i.serverId, i.copy);
     const dir = `${manageDirs.backups}/exports`, file = `${dir}/${i.copy}-${i.table.replace(/\W/g, '_')}.sql.gz`;
-    await ssh(ctx.app).check(s, asRoot(s) + script('set -e; mkdir -p "$1"; docker exec "$2" pg_dump -U postgres --data-only -t "$3" | gzip > "$4"; [ "$(gzip -dc "$4" | head -c 1 | wc -c)" -gt 0 ]', dir, i.copy, i.table, file), { what: `Pulling ${i.table} out of the copy`, timeoutMs: 14 * 60_000, signal: ctx.signal });
+    await ssh(ctx.app).check(s, asRoot(s) + script(`set -e; mkdir -p "$1"; ${gzipInto('docker exec "$2" pg_dump -U postgres --data-only -t "$3"', '$4')}; [ "$(gzip -dc "$4" | head -c 1 | wc -c)" -gt 0 ]`, dir, i.copy, i.table, file), { what: `Pulling ${i.table} out of the copy`, timeoutMs: 14 * 60_000, signal: ctx.signal });
     const size = Number((await ssh(ctx.app).exec(s, asRoot(s) + script('wc -c < "$1"', file))).stdout.trim());
     ctx.emit('backup.exported', `Pulled ${i.table} out of a past copy of ${c.of} into a file on ${s.name}`, { resource: s.id });
     return { file, size, next: 'The file is on the server. Loading it into the live database changes live data, so that stays your call.' };

@@ -21,7 +21,7 @@ import type { App } from '../app.ts';
 import { all, get, json, now, run, type DB } from '../db.ts';
 import { Unit7Error } from '../errors.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
-import { script, safeName } from '../connectors/shell.ts';
+import { gzipInto, script, safeName } from '../connectors/shell.ts';
 import { APPS, LOG_OPTS, containerName, healthCheck, removeCopies, replicaNames, startContainer, writeEnvFile, type ServiceConfig, type ServiceRow } from '../deploy/deployer.ts';
 import { backupBeforeChange } from '../tools/backups.ts';
 import { RESTORE } from '../tools/staging.ts';
@@ -107,12 +107,11 @@ const envOfDb = (engine: string, pw: string, database: string): Record<string, s
 const userOf = (engine: string) => (engine === 'postgres' ? 'postgres' : 'root');
 // the dump of a copy on the standby (switching back), with the password on stdin and the dump's own exit code kept
 const DUMP: Record<string, string> = {
-  postgres: 'IFS= read -r P; { PGPASSWORD="$P" docker exec -e PGPASSWORD "$1" pg_dump -U postgres -d "$2" --no-owner --clean --if-exists; echo $? > "$3.rc"; } | gzip > "$3"',
-  mysql: 'IFS= read -r P; { MYSQL_PWD="$P" docker exec -e MYSQL_PWD "$1" mysqldump -u root --single-transaction --databases "$2"; echo $? > "$3.rc"; } | gzip > "$3"',
-  mariadb: 'IFS= read -r P; { MYSQL_PWD="$P" docker exec -e MYSQL_PWD "$1" mariadb-dump -u root --single-transaction --databases "$2"; echo $? > "$3.rc"; } | gzip > "$3"',
-  mongo: 'IFS= read -r P; { docker exec "$1" mongodump --archive --gzip; echo $? > "$3.rc"; } | gzip > "$3"',
+  postgres: 'PGPASSWORD="$P" docker exec -e PGPASSWORD "$1" pg_dump -U postgres -d "$2" --no-owner --clean --if-exists',
+  mysql: 'MYSQL_PWD="$P" docker exec -e MYSQL_PWD "$1" mysqldump -u root --single-transaction --databases "$2"',
+  mariadb: 'MYSQL_PWD="$P" docker exec -e MYSQL_PWD "$1" mariadb-dump -u root --single-transaction --databases "$2"',
+  mongo: 'docker exec "$1" mongodump --archive --gzip',
 };
-const DUMP_END = '; rc=$(cat "$3.rc"); rm -f "$3.rc"; [ "$rc" = 0 ] && test -s "$3"';
 
 // the app's databases on its main server, as the standby needs them
 export function standbyDbs(db: DB, svc: ServiceRow): { dbs: DrDb[]; refusal?: string } {
@@ -275,7 +274,7 @@ export async function switchBack(ctx: Ctx, svc: ServiceRow, r: DrRow) {
   for (const d of json<DrDb[]>(r.dbs, []).filter((x) => DATA.has(x.engine))) {
     const file = `/var/lib/unit7/backups/${safeName(d.container, 'container')}-from-standby-${Date.now()}.gz`;
     ctx.progress(`Copying ${d.name}’s new data back to ${main.name}…`);
-    await pool.check(s, script(`mkdir -p "$(dirname "$3")"; ${DUMP[d.engine]!}${DUMP_END}`, d.container, d.database, file), { what: `Saving ${d.name} on the standby`, stdin: `${passwordOf(ctx, d)}\n`, timeoutMs: 60 * 60_000 });
+    await pool.check(s, script(`mkdir -p "$(dirname "$3")"; IFS= read -r P; ${gzipInto(DUMP[d.engine]!, '$3')}; test -s "$3"`, d.container, d.database, file), { what: `Saving ${d.name} on the standby`, stdin: `${passwordOf(ctx, d)}\n`, timeoutMs: 60 * 60_000 });
     await pool.relay(s, script('cat "$1"', file), main, script('mkdir -p "$(dirname "$1")" && umask 077 && cat > "$1"', file), { timeoutMs: 60 * 60_000 });
     await backupBeforeChange(ctx, d.serviceId, 'putting back the data the standby collected');
     await pool.check(main, script(RESTORE[d.engine]!, file, d.container, userOf(d.engine), d.database), { what: `Loading ${d.name}’s data on ${main.name}`, stdin: `${passwordOf(ctx, d)}\n`, timeoutMs: 60 * 60_000 });

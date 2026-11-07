@@ -13,7 +13,7 @@ import { serverRow } from './servers.ts';
 import { checkRef, learnSecrets } from './env.ts';
 import { coolifyAccount, coolifyFor, inventoryOf, lastXray, runXray } from './xray.ts';
 import { ssh, type ServerRow } from '../connectors/ssh.ts';
-import { script, shq } from '../connectors/shell.ts';
+import { gzipInto, script, shq } from '../connectors/shell.ts';
 import { isRef } from '../vault.ts';
 import { looksRandom, looksSecretName } from '../redact.ts';
 import { TIER_NAMES, type Assessment, type Tier } from '../policy.ts';
@@ -339,16 +339,17 @@ export async function freshBackup(ctx: Ctx, s: ServerRow, p: Part, why: string) 
   const db = p.internals?.find((x) => engineOf(x.image))?.name ?? (p.engine ? p.containers?.[0] : undefined);
   const file = `${dir}/${t}.${p.engine === 'mongo' ? 'archive' : p.engine === 'redis' ? 'rdb' : 'sql'}.gz`;
   const check = `[ "$(gzip -dc "$3" | head -c 1 | wc -c)" -gt 0 ] || { echo "the backup came out empty" >&2; exit 3; }`;
+  const saved = (dump: string) => `${gzipInto(dump, '$3')}; ${check}`;
   // Supabase's own Postgres: its superuser is supabase_admin (postgres can't read the roles), with the database password
   const supabase = /(^|\/)supabase\/postgres(:|$)/.test(p.internals?.find((x) => engineOf(x.image))?.image ?? p.image ?? '');
-  const cmdline = db && p.engine === 'postgres' && supabase ? script(`set -e; mkdir -p "$1"; docker exec "$2" sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dumpall -h 127.0.0.1 -U supabase_admin' | gzip > "$3"; ${check}`, dir, safe(db, 'container'), file)
+  const cmdline = db && p.engine === 'postgres' && supabase ? script(`set -e; mkdir -p "$1"; ${saved(`docker exec "$2" sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dumpall -h 127.0.0.1 -U supabase_admin'`)}`, dir, safe(db, 'container'), file)
     // MongoDB: one archive of every database, signed in as its root user when it has one
-    : db && p.engine === 'mongo' ? script(`set -e; mkdir -p "$1"; docker exec "$2" sh -c '${mongoAs('mongodump --quiet --archive')}' | gzip > "$3"; ${check}`, dir, safe(db, 'container'), file)
+    : db && p.engine === 'mongo' ? script(`set -e; mkdir -p "$1"; ${saved(`docker exec "$2" sh -c '${mongoAs('mongodump --quiet --archive')}'`)}`, dir, safe(db, 'container'), file)
     // Redis: a fresh snapshot (BGSAVE, waiting for LASTSAVE to move), then its file
-    : db && p.engine === 'redis' ? script(`set -e; mkdir -p "$1"; docker exec "$2" sh -c 'export REDISCLI_AUTH="\${REDIS_PASSWORD:-$REDISCLI_AUTH}"; t=$(redis-cli LASTSAVE); redis-cli BGSAVE >/dev/null; i=0; while [ "$(redis-cli LASTSAVE)" = "$t" ] && [ $i -lt 600 ]; do sleep 1; i=$((i+1)); done; [ "$(redis-cli LASTSAVE)" != "$t" ] || { echo "the snapshot did not finish" >&2; exit 3; }; d=$(redis-cli CONFIG GET dir 2>/dev/null | tail -n 1); f=$(redis-cli CONFIG GET dbfilename 2>/dev/null | tail -n 1); cat "\${d:-/data}/\${f:-dump.rdb}"' | gzip > "$3"; ${check}`, dir, safe(db, 'container'), file)
-    : db && p.engine === 'postgres' ? script(`set -e; mkdir -p "$1"; docker exec "$2" sh -c 'pg_dumpall -U "\${POSTGRES_USER:-postgres}"' | gzip > "$3"; ${check}`, dir, safe(db, 'container'), file)
-    : db && (p.engine === 'mysql' || p.engine === 'mariadb') ? script(`set -e; mkdir -p "$1"; docker exec "$2" sh -c 'export MYSQL_PWD="\${MYSQL_ROOT_PASSWORD:-$MARIADB_ROOT_PASSWORD}"; mysqldump -uroot --all-databases --single-transaction 2>/dev/null || mariadb-dump -uroot --all-databases --single-transaction' | gzip > "$3"; ${check}`, dir, safe(db, 'container'), file)
-    : p.owner === 'systemd' && p.engine === 'postgres' ? script(`set -e; mkdir -p "$1"; runuser -u postgres -- pg_dumpall | gzip > "$3"; ${check}`, dir, '', file)
+    : db && p.engine === 'redis' ? script(`set -e; mkdir -p "$1"; ${saved(`docker exec "$2" sh -c 'export REDISCLI_AUTH="\${REDIS_PASSWORD:-$REDISCLI_AUTH}"; t=$(redis-cli LASTSAVE); redis-cli BGSAVE >/dev/null; i=0; while [ "$(redis-cli LASTSAVE)" = "$t" ] && [ $i -lt 600 ]; do sleep 1; i=$((i+1)); done; [ "$(redis-cli LASTSAVE)" != "$t" ] || { echo "the snapshot did not finish" >&2; exit 3; }; d=$(redis-cli CONFIG GET dir 2>/dev/null | tail -n 1); f=$(redis-cli CONFIG GET dbfilename 2>/dev/null | tail -n 1); cat "\${d:-/data}/\${f:-dump.rdb}"'`)}`, dir, safe(db, 'container'), file)
+    : db && p.engine === 'postgres' ? script(`set -e; mkdir -p "$1"; ${saved(`docker exec "$2" sh -c 'pg_dumpall -U "\${POSTGRES_USER:-postgres}"'`)}`, dir, safe(db, 'container'), file)
+    : db && (p.engine === 'mysql' || p.engine === 'mariadb') ? script(`set -e; mkdir -p "$1"; ${saved(`docker exec "$2" sh -c 'export MYSQL_PWD="\${MYSQL_ROOT_PASSWORD:-$MARIADB_ROOT_PASSWORD}"; mysqldump -uroot --all-databases --single-transaction 2>/dev/null || mariadb-dump -uroot --all-databases --single-transaction'`)}`, dir, safe(db, 'container'), file)
+    : p.owner === 'systemd' && p.engine === 'postgres' ? script(`set -e; mkdir -p "$1"; ${saved(`runuser -u postgres -- pg_dumpall`)}`, dir, '', file)
     : p.volumes?.length ? script(`set -e; d=$1; t=$2; shift 2; mkdir -p "$d"; for v in "$@"; do docker run --rm -v "$v":/v:ro -v "$d":/b alpine:3 tar czf "/b/$v-$t.tgz" -C /v .; done`, dir, t, ...p.volumes.map((v) => safe(v.replace(/^v:/, ''), 'volume')))
     : undefined;
   if (!cmdline) throw new Unit7Error('no_backup', `Unit7 can’t take a fresh backup of ${p.name} first, so it won’t ${why}.`, 409);

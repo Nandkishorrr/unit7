@@ -16,6 +16,11 @@ export function script(body: string, ...args: (string | number)[]) {
   return `sh -c ${shq(body)} unit7 ${args.map(shq).join(' ')}`.trimEnd();
 }
 
+// `dump | gzip > file` in plain sh, which has no pipefail and reports only gzip. The file stands only when the dump and gzip both finished
+// and it reads back whole. Anything else is removed, so nothing later takes half a backup for a backup. Safe under set -e.
+export const gzipInto = (dump: string, file: string, onFail = 'echo "the backup did not finish" >&2') =>
+  `gz=0; { ${dump}; echo $? > "${file}.rc"; } | gzip > "${file}" || gz=$?; rc=$(cat "${file}.rc" 2>/dev/null || true); rm -f "${file}.rc"; if [ "$rc" != 0 ] || [ "$gz" != 0 ] || ! gzip -t "${file}" 2>/dev/null; then rm -f "${file}"; ${onFail}; exit 3; fi`;
+
 // A secret for a script: the first line of stdin, exported under these names (a command takes it by name, as in
 // `docker exec -e PGPASSWORD`), so it's never a command-line argument, which any process list on the server shows.
 // The rest of stdin is left for the script.
