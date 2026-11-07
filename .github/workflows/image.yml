@@ -1,11 +1,14 @@
-# A signed image for each release tag. Anyone can check it with cosign, against this repository's workflow.
+# A signed image for each release tag, once the tests and typecheck pass. Anyone can check it with cosign, against this repository's workflow.
 name: image
 on:
   push:
     tags: ['v*']
 permissions: { contents: read, packages: write, id-token: write }
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
   image:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

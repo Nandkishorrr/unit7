@@ -59,10 +59,9 @@ test('DataTalks: a clean-up that takes the backups with it', async () => {
 });
 
 test('Kiro: an AI decides to delete and recreate an environment', async () => {
-  const { o } = await world();
-  const created = ok<{ projectId?: string; id?: string; environments?: { id: string }[] }>(await o.h('project.create', { name: 'envs' }));
-  const env = await o.h('graph.get', {});
-  assert.ok(created && env);
-  const r = await o.a('environment.delete', { environmentId: 'env_doesnotexist' });
-  assert.notEqual(r.status, 'ok', 'an AI doesn’t delete an environment by itself');
+  const { app, o } = await world();
+  const { environments } = ok<{ environments: { id: string; kind: string }[] }>(await o.h('project.create', { name: 'envs', environments: ['staging'] }));
+  const environmentId = environments.find((e) => e.kind === 'staging')!.id;
+  assert.equal((await o.a('environment.delete', { environmentId })).status, 'approval_required', 'an AI doesn’t delete an environment by itself');
+  assert.ok(get(app.db, 'SELECT 1 FROM environments WHERE id = ?', environmentId), 'it’s still there');
 });
