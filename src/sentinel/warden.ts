@@ -320,6 +320,7 @@ export class Warden {
     if (this.sweeps % 5 === 2) void import('../organize/status.ts').then((m) => m.refreshStatusPages(this.app)).catch(logged('status pages'));
     // saved routines: start what's due (as their owners, through the gate) and carry on runs whose approval came
     void import('../tools/routines.ts').then((r) => r.tick(this.app)).catch(logged('routines'));
+    void import('../tools/runtime.ts').then((r) => r.closeInterrupted(this.app)).catch(logged('closing interrupted work'));
     if (this.sweeps % 2 === 0) this.autoscale();
     if (this.sweeps % 60 === 13) this.rotateSecrets();
     if (this.sweeps % 10 === 4) this.fixVulnerabilities();

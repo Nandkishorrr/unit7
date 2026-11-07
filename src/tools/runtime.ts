@@ -318,7 +318,30 @@ export function peopleRef(app: App, orgId: string, ref: string) {
   return !!m.people || /^full access/i.test(m.scope ?? '') || /admin|master|dashboard|root/i.test(m.label ?? '');
 }
 
-export async function execute(app: App, orgId: string, actor: Actor, name: string, rawInput: unknown, o: ExecOptions = {}): Promise<ToolResult> {
+// What's running, so a shutdown can wait for it instead of cutting it off with nothing written down
+const running = new Set<{ ac: AbortController; done: Promise<ToolResult> }>();
+export function execute(app: App, orgId: string, actor: Actor, name: string, rawInput: unknown, o: ExecOptions = {}): Promise<ToolResult> {
+  const ac = new AbortController(), job = { ac, done: runTool(app, orgId, actor, name, rawInput, { ...o, signal: o.signal ? AbortSignal.any([o.signal, ac.signal]) : ac.signal }) };
+  running.add(job);
+  void job.done.finally(() => running.delete(job)).catch(() => undefined);
+  return job.done;
+}
+// Give what's running `grace` ms to finish, then tell the rest to stop, and a moment more so each writes down how it ended.
+export async function drainTools(grace: number, stopping = 2000) {
+  const settled = (ms: number) => { let t: NodeJS.Timeout; return Promise.race([Promise.allSettled([...running].map((r) => r.done)), new Promise((r) => { t = setTimeout(r, ms); })]).finally(() => clearTimeout(t)); };
+  await settled(grace);
+  for (const r of running) r.ac.abort(new Unit7Error('shutting_down', 'Unit7 is shutting down, so this was stopped.', 503));
+  await settled(stopping);
+}
+// Work cut off for good (a crash, a power cut) can't say so itself, and nothing runs this long: Warden says it for them.
+export function closeInterrupted(app: App, at = new Date()) {
+  const why = 'Unit7 stopped before this finished.', when = at.toISOString(), before = new Date(at.getTime() - 3 * 3600_000).toISOString();
+  run(app.db, `UPDATE backups SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running' AND created_at < ?`, why, when, before);
+  run(app.db, `UPDATE deployments SET status = 'failed', error = ?, finished_at = ? WHERE status IN ('building', 'deploying') AND started_at < ?`, why, when, before);
+  run(app.db, `UPDATE approvals SET status = 'done', result = ? WHERE status = 'executing' AND decided_at < ?`, `error: ${why}`, before);
+}
+
+async function runTool(app: App, orgId: string, actor: Actor, name: string, rawInput: unknown, o: ExecOptions): Promise<ToolResult> {
   const { db } = app;
   const found = registry.get(name);
   if (!found) return { status: 'error', error: { code: 'unknown_tool', message: `Unit7 has no tool called "${name}".` } };

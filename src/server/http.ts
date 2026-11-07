@@ -334,6 +334,8 @@ export function createHttp(app: App) {
   });
   http.delete('/api/tokens/:id', (c) => {
     const p = me(c);
+    // a key can turn itself off. Turning off another is a person's call: a read-only or AI key could otherwise cut off the keys above it
+    if (p.via !== 'session' && p.tokenId !== c.req.param('id')) throw forbidden('Turn off other keys in the web app, signed in.');
     if (!auth.revokeToken(db, p.org.id, p.user.id, c.req.param('id'))) throw new Unit7Error('not_found', 'That token was not found.', 404);
     authAudit({ orgId: p.org.id, userId: p.user.id, name: p.user.name }, 'auth.token_revoked');
     return c.json({ ok: true });

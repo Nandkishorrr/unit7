@@ -157,19 +157,27 @@ export class SshPool {
     return conn;
   }
 
-  private async acquire(s: ServerRow) {
+  private async acquire(s: ServerRow, signal?: AbortSignal) {
     let c = this.conns.get(s.id);
     if (!c) this.conns.set(s.id, (c = this.connect(s)));
     const client = await c.ready;
-    while (c.channels >= MAX_CHANNELS) await new Promise<void>((r) => c!.waiters.push(r));
+    const q = c.waiters;
+    while (c.channels >= MAX_CHANNELS && !signal?.aborted) await new Promise<void>((r) => {
+      const go = () => { signal?.removeEventListener('abort', leave); r(); };
+      const leave = () => { q.splice(q.indexOf(go), 1); r(); }; // out of the queue at once: the next free channel is for someone still waiting
+      q.push(go);
+      signal?.addEventListener('abort', leave, { once: true });
+    });
+    // a caller who gave up got "stopped": the command must not start later anyway. If a channel was on its way to it, the next in line takes it.
+    if (signal?.aborted) { q.shift()?.(); throw signal.reason ?? new Unit7Error('aborted', 'Stopped.', 499); }
     c.channels++;
     c.lastUsed = Date.now();
     return { client, release: () => { c!.channels--; c!.lastUsed = Date.now(); c!.waiters.shift()?.(); } };
   }
 
   async exec(s: ServerRow, command: string, o: ExecOptions = {}): Promise<ExecResult> {
+    const { client, release } = await this.acquire(s, o.signal);
     commandLog.getStore()?.push(command.slice(0, 600));
-    const { client, release } = await this.acquire(s);
     const max = o.maxBytes ?? 4 * 1024 * 1024;
     try {
       return await new Promise<ExecResult>((resolve, reject) => {
@@ -183,6 +191,7 @@ export class SshPool {
           }, o.timeoutMs ?? 120_000);
           const onAbort = () => { stream.close(); finish(() => reject(o.signal!.reason ?? new Unit7Error('aborted', 'Stopped.', 499))); };
           o.signal?.addEventListener('abort', onAbort, { once: true });
+          if (o.signal?.aborted) onAbort(); // it fired while the channel was opening, and the listener above won't hear it
           const take = (which: 'out' | 'err') => {
             const text = new StringDecoder('utf8'); // a packet can end in the middle of a character
             return (d: Buffer) => {

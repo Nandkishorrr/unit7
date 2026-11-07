@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createApp } from '../app.ts';
 import { createHttp } from './http.ts';
 import '../tools/index.ts';
+import { drainTools } from '../tools/runtime.ts';
 import { redact } from '../redact.ts';
 
 export interface ServeOptions { port: number; host: string; tlsCert?: string; tlsKey?: string }
@@ -49,12 +50,16 @@ export async function serve(o: ServeOptions) {
       console.warn('Warning: listening beyond localhost without TLS. Put Unit7 behind HTTPS (Caddy) or pass --tls-cert/--tls-key.');
     }
   });
-  const stop = () => {
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) process.exit(1); // asked twice: now
+    stopping = true;
     console.log('Unit7 is shutting down…');
     server.close();
+    (app.services.warden as { stop?: () => void })?.stop?.();
+    await drainTools(7000); // with the 2 seconds it adds, inside the 10 that docker stop gives before it kills
     (app.services.ssh as { closeAll?: () => void })?.closeAll?.();
     (app.services.hostinger as { closeAll?: () => void })?.closeAll?.();
-    (app.services.warden as { stop?: () => void })?.stop?.();
     app.db.close();
     process.exit(0);
   };
