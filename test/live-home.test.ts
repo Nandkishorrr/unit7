@@ -88,3 +88,30 @@ test('Unit7’s own deploy serves the home page too, and a strange file name is 
   const odd = dockerfileFor({ ...facts('a.html'), home: 'a b;rm.html' }, []);
   assert.doesNotMatch(odd!, /RUN cp/);
 });
+
+test('the guide runs on the person’s own Claude with no tools, and what it picks is checked', async (t) => {
+  const { testApp, testOrg, ok } = await import('./helpers.ts');
+  const { chmodSync } = await import('node:fs');
+  const { run } = await import('../src/db.ts');
+  const bin = join(mkdtempSync(join(tmpdir(), 'cli-')), 'claude');
+  writeFileSync(bin, `#!/bin/sh
+[ "$1" = auth ] && { echo '{"loggedIn":true}'; exit 0; }
+case "$*" in *"--tools "*) ;; *) exit 9;; esac
+cat > /dev/null
+echo '{"what":"A studio site.","advice":"Put it on your server.","best":"paid-host-that-isnt-here","also":["Add a domain","a","b","c"]}'
+`);
+  chmodSync(bin, 0o755);
+  process.env.UNIT7_CLAUDE_BIN = bin;
+  t.after(() => { delete process.env.UNIT7_CLAUDE_BIN; });
+  const app = testApp(), s = await testOrg(app), dir = folder({ 'home.html': '<title>Studio</title>' });
+  const before = ok<any>(await s.h('live.guide', { folder: dir }));
+  assert.equal(before.ai, false); // not turned on for this person: their subscription stays out of it
+  assert.equal(before.what, 'Studio');
+  run(app.db, 'UPDATE memberships SET brain = ? WHERE org_id = ? AND user_id = ?', 'claude', s.orgId, s.userId);
+  const g = ok<any>(await s.h('live.guide', { folder: dir }));
+  assert.equal(g.ai, true);
+  assert.equal(g.what, 'A studio site.');
+  assert.equal(g.best, null); // a place that isn't connected can't be picked
+  assert.equal(g.also.length, 3);
+  assert.equal((await s.a('live.guide', { folder: dir })).status, 'denied');
+});

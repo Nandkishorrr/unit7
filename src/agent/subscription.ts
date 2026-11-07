@@ -57,6 +57,22 @@ async function signedIn(bin: string): Promise<boolean> {
   return ok;
 }
 
+// One question with no tools at all, on the subscription of the person who just asked for it on this Mac. Never from a schedule.
+export async function askClaudeOnce(app: App, orgId: string, userId: string, system: string, user: string, ms = 60_000) {
+  const bin = myBrain(app, orgId, userId) && cliBin();
+  if (!bin || !await signedIn(bin)) return undefined;
+  mkdirSync(join(app.home, 'brain'), { recursive: true, mode: 0o700 });
+  const dir = mkdtempSync(join(app.home, 'brain', 'ask-'));
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const child = execFile(bin, ['-p', '--output-format', 'text', '--tools', '', '--strict-mcp-config', '--permission-mode', 'dontAsk', '--setting-sources', '', '--disable-slash-commands', '--no-session-persistence', '--append-system-prompt', system],
+        { cwd: dir, env: childEnv(), timeout: ms, maxBuffer: 1 << 20 }, (e, out) => (e ? reject(e) : resolve(String(out))));
+      child.stdin!.on('error', () => { /* it quit before reading */ });
+      child.stdin!.end(user);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
 export interface CliState { id: CliId; label: string; state: 'ready' | 'not-installed' | 'sign-in' | 'taken'; note: string }
 
 // what each subscription brain looks like to this person right now

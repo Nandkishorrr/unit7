@@ -21,7 +21,7 @@ interface Size { id: string; label: string; price: string; paid?: boolean }
 interface Place { to: string; label: string; accountId?: string; serverId?: string; ok: boolean; why: string; recommended: boolean; costs?: string; price?: string; money?: Money; sizes?: Size[]; pushes?: boolean; tunes?: boolean }
 type Money = 'free' | 'included' | 'paid';
 interface Other { to: string; name: string; ok: boolean; why: string; price?: string; money?: Money }
-interface Guide { what: string | null; advice: string | null; ai: boolean; connected: string[] }
+interface Guide { what: string | null; advice: string | null; ai: boolean; best: string | null; also: string[]; connected: string[] }
 interface Site { name: string; stack: string; runtime: string | null; files: number; mb: number; needs: string[]; settings: string[]; buildCommand?: string | null; startCommand?: string | null; output?: string | null; port?: number; home?: string; pages?: string[] }
 interface Found { site: Site; places: Place[]; notConnected: Other[]; keysFound?: string; publishRefused?: boolean }
 type Source = { name: string } & ({ uploadId: string } | { repo: string; branch?: string });
@@ -136,7 +136,7 @@ function Step({ n, title, children, muted }: { n: number; title: string; childre
 function Steps({ s, wanted }: { s: State; wanted?: string }) {
   const [how, setHow] = useState<'files' | 'github'>('github');
   const found = s.found, usable = found?.places.filter((p) => p.ok) ?? [];
-  const place = usable.find((p) => placeId(p) === s.pick) ?? usable.find((p) => p.to === wanted) ?? usable[0];
+  const place = usable.find((p) => placeId(p) === s.pick) ?? usable.find((p) => p.to === wanted) ?? usable.find((p) => p.to === s.guide?.best && p.money !== 'paid') ?? usable[0];
   return (
     <div className="space-y-4">
       {!s.source ? (
@@ -198,9 +198,10 @@ function GuideCard({ s, found }: { s: State; found: Found }) {
   const name = s.source!.name, g = s.guide, unknown = found.site.stack === 'unknown';
   return (
     <div className="rounded-[18px] bg-raised/60 p-3.5" aria-live="polite">
-      <p className="text-[13px] font-semibold text-ink">{g?.ai ? 'What AI read in your project' : 'Your project'}</p>
-      <p className="mt-1 text-[13px] leading-snug text-ink-2">{g ? g.what ?? `${stackWords(found.site.stack)}, with ${found.site.files} files.` : 'Reading its description…'}</p>
+      <p className="text-[13px] font-semibold text-ink">{g?.ai ? 'AI’s plan for your project' : 'Your project'}</p>
+      <p className="mt-1 text-[13px] leading-snug text-ink-2">{g ? g.what ?? `${stackWords(found.site.stack)}, with ${found.site.files} files.` : 'AI is reading about your project…'}</p>
       {g?.advice && <p className="mt-1 text-[13px] leading-snug text-ink-2">{g.advice}</p>}
+      {!!g?.also.length && <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[13px] leading-snug text-ink-2">{g.also.map((x) => <li key={x}>{x}</li>)}</ul>}
       {g && !g.ai && <p className="mt-1 text-[12.5px] leading-snug text-muted">It only reads the README and description, never your code.</p>}
       <div className="mt-2.5">
         <AskButton size="md" label={unknown ? 'Ask Unit7 how to put this live' : 'Ask Unit7 for a full plan'} prompt={`I want to put ${name} live${s.source && 'repo' in s.source ? ` from the repo ${s.source.repo}` : ''}. Unit7 sees: ${stackWords(found.site.stack)}. Use live.options, then tell me what it is, the best place for it, which choices are free and which are paid, and what else it needs. Read only its README and description, not all its code.`} />
@@ -247,7 +248,8 @@ function Extras({ s, found }: { s: State; found: Found }) {
 function Where({ s, found, place, wanted }: { s: State; found: Found; place?: Place; wanted?: string }) {
   const can = found.notConnected.filter((h) => h.ok).sort((a, b) => Number(b.to === wanted) - Number(a.to === wanted));
   const missing = wanted && !found.places.some((p) => p.to === wanted) ? found.notConnected.find((h) => h.to === wanted) : undefined;
-  const best = found.places.find((p) => p.ok);
+  const pick = found.places.find((p) => p.ok && p.to === s.guide?.best);
+  const best = pick ?? found.places.find((p) => p.ok);
   return (
     <div className="space-y-3">
       {found.keysFound && (
@@ -274,7 +276,7 @@ function Where({ s, found, place, wanted }: { s: State; found: Found; place?: Pl
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span className={cx('text-[14px] font-medium [overflow-wrap:anywhere]', p.ok ? 'text-ink' : 'text-muted')}>{p.label}</span>
-                    {p === best && found.site.stack !== 'unknown' && <Badge tone="lime" className="h-5 px-2 text-[11px]">Best fit</Badge>}
+                    {p === best && found.site.stack !== 'unknown' && <Badge tone="lime" className="h-5 px-2 text-[11px]">{p === pick ? 'AI pick' : 'Best fit'}</Badge>}
                     {p.ok && <MoneyBadge m={p.money} />}
                   </span>
                   <span className="block text-[12.5px] leading-snug text-muted">{p.why}</span>
